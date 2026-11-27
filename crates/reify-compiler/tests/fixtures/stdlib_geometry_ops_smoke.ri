@@ -22,14 +22,12 @@
 //      mirrored too, not just the name; task 5583).
 // NOT enforced, and therefore review-time responsibilities:
 //   - argument DIMENSION/TYPE of UNSLOTTED operands. builtin_signatures.rs
-//     checks the slotted ones at compile time (lengths, angles, and the
-//     Direction axis of rotate/rotate_around and normal of mirror), so a wrong
-//     type there is an Error that reds the compile. Pattern direction/axis
-//     components and counts have no slot, so
-//     `linear_pattern(solid, 1mm, 0mm, 0mm, 3, 5mm)` would compile just as
+//     checks the slotted ones at compile time (lengths, angles and
+//     Directions), so a wrong type there is an Error that reds the compile.
+//     Pattern counts have no slot, so
+//     `linear_pattern(solid, dir(1, 0, 0), 3mm, 5mm)` would compile just as
 //     green. The unit convention used below — positions/lengths in `mm`,
-//     angles in `deg`, rotate's and rotate_around's axis and mirror's normal
-//     as `dir(..)`, other direction/axis components and counts as plain
+//     angles in `deg`, Direction operands as `dir(..)`, counts as plain
 //     numbers — mirrors the chunk's prose line, verified only where a slot
 //     exists;
 //   - argument ORDER.
@@ -39,8 +37,8 @@
 // Each form is the exact arity/overload the compiler accepts (verified against
 // the match arms in reify-compiler/src/geometry{,_transform,_boolean,_modify,
 // _curve}.rs). Where an ergonomic value-form overload exists (mirror/plane,
-// circular_pattern/axis, rotate/orientation) it is exercised alongside the
-// scalar or Direction form.
+// rotate/orientation) it is exercised alongside the Direction form;
+// circular_pattern's axis form is its only one.
 
 structure def StdlibGeometryOpsSmoke {
     // ── Inputs (real constructors) ──────────────────────────────────────────
@@ -103,17 +101,16 @@ structure def StdlibGeometryOpsSmoke {
     let afa = affine_apply(solid, affine_scale(1.0, 1.0, 1.5))      // affine_apply(geo, map)           [general affine]
 
     // ── Pattern ───────────────────────────────────────────────────────────────
-    let lp  = linear_pattern(solid, 1, 0, 0, 3, 5mm)                   // linear_pattern(geo, dx,dy,dz, count, spacing)
-    let lp2 = linear_pattern_2d(solid, 1, 0, 0, 3, 20mm, 0, 1, 0, 3, 20mm)  // linear_pattern_2d(geo, dir1, count1, spacing1, dir2, count2, spacing2)
+    let lp  = linear_pattern(solid, dir(1, 0, 0), 3, 5mm)              // linear_pattern(geo, direction, count, spacing)
+    let lp2 = linear_pattern_2d(solid, dir(1, 0, 0), 3, 20mm, dir(0, 1, 0), 3, 20mm)  // linear_pattern_2d(geo, direction1, count1, spacing1, direction2, count2, spacing2)
     let apr = arbitrary_pattern(solid, 10mm, 0mm, 0mm, 0mm, 20mm, 0mm)      // arbitrary_pattern(geo, dx1,dy1,dz1, …) [offset triples]
     let apl = arbitrary_pattern(solid, [transform3_identity()])             // arbitrary_pattern(geo, transforms)     [2, List<Transform<3>>]
     let cp4 = circular_pattern(solid, axis_z(point3(0mm, 0mm, 0mm)), 6, 360deg)   // (geo, axis, count, angle) [4, value]
-    let cp9 = circular_pattern(solid, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)          // (geo, ox,oy,oz, ax,ay,az, count, angle) [9]
     let spl = split(solid, plane_xy(0mm))          // split(solid, plane) → List<Geometry> (topology selector)
 
     // ── Curves ────────────────────────────────────────────────────────────────
     let ls = line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm)                 // line_segment(x1,y1,z1, x2,y2,z2)
-    let ar = arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0, 0, 1)              // arc(cx,cy,cz, radius, start,end, ax,ay,az)
+    let ar = arc(point3(0mm, 0mm, 0mm), 5mm, 0deg, 90deg, dir(0, 0, 1)) // arc(center, radius, start,end, normal)
     let hx = helix(5mm, 2mm, 20mm)                                       // helix(radius, pitch, height)
     let ip = interp(0mm, 0mm, 0mm, 5mm, 5mm, 0mm, 10mm, 0mm, 0mm)       // interp(x1,y1,z1, …) coord triples
     let bz = bezier(0mm, 0mm, 0mm, 5mm, 10mm, 0mm, 10mm, 0mm, 0mm)      // bezier(x1,y1,z1, …) coord triples

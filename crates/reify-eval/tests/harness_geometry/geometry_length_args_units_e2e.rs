@@ -205,12 +205,12 @@ fn line_segment_bare_endpoint_drops_op_dimensioned_builds() {
 fn arc_bare_center_drops_op_dimensioned_builds() {
     assert_length_gate(
         "arc",
-        "cx",
+        "center.x",
         r#"structure def BareArc {
-            let w = arc(0, 0, 0, 10, 0.0rad, 1.5707963267948966rad, 0, 0, 1)
+            let w = arc(point3(0, 0, 0), 10, 0.0rad, 1.5707963267948966rad, dir(0, 0, 1))
         }"#,
         r#"structure def DimArc {
-            let w = arc(0mm, 0mm, 0mm, 10mm, 0.0rad, 1.5707963267948966rad, 0, 0, 1)
+            let w = arc(point3(0mm, 0mm, 0mm), 10mm, 0.0rad, 1.5707963267948966rad, dir(0, 0, 1))
         }"#,
         |op| matches!(op, GeometryOp::Arc { .. }),
     );

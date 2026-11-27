@@ -170,13 +170,13 @@ fn probe_universe() -> &'static [&'static str] {
 /// `mod tests` and so is test-private and not importable across the crate
 /// boundary; this const is therefore a deliberate restatement, not an oversight.
 /// Both leave headroom above the largest arity any builtin arm guards on today
-/// (11, `linear_pattern_2d`). Raise them together.
+/// (4, `draft`, `revolve` and `orient_euler`). Raise them together.
 const MAX_PROBED_ARITY: usize = 14;
 
 /// The headroom claim above, enforced rather than asserted in prose: an
 /// arity-guarded builtin arm cannot hide from the sweep by sitting just above
 /// the bound.
-const _: () = assert!(MAX_PROBED_ARITY > 11);
+const _: () = assert!(MAX_PROBED_ARITY > 4);
 
 /// (e) The probe universe is READ from the compiler-side registry, never
 /// restated here, and is asserted against a FLOOR rather than an equality.
@@ -217,14 +217,12 @@ fn probe_universe_is_the_compiler_registry_and_clears_the_floor() {
 ///
 /// This tuple is the ONLY suppression key in this file. Nothing is waved
 /// through by builtin name alone, because a builtin's gated and un-gated slots
-/// routinely sit next to each other — `half_space` gates its `px`/`py`/`pz`
-/// POINT while its `nx`/`ny`/`nz` NORMAL stays bare, and `circular_pattern`
-/// draws the same origin-vs-direction split.
+/// routinely sit next to each other: a gated length beside a dimensionless
+/// count, ratio or datum.
 ///
 /// `arity` is part of the key because Contract C's gated spans are
 /// arity-dependent: `nurbs` gates `2 .. 2 + 3·n_points`, a range computed from
-/// an argument, and `circular_pattern`'s short form has no origin triple to gate
-/// at all.
+/// an argument.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Position {
     builtin: &'static str,
@@ -652,8 +650,8 @@ mod seeded_classifier {
     /// suppress.
     ///
     /// Pins that suppression is keyed by the whole `(builtin, arity, index)`
-    /// tuple. A name-keyed allowlist would wave through `half_space`'s gated
-    /// `px`/`py`/`pz` point along with its bare `nx`/`ny`/`nz` normal.
+    /// tuple. A name-keyed allowlist would wave through a builtin's gated
+    /// positions along with its bare neighbour.
     #[test]
     fn an_entry_for_a_neighbouring_index_does_not_suppress() {
         let neighbour = Position {
@@ -1017,15 +1015,6 @@ const UNSWEPT_BUILTINS: &[(&str, TaskCite)] = &[
 // recorded, then delete the rows they own here.
 const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] = &[
     (
-        "linear_pattern_2d",
-        10,
-        0..10,
-        TaskCite(7714),
-        "count1/count2 need Int values no scalar filler produces, so the op \
-         errors before spacing1/spacing2 reach the Contract C chokepoint; both \
-         spacing slots ARE gated (task 5214) but the probe cannot show it",
-    ),
-    (
         "nurbs",
         10,
         0..10,
@@ -1059,16 +1048,23 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
          ox/oy/oz names; a scalar literal cannot occupy a decoded Point",
     ),
     (
-        "circular_pattern",
-        3,
-        2..3,
+        "mirror",
+        2,
+        0..1,
         TaskCite(7714),
-        "the short form's `angle` IS gated (PRD 3 leaf ε), but `decode_axis` \
-         rejects every scalar filler at `axis` before the angle is read, so the \
-         probe cannot show it",
+        "origin — a Point3 origin no scalar filler produces; still gated at build \
+         by accept_length_point3",
     ),
     (
-        "mirror",
+        "arc",
+        5,
+        0..1,
+        TaskCite(7714),
+        "center — a Point3 centre no scalar filler produces; still gated at build \
+         by accept_length_point3",
+    ),
+    (
+        "half_space",
         2,
         0..1,
         TaskCite(7714),
@@ -1133,31 +1129,43 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
     // would reject correct `.ri`. This is the D3 adversary finding (BINDING).
     (
         "arc",
-        9,
-        6..9,
-        Justification::UnitVectorComponent,
-        "ax/ay/az — the arc's axis direction, beside the gated centre and radius",
-    ),
-    (
-        "circular_pattern",
-        8,
-        3..6,
-        Justification::UnitVectorComponent,
-        "ax/ay/az — the axis direction, beside the gated ox/oy/oz origin",
+        5,
+        4..5,
+        Justification::Index,
+        "normal — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
     ),
     (
         "half_space",
-        6,
-        3..6,
-        Justification::UnitVectorComponent,
-        "nx/ny/nz — the outward normal, beside the gated px/py/pz point",
+        2,
+        1..2,
+        Justification::Index,
+        "normal — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
     ),
     (
         "linear_pattern",
-        5,
-        0..3,
-        Justification::UnitVectorComponent,
-        "dx/dy/dz — the step direction; the magnitude is the gated `spacing`",
+        3,
+        0..1,
+        Justification::Index,
+        "direction — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
+        "linear_pattern_2d",
+        6,
+        0..1,
+        Justification::Index,
+        "direction1 — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
+        "linear_pattern_2d",
+        6,
+        3..4,
+        Justification::Index,
+        "direction2 — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
     ),
     // COUNTS.
     (
@@ -1168,18 +1176,25 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         "count — how many instances",
     ),
     (
-        "circular_pattern",
-        8,
-        6..7,
+        "linear_pattern",
+        3,
+        1..2,
         Justification::Count,
         "count — how many instances",
     ),
     (
-        "linear_pattern",
-        5,
-        3..4,
+        "linear_pattern_2d",
+        6,
+        1..2,
         Justification::Count,
-        "count — how many instances",
+        "count1 — how many instances along direction1",
+    ),
+    (
+        "linear_pattern_2d",
+        6,
+        4..5,
+        Justification::Count,
+        "count2 — how many instances along direction2",
     ),
     // ENTITY SELECTORS. These slots carry a handle, a selector list or a datum
     // VALUE; they name something rather than measure it.
@@ -1412,11 +1427,12 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
 /// `(builtin, arity, index range, the slots the range covers)`. Unlike an
 /// [`ALLOWLIST`] row this is a gate, not a licence: each position must be
 /// observed REJECTING a bare number with an ANGLE baseline, which is what tells
-/// an angle gate from a length one. The one producer angle the probe cannot
-/// reach, `circular_pattern`'s short form, is a residual instead.
+/// an angle gate from a length one. `circular_pattern`'s angle is reachable
+/// beside a rejected `axis` filler because its reader reads every argument
+/// before combining them (direction-typing ι-c).
 const ANGLE_ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, &str)] = &[
-    ("arc", 9, 4..6, "start_angle/end_angle"),
-    ("circular_pattern", 8, 7..8, "angle, the long form"),
+    ("arc", 5, 2..4, "start_angle/end_angle"),
+    ("circular_pattern", 3, 2..3, "angle"),
     ("draft", 2, 0..1, "angle, the 3-arg form"),
     ("draft", 3, 1..2, "angle, the 4-arg form"),
     ("revolve", 2, 1..2, "angle, the Axis form"),
@@ -1839,17 +1855,17 @@ fn probe_call(name: &str, template: TargetTemplate, args: &[String]) -> Option<P
 }
 
 /// Repair `arity` copies of `start` one position at a time, keeping any
-/// [`BASELINE_FILLERS`] entry that strictly lowers the badness. Two passes let a
-/// later repair unblock an earlier one; the search stops the moment the call is
-/// clean. `None` if the call compiles to no op.
+/// [`BASELINE_FILLERS`] entry that strictly lowers the badness `score` gives
+/// (`None` meaning the call compiles to no op). Two passes let a later repair
+/// unblock an earlier one; the search stops the moment the call is clean.
+/// `None` if the start itself compiles to no op.
 fn greedy_repair(
-    name: &str,
-    template: TargetTemplate,
     arity: usize,
     start: Filler,
+    score: &impl Fn(&[Filler]) -> Option<Badness>,
 ) -> Option<(Vec<Filler>, Badness)> {
     let mut args = vec![start; arity];
-    let mut badness = probe_call(name, template, &filler_sources(&args))?.baseline_badness();
+    let mut badness = score(&args)?;
     for _ in 0..2 {
         for index in 0..arity {
             for filler in BASELINE_FILLERS {
@@ -1858,11 +1874,11 @@ fn greedy_repair(
                 }
                 let mut candidate = args.clone();
                 candidate[index] = filler;
-                let Some(probed) = probe_call(name, template, &filler_sources(&candidate)) else {
+                let Some(candidate_badness) = score(&candidate) else {
                     continue;
                 };
-                if probed.baseline_badness() < badness {
-                    badness = probed.baseline_badness();
+                if candidate_badness < badness {
+                    badness = candidate_badness;
                     args = candidate;
                 }
             }
@@ -1883,27 +1899,31 @@ fn start_fillers() -> Vec<Filler> {
     starts
 }
 
-/// An argument vector for `name` at `arity` that raises no dimension rejection
-/// of its own, or `None` if no start reaches one. It is rejection-free, not
+/// An argument vector of `arity` fillers that `score` finds free of dimension
+/// rejections, or `None` if no start reaches one. It is rejection-free, not
 /// necessarily CLEAN: scalar fillers cannot make a selector, a datum or a count
-/// valid, so the op may still fail.
+/// valid, so the op may still fail. The sweep scores through [`probe_call`]
+/// ([`baseline_args`]); the `baseline_search_traps` tests score through fakes.
 ///
 /// [`greedy_repair`] runs once per filler DIMENSION ([`start_fillers`]), default
-/// start first, because a repair can score WORSE than the state it repairs — a
-/// non-length filler in a `?`-chained length group hides the rejections behind
-/// it, and fixing an early slot exposes a later gate — so one start can stall
-/// where another does not (the `baseline_search` tests pin both). A later start
-/// replaces the best so far only when strictly better, and a clean result ends
-/// the search. `None` outright when the default start compiles to no op: the
-/// arity decides that, not the values.
-fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<Vec<Filler>> {
+/// start first, because a repair can score no better than the state it repairs
+/// — fixing one member of a `?`-chained group exposes the next member's
+/// rejection, and fixing an early slot exposes a later gate — so one start can
+/// stall where another does not. The `baseline_search_traps` tests pin both. A
+/// later start replaces the best so far only when strictly better, and a clean
+/// result ends the search. `None` outright when the default start compiles to no
+/// op: the arity decides that, not the values.
+fn baseline_search(
+    arity: usize,
+    score: impl Fn(&[Filler]) -> Option<Badness>,
+) -> Option<Vec<Filler>> {
     let mut starts = start_fillers().into_iter();
-    let mut best = greedy_repair(name, template, arity, starts.next()?)?;
+    let mut best = greedy_repair(arity, starts.next()?, &score)?;
     for start in starts {
         if best.1 == CLEAN_BASELINE {
             break;
         }
-        let Some(repaired) = greedy_repair(name, template, arity, start) else {
+        let Some(repaired) = greedy_repair(arity, start, &score) else {
             continue;
         };
         if repaired.1 < best.1 {
@@ -1912,6 +1932,109 @@ fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<V
     }
     let (args, badness) = best;
     (badness.dimension_rejections == 0).then_some(args)
+}
+
+/// [`baseline_search`] for `name` at `arity`, scored by driving each candidate
+/// call through [`probe_call`].
+fn baseline_args(name: &str, template: TargetTemplate, arity: usize) -> Option<Vec<Filler>> {
+    baseline_search(arity, |fillers: &[Filler]| {
+        probe_call(name, template, &filler_sources(fillers)).map(|p| p.baseline_badness())
+    })
+}
+
+/// Baseline-search regression tests.
+///
+/// Each drives [`baseline_search`] with a FAKE scorer that exhibits one trap
+/// the default start cannot escape, so the multi-start loop is pinned without
+/// depending on any builtin still having that shape.
+#[cfg(test)]
+mod baseline_search_traps {
+    use super::*;
+
+    /// How a fake op judges one slot's filler.
+    #[derive(Clone, Copy)]
+    enum Slot {
+        /// Requires this dimension; anything else is a dimension rejection.
+        Gated(reify_core::DimensionVector),
+        /// Requires a dimensionless integer of at least 1; anything else fails
+        /// the op with an ordinary diagnostic, not a dimension rejection.
+        Count,
+    }
+
+    fn slot_accepts(slot: Slot, filler: &Filler) -> Result<(), Badness> {
+        match slot {
+            Slot::Gated(dimension) if filler.dimension == dimension => Ok(()),
+            Slot::Gated(_) => Err(Badness {
+                dimension_rejections: 1,
+                other_diagnostics: 0,
+                op_failed: true,
+            }),
+            Slot::Count => {
+                let integer = filler.dimension == reify_core::DimensionVector::DIMENSIONLESS
+                    && filler
+                        .source
+                        .parse::<f64>()
+                        .is_ok_and(|v| v >= 1.0 && v == v.floor());
+                if integer {
+                    Ok(())
+                } else {
+                    Err(Badness {
+                        dimension_rejections: 0,
+                        other_diagnostics: 1,
+                        op_failed: true,
+                    })
+                }
+            }
+        }
+    }
+
+    /// A fake op that reads its slots in order and stops at the FIRST failing
+    /// one, as a `?`-chained reader does: every later slot goes unread.
+    fn short_circuiting(slots: &'static [Slot]) -> impl Fn(&[Filler]) -> Option<Badness> {
+        move |fillers: &[Filler]| {
+            assert_eq!(fillers.len(), slots.len(), "the fake op has a fixed arity");
+            let first_failure = slots
+                .iter()
+                .zip(fillers)
+                .find_map(|(slot, filler)| slot_accepts(*slot, filler).err());
+            Some(first_failure.unwrap_or(CLEAN_BASELINE))
+        }
+    }
+
+    fn assert_search_reaches_clean(arity: usize, score: impl Fn(&[Filler]) -> Option<Badness>) {
+        let fillers = baseline_search(arity, &score).expect("no rejection-free baseline found");
+        assert_eq!(
+            score(&fillers),
+            Some(CLEAN_BASELINE),
+            "the search settled on {:?}, which is not clean",
+            filler_sources(&fillers)
+        );
+    }
+
+    /// TRAP: a `?`-chained group hides every member behind the first failing
+    /// one, so fixing that member only exposes the next member's rejection and
+    /// the count never strictly drops.
+    ///
+    /// From the default all-length start, an angle pair followed by a length
+    /// stalls at one rejection; the angle start fixes the length in one step.
+    #[test]
+    fn the_baseline_search_escapes_a_short_circuiting_group() {
+        const ANGLE: Slot = Slot::Gated(reify_core::DimensionVector::ANGLE);
+        const LENGTH: Slot = Slot::Gated(reify_core::DimensionVector::LENGTH);
+        assert_search_reaches_clean(3, short_circuiting(&[ANGLE, ANGLE, LENGTH]));
+    }
+
+    /// TRAP: an early op failure leaves later arguments unread, so repairing it
+    /// surfaces a later slot's rejection, which a search accepting only strict
+    /// improvements reads as worse and refuses.
+    ///
+    /// From the default all-length start, a count followed by an angle stalls
+    /// at an invalid count; the angle start repairs the count to a clean call.
+    #[test]
+    fn the_baseline_search_escapes_a_repair_that_exposes_a_later_gate() {
+        const ANGLE: Slot = Slot::Gated(reify_core::DimensionVector::ANGLE);
+        assert_search_reaches_clean(2, short_circuiting(&[Slot::Count, ANGLE]));
+    }
 }
 
 /// The argument-slot FAMILIES an op exposes — slot names with their trailing
@@ -2000,54 +2123,6 @@ fn sweep_universe() -> Vec<Observation> {
 fn observe_universe() -> &'static [Observation] {
     static SWEEP: std::sync::OnceLock<Vec<Observation>> = std::sync::OnceLock::new();
     SWEEP.get_or_init(sweep_universe)
-}
-
-/// Baseline-search regression tests.
-///
-/// Each probes ONE `(builtin, template, arity)` — no full sweep — and pins a
-/// general trap the search must escape. The builtin it names is the measured
-/// witness on this tree, not a restated universe.
-#[cfg(test)]
-mod baseline_search {
-    use super::*;
-
-    fn assert_baseline_is_clean(name: &str, template: TargetTemplate, arity: usize) {
-        let fillers = baseline_args(name, template, arity)
-            .unwrap_or_else(|| panic!("{name}/{arity} has no rejection-free baseline"));
-        let probed = probe_call(name, template, &filler_sources(&fillers))
-            .unwrap_or_else(|| panic!("{name}/{arity}'s baseline compiles to no op"));
-        assert_eq!(
-            probed.baseline_badness(),
-            CLEAN_BASELINE,
-            "{name}/{arity}'s baseline still raises rejections, diagnostics or an op \
-             failure, so no position of it can be read cleanly: {:?}",
-            probed.diagnostics
-        );
-    }
-
-    /// TRAP: a repair that HIDES a rejection instead of removing it.
-    ///
-    /// A length group is read with `?`, so the first slot holding a non-length
-    /// filler ends the read and every later slot's rejection vanishes with it.
-    /// A greedy that starts from all-length fillers scores that as an
-    /// improvement and cannot leave it. Witness: `arc` at arity 9, a centre and
-    /// radius length group followed by two angles.
-    #[test]
-    fn the_baseline_search_escapes_a_short_circuiting_length_group() {
-        assert_baseline_is_clean("arc", TargetTemplate::None, 9);
-    }
-
-    /// TRAP: a repair that EXPOSES a later gate.
-    ///
-    /// An op that fails early never reads its later arguments, so repairing the
-    /// early slot surfaces the later slot's rejection — which a search accepting
-    /// only strict improvements reads as WORSE and refuses. Witness:
-    /// `circular_pattern` at arity 8, where a length-filled count is invalid and
-    /// hides the angle behind it.
-    #[test]
-    fn the_baseline_search_escapes_a_repair_that_exposes_a_later_gate() {
-        assert_baseline_is_clean("circular_pattern", TargetTemplate::Solid, 8);
-    }
 }
 
 #[cfg(test)]

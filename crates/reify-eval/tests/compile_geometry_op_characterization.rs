@@ -330,18 +330,13 @@ fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
             ("major_radius".to_string(), length_literal(0.03)),
             ("minor_radius".to_string(), length_literal(0.01)),
         ],
-        // MIXED, and deliberately so: `(px, py, pz)` is a point on the boundary
-        // plane and is gated, but `(nx, ny, nz)` is a DIMENSIONLESS unit normal
-        // and stays a bare `real_literal(..)`. Swapping the normal to `length_literal` here
-        // would hide an over-broad gate rather than characterize the real one —
-        // `examples/half_space.ri` writes exactly this shape.
+        // The Point3 `origin` and the Direction `normal` of
+        // `half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))` (direction-typing
+        // ι-c), the shape `examples/half_space.ri` writes. The golden is the
+        // one the retired scalar form produced: LENGTH px..pz, Real nx..nz.
         PrimitiveKind::HalfSpace => vec![
-            ("px".to_string(), length_literal(0.0)),
-            ("py".to_string(), length_literal(0.0)),
-            ("pz".to_string(), length_literal(0.0)),
-            ("nx".to_string(), real_literal(0.0)),
-            ("ny".to_string(), real_literal(0.0)),
-            ("nz".to_string(), real_literal(1.0)),
+            ("origin".to_string(), lit_raw(point3_len([0.0, 0.0, 0.0]))),
+            ("normal".to_string(), lit_raw(direction_val(0.0, 0.0, 1.0))),
         ],
     };
     CompiledGeometryOp::Primitive { kind: k, args }
@@ -2452,35 +2447,35 @@ const ALL_PATTERN: [PatternKind; 5] = [
     PatternKind::Arbitrary,
 ];
 
-/// The Pattern kinds with a distinct scalar-form vs Value-form code path. The
-/// base `pattern_case` exercises the argument-list form (for Mirror, its
-/// `origin`/`normal` form); the `:value` extra cases below exercise the
-/// `axis`/`plane` Value-form decode branch.
+/// The Pattern kinds with a second, `:value` fixture. For Mirror that is a
+/// distinct code path: the base `pattern_case` exercises its `origin`/`normal`
+/// form and the `:value` case its `plane` decode branch. Circular has one path,
+/// the `axis` form, since direction-typing ι-c; its `:value` case drives that
+/// path with an offset origin and a non-unit direction.
 const PATTERN_VALUE_VARIANTS: [PatternKind; 2] = [PatternKind::Circular, PatternKind::Mirror];
 
-/// Build a representative base `Pattern` op for `k` (the scalar/back-compat form
-/// for Circular/Mirror). EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Pattern
+/// Build a representative base `Pattern` op for `k` (for Mirror its
+/// `origin`/`normal` form). EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Pattern
 /// arm. Circular's `angle` is ANGLE-dimensioned via `angle_literal` (angle-units
 /// PRD leaf ε retired the bare-number degrees→radians path).
 fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
     let args = match k {
         PatternKind::Linear => vec![
-            ("dx".to_string(), real_literal(1.0)),
-            ("dy".to_string(), real_literal(0.0)),
-            ("dz".to_string(), real_literal(0.0)),
+            (
+                "direction".to_string(),
+                lit_raw(direction_val(1.0, 0.0, 0.0)),
+            ),
             ("count".to_string(), real_literal(3.0)),
             // spacing is length-semantic → dimensioned Length (task 5214).
             ("spacing".to_string(), length_literal(0.01)),
         ],
+        // The Axis form, `circular_pattern`'s only one since direction-typing
+        // ι-c. Golden unchanged.
         PatternKind::Circular => vec![
-            // Axis ORIGIN is length-semantic → dimensioned Length (task 5350);
-            // axis DIRECTION stays a bare dimensionless unit vector.
-            ("ox".to_string(), length_literal(0.0)),
-            ("oy".to_string(), length_literal(0.0)),
-            ("oz".to_string(), length_literal(0.0)),
-            ("ax".to_string(), real_literal(0.0)),
-            ("ay".to_string(), real_literal(0.0)),
-            ("az".to_string(), real_literal(1.0)),
+            (
+                "axis".to_string(),
+                lit_raw(axis_value([0.0, 0.0, 0.0], [0.0, 0.0, 1.0])),
+            ),
             ("count".to_string(), real_literal(4.0)),
             ("angle".to_string(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
@@ -2490,16 +2485,19 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             ("origin".to_string(), lit_raw(point3_len([0.0, 0.0, 0.0]))),
             ("normal".to_string(), lit_raw(direction_val(0.0, 0.0, 1.0))),
         ],
+        // Both directions are `Direction`s (direction-typing ι-c). Golden unchanged.
         PatternKind::Linear2D => vec![
-            ("dx1".to_string(), real_literal(1.0)),
-            ("dy1".to_string(), real_literal(0.0)),
-            ("dz1".to_string(), real_literal(0.0)),
+            (
+                "direction1".to_string(),
+                lit_raw(direction_val(1.0, 0.0, 0.0)),
+            ),
             ("count1".to_string(), real_literal(2.0)),
             // spacings are length-semantic → dimensioned Length (task 5214).
             ("spacing1".to_string(), length_literal(0.01)),
-            ("dx2".to_string(), real_literal(0.0)),
-            ("dy2".to_string(), real_literal(1.0)),
-            ("dz2".to_string(), real_literal(0.0)),
+            (
+                "direction2".to_string(),
+                lit_raw(direction_val(0.0, 1.0, 0.0)),
+            ),
             ("count2".to_string(), real_literal(3.0)),
             ("spacing2".to_string(), length_literal(0.02)),
         ],
@@ -2540,7 +2538,7 @@ fn pattern_case_value(k: PatternKind) -> CompiledGeometryOp {
     }
 }
 
-/// Golden snapshot per `PatternKind` (base / scalar form). EXHAUSTIVE match (no
+/// Golden snapshot per `PatternKind` (base form). EXHAUSTIVE match (no
 /// `_`). Placeholders replaced during the GREEN bootstrap.
 fn pattern_golden(k: PatternKind) -> &'static str {
     match k {
@@ -3033,19 +3031,15 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
             ("y2".to_string(), length_literal(0.02)),
             ("z2".to_string(), length_literal(0.03)),
         ],
-        // Centre and radius are LENGTH-gated (task 5623); the two angles are
+        // The Point3 centre and the radius are LENGTH-gated; the two angles are
         // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ); the
-        // ax/ay/az unit vector stays deliberately bare. Golden below unchanged.
+        // normal is a Direction (direction-typing ι-c). Golden below unchanged.
         CurveKind::Arc => vec![
-            ("cx".to_string(), length_literal(0.0)),
-            ("cy".to_string(), length_literal(0.0)),
-            ("cz".to_string(), length_literal(0.0)),
+            ("center".to_string(), lit_raw(point3_len([0.0, 0.0, 0.0]))),
             ("radius".to_string(), length_literal(0.01)),
             ("start_angle".to_string(), angle_literal(0.0)),
             ("end_angle".to_string(), angle_literal(1.0)),
-            ("ax".to_string(), real_literal(0.0)),
-            ("ay".to_string(), real_literal(0.0)),
-            ("az".to_string(), real_literal(1.0)),
+            ("normal".to_string(), lit_raw(direction_val(0.0, 0.0, 1.0))),
         ],
         // radius / pitch / height are all LENGTH-gated (task 5623); `pitch` is a
         // rise per turn, not an angle. Golden below unchanged.

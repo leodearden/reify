@@ -29,9 +29,9 @@ structure def SolidPrimitivesListing {
     let tu = tube(10mm, 5mm, 20mm)
     // corner_r > 0 and 2*corner_r < min(width, depth).
     let rb = rounded_box(20mm, 20mm, 10mm, 3mm)
-    // The boundary POINT is a Length position; the outward NORMAL is a
-    // direction, so its components are dimensionless.
-    let hs = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+    // The boundary point is a point3 of lengths; the outward normal is a
+    // Direction.
+    let hs = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
 }
 
 structure def ProfilesListing {

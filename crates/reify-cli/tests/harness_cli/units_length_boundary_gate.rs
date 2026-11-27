@@ -502,21 +502,20 @@ fn check_and_eval_agree_on_a_bare_primitive_dimension() {
     }
 }
 
-/// §6 row 9b — the arity-6 `linear_pattern_2d` site is resolved as an ARITY error, and
-/// was deliberately NOT given an arity-6 LENGTH slot.
+/// §6 row 9b — the arity-6 `linear_pattern_2d` site is resolved as an ARITY error that
+/// names the 7-arg Direction form (direction-typing ι-c).
 ///
 /// §6 left this row open ("resolved either way"); the decompose-time correction settled
-/// it as the malformed-fixture branch, so the row's postcondition is a PAIR: the arity
-/// diagnostic is present AND no spacing slot was minted at that arity. Asserting only the
-/// arity message would stay green if someone later added the slot, which is the outcome
-/// the row exists to rule out — an arity-6 call has `count2` at index 5, so a slot there
-/// would emit a FALSE units rejection on valid code (the reason
-/// `builtin_signatures.rs` guards the slots with `arg_count == 11`).
+/// it as the malformed-fixture branch: the call exits nonzero and teaches the form it
+/// should have been. That no slot ever lands on a COUNT — `count2` sits at index 5 of
+/// the 7-arg form, an Int a LENGTH slot would falsely reject — is pinned at every arity
+/// by `builtin_signatures.rs`'s
+/// `linear_pattern_2d_slots_directions_and_spacings_but_never_its_counts`.
 ///
 /// Compile-layer twin:
 /// `harness_compilation_surface/compile_api_tests.rs::compile_linear_pattern_2d_wrong_arity_produces_diagnostic`.
 #[test]
-fn the_arity_6_linear_pattern_2d_site_is_an_arity_error_not_a_length_slot() {
+fn the_arity_6_linear_pattern_2d_site_is_an_arity_error_naming_the_7_arg_form() {
     let (status, stdout, stderr) = RiSource {
         stem: "arity_6_linear_pattern_2d",
         source: r#"module arity_6_linear_pattern_2d
@@ -534,17 +533,14 @@ structure def S {
         !status.success(),
         "an arity-6 linear_pattern_2d call must exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
     );
+    let expected = "linear_pattern_2d() expects 7 arguments: \
+                    linear_pattern_2d(geo, dir(x, y, z), count1, spacing1, \
+                    dir(x, y, z), count2, spacing2), got 6";
     assert!(
-        stderr.contains("linear_pattern_2d() expects 11 arguments, got 6"),
-        "the site must resolve as an ARITY error; got: {stderr}"
+        stderr.contains(expected),
+        "the site must resolve as an ARITY error naming the 7-arg form {expected:?}; \
+         got: {stderr}"
     );
-    for slot in ["spacing1", "spacing2"] {
-        assert!(
-            !stderr.contains(slot),
-            "no `{slot}` LENGTH slot exists at arity 6 — index 5 is `count2` there, so a \
-             slot would emit a FALSE units rejection on valid code; got: {stderr}"
-        );
-    }
 }
 
 /// One row of the §6-18 table: a pattern source whose LENGTH argument is left `Undef`, the
@@ -576,7 +572,7 @@ fn pattern_undef_length_arg_names_the_builtin_the_author_typed() {
 structure def S {
     param s : Length
     let b = box(10mm, 10mm, 10mm)
-    let p = linear_pattern(b, 1, 0, 0, 3, s)
+    let p = linear_pattern(b, dir(1, 0, 0), 3, s)
     param geometry : Solid = p
 }
 "#,
@@ -593,7 +589,7 @@ structure def S {
 structure def S {
     param s : Length
     let b = box(10mm, 10mm, 10mm)
-    let p = linear_pattern_2d(b, 1, 0, 0, 3, s, 0, 1, 0, 3, 20mm)
+    let p = linear_pattern_2d(b, dir(1, 0, 0), 3, s, dir(0, 1, 0), 3, 20mm)
     param geometry : Solid = p
 }
 "#,
@@ -610,12 +606,15 @@ structure def S {
 structure def S {
     param o : Length
     let b = box(10mm, 10mm, 10mm)
-    let p = circular_pattern(b, o, 0mm, 0mm, 0, 0, 1, 6, 60deg)
+    let p = circular_pattern(b, axis_z(point3(o, 0mm, 0mm)), 6, 60deg)
     param geometry : Solid = p
 }
 "#,
             },
-            unresolved_arg: "ox",
+            // The unresolved origin leaves `point3(..)` Undef, so the whole
+            // Axis arrives unresolved and is named as `axis` (measured; the
+            // retired 9-arg form named `ox`).
+            unresolved_arg: "axis",
             builtin: "circular_pattern",
             retired_nickname: "for circular ",
         },

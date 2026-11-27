@@ -13967,7 +13967,7 @@ fn get_entity_tree_consumed_realizations_default_visible_false() {
 
     let body = cylinder(60mm, 12mm)
     let hole = translate(cylinder(4mm, 12mm), 45mm, 0mm, 0mm)
-    let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 8, 360deg)
+    let holes = circular_pattern(hole, axis_z(point3(0mm, 0mm, 0mm)), 8, 360deg)
     param geometry : Solid = difference(body, holes)
 }"#;
     let mut session = make_session();

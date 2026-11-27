@@ -284,44 +284,6 @@ fn dimensioned_profile_radius_builds_clean() {
 }
 
 // ---------------------------------------------------------------------------
-// Row 5 — the slice boundary: half_space's normal stays dimensionless
-// ---------------------------------------------------------------------------
-
-/// LOAD-BEARING NEGATIVE ASSERTION. `half_space`'s `(px, py, pz)` is a point
-/// (length-semantic, gated) but `(nx, ny, nz)` is a dimensionless unit NORMAL
-/// and must STILL accept bare numbers.
-///
-/// This is the exact shape of the shipped `examples/half_space.ri`. Without
-/// this row, an over-broad gate that also caught the direction triple would
-/// pass every positive test in this file while breaking the corpus — a
-/// negative-space assertion is the only thing that can catch over-reach.
-#[test]
-fn half_space_bare_normal_still_builds_with_a_dimensioned_point() {
-    let (diagnostics, ops) = build_capturing_ops(
-        r#"
-        structure def HalfSpaceMixed {
-            let body = half_space(0mm, 0mm, 0mm, 0, 0, 1)
-        }
-        "#,
-    );
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "half_space's DIRECTION triple is a dimensionless unit vector and must \
-         still accept bare numbers — gating it would break examples/half_space.ri; \
-         got: {errors:?}"
-    );
-    assert!(
-        ops.iter()
-            .any(|op| matches!(op, GeometryOp::HalfSpace { .. })),
-        "the half_space op must reach the kernel; got: {ops:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // The desugaring regression battery — the highest-risk item in this leaf
 // ---------------------------------------------------------------------------
 

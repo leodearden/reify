@@ -19,13 +19,13 @@
 //   - `linear_pattern` / `linear_pattern_2d` SPACING slots are ALSO checked at
 //     COMPILE time since task 5652 — a bare number there is a hard
 //     ArgTypeMismatch at `reify check`.
-//   - `circular_pattern` / `mirror` ORIGIN triples (`ox`/`oy`/`oz`) gained a
-//     compile-time slot too, in task 5662 — but ONLY at the scalar arities
-//     `circular_pattern(…, 9 args)` and `mirror(…, 7 args)`. The decoded-VALUE
-//     forms `mirror(g, plane_xy(0mm))` and `circular_pattern(g, axis_z(…), n, a)`
-//     stay slot-free by construction, because a composite `Value` never passes
-//     through a positional argument index for the slot table to key on; a bare
-//     number inside one of those producers is caught only at EVAL.
+//   - `circular_pattern` / `mirror` ORIGINS have NO compile-time slot: they
+//     arrive as a decoded value — `circular_pattern(g, axis_z(…), n, a)`,
+//     `mirror(g, plane_xy(0mm))`, `mirror(g, point3(…), dir(…))` — which never
+//     passes through a positional argument index for the slot table to key on,
+//     so a bare number inside one of those producers is caught only at EVAL.
+//     (Task 5662's compile slots on the scalar `ox`/`oy`/`oz` triples went with
+//     those forms, retired by direction-typing ι-a and ι-c.)
 //   - `arbitrary_pattern` offsets (used by PatternComposed below) still have NO
 //     compile-time slot at all, so a bare number there is caught only by the
 //     EVAL-layer gate.
@@ -53,12 +53,12 @@ structure def BaseElement {
 
 // ── 2. PatternRow ─────────────────────────────────────────────────────────────
 // 1D linear pattern: 5 instances along X, 1 instance along Y (degenerate row).
-// linear_pattern_2d(target, dx1,dy1,dz1, count1, spacing1, dx2,dy2,dz2, count2, spacing2)
+// linear_pattern_2d(target, direction1, count1, spacing1, direction2, count2, spacing2)
 
 structure def PatternRow {
     param w : Length = 10mm
 
-    let row = linear_pattern_2d(w, 1, 0, 0, 5, 20mm, 0, 1, 0, 1, 0mm)
+    let row = linear_pattern_2d(w, dir(1, 0, 0), 5, 20mm, dir(0, 1, 0), 1, 0mm)
 }
 
 // ── 3. PatternCountZero ───────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ structure def PatternRow {
 structure def PatternCountZero {
     param w : Length = 10mm
 
-    let empty_pattern = linear_pattern_2d(w, 1, 0, 0, 0, 20mm, 0, 1, 0, 0, 20mm)
+    let empty_pattern = linear_pattern_2d(w, dir(1, 0, 0), 0, 20mm, dir(0, 1, 0), 0, 20mm)
 }
 
 // ── 4. PatternCountOne ────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ structure def PatternCountZero {
 structure def PatternCountOne {
     param w : Length = 10mm
 
-    let single_pattern = linear_pattern_2d(w, 1, 0, 0, 1, 20mm, 0, 1, 0, 1, 20mm)
+    let single_pattern = linear_pattern_2d(w, dir(1, 0, 0), 1, 20mm, dir(0, 1, 0), 1, 20mm)
 }
 
 // ── 5. PatternGrid10x10 ───────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ structure def PatternCountOne {
 structure def PatternGrid10x10 {
     param w : Length = 10mm
 
-    let grid = linear_pattern_2d(w, 1, 0, 0, 10, 20mm, 0, 1, 0, 10, 20mm)
+    let grid = linear_pattern_2d(w, dir(1, 0, 0), 10, 20mm, dir(0, 1, 0), 10, 20mm)
 }
 
 // ── 6. PatternComposed ────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ structure def PatternGrid10x10 {
 structure def PatternComposed {
     param w : Length = 10mm
 
-    let linear  = linear_pattern_2d(w, 1, 0, 0, 3, 20mm, 0, 1, 0, 3, 20mm)
+    let linear  = linear_pattern_2d(w, dir(1, 0, 0), 3, 20mm, dir(0, 1, 0), 3, 20mm)
     let shifted = arbitrary_pattern(w, 10mm, 0mm, 0mm, 0mm, 20mm, 0mm)
 }
 

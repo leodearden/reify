@@ -279,7 +279,7 @@ fn geometry_let_in_scope_for_subsequent_let() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let pattern = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)
+    let pattern = circular_pattern(hole, axis_z(point3(0mm, 0mm, 0mm)), 6, 360deg)
 }"#;
     let compiled = compile_source(source);
     let errors: Vec<_> = compiled
@@ -718,7 +718,7 @@ fn multiple_geometry_lets_all_produce_realizations() {
     param r: Length = 5mm
     param h: Length = 10mm
     let base = cylinder(r, h)
-    let pattern = circular_pattern(base, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)
+    let pattern = circular_pattern(base, axis_z(point3(0mm, 0mm, 0mm)), 6, 360deg)
     let mirrored = mirror(base, point3(0mm, 0mm, 0mm), dir(0, 1, 0))
 }"#;
     let compiled = parse_and_compile(source);
@@ -832,7 +832,7 @@ fn circular_pattern_let_bound_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)
+    let result = circular_pattern(hole, axis_z(point3(0mm, 0mm, 0mm)), 6, 360deg)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];
@@ -849,7 +849,7 @@ fn linear_pattern_let_bound_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = linear_pattern(hole, 1, 0, 0, 3, 10mm)
+    let result = linear_pattern(hole, dir(1, 0, 0), 3, 10mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];

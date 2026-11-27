@@ -1989,35 +1989,40 @@ fn compile_geometry_call_inner(
                 ],
             }])
         }
-        // half_space(px, py, pz, nx, ny, nz)
-        // Point on the boundary plane (px,py,pz) + outward normal (nx,ny,nz) toward
-        // the retained material side. Unbounded (Bounded=false) — first Bounded=false producer.
+        // half_space(origin, normal)
+        // A Point3 `origin` on the boundary plane and the outward Direction
+        // `normal` toward the retained material side (direction-typing ι-c).
+        // Unbounded (Bounded=false) — first Bounded=false producer.
         "half_space" => {
-            if !check_arg_count_exact("half_space", compiled_args.len(), 6, expr.span, diagnostics)
-            {
+            if !check_arg_count_exact_form(
+                "half_space",
+                compiled_args.len(),
+                2,
+                "point3(x, y, z), dir(x, y, z)",
+                expr.span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
             Some(vec![CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::HalfSpace,
                 args: vec![
-                    ("px".to_string(), it.next().unwrap()),
-                    ("py".to_string(), it.next().unwrap()),
-                    ("pz".to_string(), it.next().unwrap()),
-                    ("nx".to_string(), it.next().unwrap()),
-                    ("ny".to_string(), it.next().unwrap()),
-                    ("nz".to_string(), it.next().unwrap()),
+                    ("origin".to_string(), it.next().unwrap()),
+                    ("normal".to_string(), it.next().unwrap()),
                 ],
             }])
         }
 
         // --- Patterns ---
-        // linear_pattern(target, dx, dy, dz, count, spacing)
+        // linear_pattern(target, direction, count, spacing): a Direction
+        // `direction` and a Length `spacing` (direction-typing ι-c).
         "linear_pattern" => {
-            if !check_arg_count_exact(
+            if !check_arg_count_exact_form(
                 "linear_pattern",
                 compiled_args.len(),
-                6,
+                4,
+                "geo, dir(x, y, z), count, spacing",
                 expr.span,
                 diagnostics,
             ) {
@@ -2030,9 +2035,7 @@ fn compile_geometry_call_inner(
                 target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
-                    ("dx".to_string(), it.next().unwrap()),
-                    ("dy".to_string(), it.next().unwrap()),
-                    ("dz".to_string(), it.next().unwrap()),
+                    ("direction".to_string(), it.next().unwrap()),
                     ("count".to_string(), it.next().unwrap()),
                     ("spacing".to_string(), it.next().unwrap()),
                 ],
@@ -2040,56 +2043,33 @@ fn compile_geometry_call_inner(
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
-        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle) — scalar form (9 args)
-        // circular_pattern(target, axis_value, count, angle)              — value form  (4 args)
+        // circular_pattern(target, axis, count, angle): an `Axis` value and an
+        // Angle, the only form since direction-typing ι-c.
         "circular_pattern" => {
-            let n = compiled_args.len();
-            if n == 9 {
-                let mut it = compiled_args.into_iter();
-                let target = geom_ref(0);
-                let op = CompiledGeometryOp::Pattern {
-                    kind: PatternKind::Circular,
-                    target,
-                    args: vec![
-                        ("target".to_string(), it.next().unwrap()),
-                        ("ox".to_string(), it.next().unwrap()),
-                        ("oy".to_string(), it.next().unwrap()),
-                        ("oz".to_string(), it.next().unwrap()),
-                        ("ax".to_string(), it.next().unwrap()),
-                        ("ay".to_string(), it.next().unwrap()),
-                        ("az".to_string(), it.next().unwrap()),
-                        ("count".to_string(), it.next().unwrap()),
-                        ("angle".to_string(), it.next().unwrap()),
-                    ],
-                };
-                sub_ops.push(op);
-                Some(sub_ops)
-            } else if n == 4 {
-                let mut it = compiled_args.into_iter();
-                let target = geom_ref(0);
-                let op = CompiledGeometryOp::Pattern {
-                    kind: PatternKind::Circular,
-                    target,
-                    args: vec![
-                        ("target".to_string(), it.next().unwrap()),
-                        ("axis".to_string(), it.next().unwrap()),
-                        ("count".to_string(), it.next().unwrap()),
-                        ("angle".to_string(), it.next().unwrap()),
-                    ],
-                };
-                sub_ops.push(op);
-                Some(sub_ops)
-            } else {
-                push_labeled_arg_count_error(
-                    format!(
-                        "circular_pattern() expects 9 arguments (scalar) or 4 (axis-value), got {n}"
-                    ),
-                    expr.span,
-                    diagnostics,
-                );
-                None
+            if !check_arg_count_exact_form(
+                "circular_pattern",
+                compiled_args.len(),
+                4,
+                "geo, axis, count, angle",
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
             }
+            let mut it = compiled_args.into_iter();
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Pattern {
+                kind: PatternKind::Circular,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("axis".to_string(), it.next().unwrap()),
+                    ("count".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // mirror(target, origin, normal)  — Direction form (3 args)
         // mirror(target, plane_value)     — value form     (2 args)
@@ -2134,12 +2114,14 @@ fn compile_geometry_call_inner(
                 None
             }
         }
-        // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1, dx2, dy2, dz2, count2, spacing2)
+        // linear_pattern_2d(target, direction1, count1, spacing1, direction2, count2,
+        // spacing2): Direction directions and Length spacings (direction-typing ι-c).
         "linear_pattern_2d" => {
-            if !check_arg_count_exact(
+            if !check_arg_count_exact_form(
                 "linear_pattern_2d",
                 compiled_args.len(),
-                11,
+                7,
+                "geo, dir(x, y, z), count1, spacing1, dir(x, y, z), count2, spacing2",
                 expr.span,
                 diagnostics,
             ) {
@@ -2152,14 +2134,10 @@ fn compile_geometry_call_inner(
                 target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
-                    ("dx1".to_string(), it.next().unwrap()),
-                    ("dy1".to_string(), it.next().unwrap()),
-                    ("dz1".to_string(), it.next().unwrap()),
+                    ("direction1".to_string(), it.next().unwrap()),
                     ("count1".to_string(), it.next().unwrap()),
                     ("spacing1".to_string(), it.next().unwrap()),
-                    ("dx2".to_string(), it.next().unwrap()),
-                    ("dy2".to_string(), it.next().unwrap()),
-                    ("dz2".to_string(), it.next().unwrap()),
+                    ("direction2".to_string(), it.next().unwrap()),
                     ("count2".to_string(), it.next().unwrap()),
                     ("spacing2".to_string(), it.next().unwrap()),
                 ],

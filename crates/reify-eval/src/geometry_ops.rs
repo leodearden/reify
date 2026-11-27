@@ -587,7 +587,7 @@ pub(crate) fn optional_length_value(
 /// spacing slots (`LinearPattern`/`LinearPattern2D`), since task 5743 the
 /// primitive and profile dimensions (`Box` size_x/size_y/size_z, `Cylinder`
 /// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
-/// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`), and since task
+/// `Rectangle`, `Circle`, `Ellipse`), and since task
 /// 5744 the modify + sweep MAGNITUDES (`Fillet` radius, `Chamfer` distance,
 /// `ChamferAsymmetric` `d1`/`d2`, `Shell` thickness, `Thicken` offset,
 /// `ZoneSlab` width, `OffsetSolid`/`OffsetCurve` distance, `Extrude`/
@@ -788,12 +788,12 @@ fn required_angle_value(
 /// first-error-wins policy.
 ///
 /// Why `arc` needs it (reviewer amendment):
-/// `arc(0mm, 0mm, 0mm, 10mm, 0, 90, 0, 0, 1)` is written as ONE gesture, so an
-/// author who forgot the units on `start_angle` forgot them on `end_angle` too.
-/// `?`-chaining two [`required_angle_arg`] calls would hand back one slot name
-/// per rebuild — two edit-build cycles for one mistake — and would be
-/// inconsistent with the LENGTH group `arc` already reads its centre and radius
-/// through, twelve lines above its angles.
+/// `arc(point3(0mm, 0mm, 0mm), 10mm, 0, 90, dir(0, 0, 1))` is written as ONE
+/// gesture, so an author who forgot the units on `start_angle` forgot them on
+/// `end_angle` too. `?`-chaining two [`required_angle_arg`] calls would hand
+/// back one slot name per rebuild — two edit-build cycles for one mistake — and
+/// would be inconsistent with `arc` reading its centre and radius before
+/// either `?`.
 fn required_angle_args<const N: usize>(
     names: [&str; N],
     kind_label: impl std::fmt::Display + Copy,
@@ -860,18 +860,13 @@ fn required_length_values<const N: usize>(
 /// Read a GROUP of length-semantic arguments of a scalar-form geometry builtin
 /// as LENGTHs, in the given name order, diagnosing EVERY failing member.
 ///
-/// A point in space (an origin `ox`/`oy`/`oz`, a boundary point `px`/`py`/`pz`,
-/// a curve endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
-/// (`dx`/`dy`/`dz`) and an independent length group (`helix`'s
-/// `radius`/`pitch`/`height`) are alike length-semantic in every member, so
-/// each must be a finite LENGTH `Scalar`: a bare/dimensionless member would be
-/// silently read as SI **metres** by `Value::as_f64` (the `12` vs `12mm` 1000×
-/// hazard). The co-located DIRECTION triple (`ax`/`ay`/`az`, `nx`/`ny`/`nz`) is
-/// a dimensionless unit vector and deliberately stays on the bare-accepting
-/// `eval_named_arg_f64` path — callers that have one keep their own `f64_arg`
-/// closure for it. Callers whose every argument is gated drop that closure.
-/// Which positions are routed here is enumerated ONCE, in the `arg_acceptance`
-/// module doc.
+/// A curve endpoint (`line_segment`'s `x1`/`y1`/`z1`), a displacement
+/// (`translate`'s `dx`/`dy`/`dz`, `arbitrary_pattern`'s offset triples) and an
+/// independent length group (`helix`'s `radius`/`pitch`/`height`) are alike
+/// length-semantic in every member, so each must be a finite LENGTH `Scalar`: a
+/// bare/dimensionless member would be silently read as SI **metres** by
+/// `Value::as_f64` (the `12` vs `12mm` 1000× hazard). Which positions are
+/// routed here is enumerated ONCE, in the `arg_acceptance` module doc.
 ///
 /// ALL FAILURES AT ONCE (reviewer amendment, task 5623) comes from
 /// [`required_args_with`], which owns that policy for every gated dimension:
@@ -886,9 +881,8 @@ fn required_length_values<const N: usize>(
 ///
 /// BORROW ORDERING (the reason this is a free function and not a closure):
 /// each call takes `&mut diagnostics`, so the whole group must be read BEFORE
-/// the caller declares its `f64_arg` closure — the closure captures
-/// `diagnostics` mutably for its own lifetime, and an interleaved read would
-/// overlap that borrow. Calling this helper first satisfies that ordering by
+/// the caller declares any closure that captures `diagnostics` mutably for its
+/// own lifetime, since an interleaved read would overlap that borrow. Calling this helper first satisfies that ordering by
 /// construction instead of by convention at each call site.
 fn required_length_args<const N: usize>(
     names: [&str; N],
@@ -910,29 +904,6 @@ fn required_length_args<const N: usize>(
             diagnostics,
         )
     })
-}
-
-/// [`required_length_args`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
-/// the name used by `pattern_circular` (task 5350). `pattern_mirror` (task
-/// 5214) and `sweep_revolve` (task 5623) read it too until direction-typing ι-a
-/// and ι-b moved their origins to one `Point3` (`required_length_point3_arg`).
-fn required_length_origin3(
-    kind_label: impl std::fmt::Display + Copy,
-    args: &[(String, reify_ir::CompiledExpr)],
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    meta_map: &HashMap<String, HashMap<String, String>>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Result<[f64; 3], String> {
-    required_length_args(
-        ["ox", "oy", "oz"],
-        kind_label,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )
 }
 
 /// Evaluate every positional arg of a variadic builtin to a `Value`, in arg
@@ -1210,7 +1181,7 @@ fn accept_variadic_length_args(
 /// unwrapped, and each decoder prefixes only its own non-units messages with the
 /// label it is given. [`pattern_mirror`] and [`pattern_circular`] both pass
 /// `kind`, whose `Display` is the builtin the author typed, so each value form
-/// reads exactly like its scalar branch.
+/// names that builtin as the builtin's other reads do.
 ///
 /// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
 /// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
@@ -1770,6 +1741,33 @@ fn validate_pattern_count(
     Ok(raw as usize)
 }
 
+/// Read a REQUIRED pattern-count named argument (`count`, `count1`, `count2`)
+/// and validate it through [`validate_pattern_count`].
+///
+/// Absent, non-numeric and non-finite values are diagnosed by
+/// [`eval_named_arg_f64`]; the `Err` names the argument and the pattern kind.
+fn required_pattern_count(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<usize, String> {
+    let raw = eval_named_arg_f64(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing or non-finite argument '{name}' for {kind_label}"))?;
+    validate_pattern_count(raw, name, kind_label, diagnostics)
+}
+
 /// Read a GROUP of PROFILE DIMENSION slots — a rectangle's `width`/`height`, a
 /// circle's `radius`, an ellipse's `semi_major`/`semi_minor` — and require each
 /// to be POSITIVE.
@@ -1885,8 +1883,8 @@ fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display)
 ///   [`accept_length_point3`], the decoded-value route into the Contract C
 ///   chokepoint. Its components must be LENGTH-dimensioned `Scalar`s; a bare
 ///   `Real`/`Int` or a wrong-dimension `Scalar` is rejected under the names
-///   `ox`/`oy`/`oz`, which [`decode_axis`] and `circular_pattern`'s scalar
-///   origin also use, in the SAME `ArgRejection::message` wording. Until δ
+///   `ox`/`oy`/`oz`, which [`decode_axis`] also uses, in the SAME
+///   `ArgRejection::message` wording. Until δ
 ///   this route BYPASSED that gate entirely: `mirror(b, plane_yz(10))` reached
 ///   the kernel as a 10 SI-**metre** plane offset with zero diagnostics while
 ///   its then-current scalar sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was
@@ -1971,15 +1969,17 @@ pub(crate) fn decode_plane(
 /// through the same helpers (task 5745):
 ///
 /// - the ORIGIN is a POINT IN SPACE, LENGTH-gated through
-///   [`accept_length_point3`] under the `ox`/`oy`/`oz` names the SCALAR form of
-///   `circular_pattern` has used since task 5350. Until δ this route bypassed
-///   that gate: `circular_pattern(b, axis_z(point3(12, 0, 0)), …)` placed the
+///   [`accept_length_point3`] under the `ox`/`oy`/`oz` names the retired
+///   SCALAR form of `circular_pattern` used from task 5350 until
+///   direction-typing ι-c made this Axis route its only one. Until δ this route
+///   bypassed that gate: `circular_pattern(b, axis_z(point3(12, 0, 0)), …)` placed the
 ///   rotation axis 12 SI **metres** out with zero diagnostics — 1000× a
 ///   plausible 12 mm offset, and the scalar form's headline defect arriving
 ///   through a different door;
 /// - the DIRECTION is a `Value::Direction`, read through
 ///   [`reify_ir::decode_direction`] (ε, task 9638): dimensionless by type and
-///   unit by construction, matching the scalar form's un-gated `ax`/`ay`/`az`.
+///   unit by construction, as the retired scalar form's un-gated `ax`/`ay`/`az`
+///   were.
 ///   D3 adversary finding, 2026-07-28, BINDING.
 ///
 /// # Returns
@@ -3037,43 +3037,36 @@ fn prim_half_space(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // `half_space` is the ONE primitive whose args are split across the units
-    // boundary, so it is the ONE primitive that reads its args through two
-    // different paths.
-    //
-    // `(px, py, pz)` is a point on the boundary plane — length-semantic, and
-    // gated: a bare component would be read as SI METRES by `Value::as_f64`
-    // (the `12` vs `12mm` 1000× hazard). `(nx, ny, nz)` is the outward unit
-    // NORMAL — a dimensionless direction, which stays on the bare-accepting
-    // `eval_named_arg` path. That is the same split already documented at
-    // `required_length_origin3` for the co-located `ax`/`ay`/`az` and
-    // `nx`/`ny`/`nz` triples, and `examples/half_space.ri` depends on it:
-    // `half_space(0mm, 0mm, 0mm, 0, 0, 1)`.
-    //
-    // The point triple goes through the GROUP reader, so it inherits
-    // all-failures-at-once, `Unresolved`-beats-`Invalid` precedence and the
-    // borrow ordering the group readers document (see `required_length_args`),
-    // rather than restating any of them here.
-    let [px, py, pz] = required_length_values(
-        ["px", "py", "pz"],
+    // Both are read before either `?`, so a bad normal and a bare origin are
+    // reported in one build.
+    let origin = required_length_point3_arg(
+        "origin",
+        ["origin.x", "origin.y", "origin.z"],
         kind,
         args,
         values,
         functions,
         meta_map,
         diagnostics,
-    )?;
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    );
+    let normal = required_direction_arg(
+        "normal",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
+    let [px, py, pz] = origin?.map(reify_ir::Value::length);
+    let [nx, ny, nz] = normal?.components().map(reify_ir::Value::Real);
     Ok(reify_ir::GeometryOp::HalfSpace {
         px,
         py,
         pz,
-        nx: eval_arg("nx")?,
-        ny: eval_arg("ny")?,
-        nz: eval_arg("nz")?,
+        nx,
+        ny,
+        nz,
     })
 }
 
@@ -4041,23 +4034,27 @@ fn pattern_linear(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
-    let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
-    let count_raw = f64_arg("count")?;
-    let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+    // Every argument is read before any `?`, so a bad direction, a bad count
+    // and a bare spacing are all reported in one build.
+    let direction = required_direction_arg(
+        "direction",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|unit| unit.components());
+    let count = required_pattern_count(
+        "count",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
     // LENGTH-required: reject a bare/dimensionless spacing (op dropped) rather
     // than silently reading it as SI metres; re-wrap as a LENGTH Scalar so the
     // IR/kernel spacing representation is unchanged.
@@ -4069,12 +4066,12 @@ fn pattern_linear(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    );
     Ok(reify_ir::GeometryOp::LinearPattern {
         target: target_id,
-        direction,
-        count,
-        spacing,
+        direction: direction?,
+        count: count?,
+        spacing: spacing?,
     })
 }
 
@@ -4087,96 +4084,42 @@ fn pattern_circular(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    if args.iter().any(|(n, _)| n == "axis") {
-        let axis_val = eval_named_arg(
-            "axis",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)?;
-        let count_raw = eval_named_arg_f64(
-            "count",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument 'count' for {}", kind)
-        })?;
-        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        // TASK #1763 REVERSED HERE: a bare `circular_pattern` angle no longer
-        // means DEGREES, and the shared resolver that converted it (with a
-        // code-less deprecation Warning) is gone. #1763 was decided
-        // per-builtin; the case for settling it across the whole surface
-        // instead is docs/prds/v0_6/angle-units-surface-convergence.md §3.10.
-        // Do not re-derive #1763 from this one call site and restore it.
-        let angle = required_angle_value(
-            "angle",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )?;
-        Ok(reify_ir::GeometryOp::CircularPattern {
-            target: target_id,
-            axis_origin,
-            axis_dir,
-            count,
-            angle,
-        })
-    } else {
-        // The axis ORIGIN is length-semantic; see `required_length_origin3` for
-        // the units rationale AND for why it must be read before `f64_arg`.
-        let axis_origin =
-            required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
-        // The axis DIRECTION is a dimensionless unit vector — stays bare f64.
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-        };
-        let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
-        let count_raw = f64_arg("count")?;
-        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        // The scalar-axis sibling of the value-axis form above: same gate and
-        // same task-#1763 reversal, whose rationale is recorded there in full
-        // rather than copied here.
-        let angle = required_angle_value(
-            "angle",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )?;
-        Ok(reify_ir::GeometryOp::CircularPattern {
-            target: target_id,
-            axis_origin,
-            axis_dir,
-            count,
-            angle,
-        })
-    }
+    // Every argument is read before any `?`, so a bad axis, a bad count and a
+    // bare angle are all reported in one build.
+    let axis = required_resolved_arg("axis", kind, args, values, functions, meta_map, diagnostics)
+        .and_then(|axis_val| decode_axis(&axis_val, kind, diagnostics));
+    let count = required_pattern_count(
+        "count",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
+    // TASK #1763 REVERSED HERE: a bare `circular_pattern` angle no longer
+    // means DEGREES, and the shared resolver that converted it (with a
+    // code-less deprecation Warning) is gone. #1763 was decided
+    // per-builtin; the case for settling it across the whole surface
+    // instead is docs/prds/v0_6/angle-units-surface-convergence.md §3.10.
+    // Do not re-derive #1763 from this one call site and restore it.
+    let angle = required_angle_value(
+        "angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
+    let (axis_origin, axis_dir) = axis?;
+    Ok(reify_ir::GeometryOp::CircularPattern {
+        target: target_id,
+        axis_origin,
+        axis_dir,
+        count: count?,
+        angle: angle?,
+    })
 }
 
 fn pattern_mirror(
@@ -4245,26 +4188,30 @@ fn pattern_linear2d(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
-    let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
-    let count1_raw = f64_arg("count1")?;
-    let count1 = validate_pattern_count(count1_raw, "count1", kind, diagnostics)?;
-    // LENGTH-required: a bare/dimensionless spacing1 is rejected (op dropped)
-    // instead of silently read as SI metres. Re-wrap the validated SI value as
-    // a LENGTH Scalar so the IR/kernel spacing representation is unchanged.
+    // Every argument is read, in source order, before any `?`, so every bad
+    // direction, count and bare spacing is reported in one build.
+    let direction1 = required_direction_arg(
+        "direction1",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|unit| unit.components());
+    let count1 = required_pattern_count(
+        "count1",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
+    // LENGTH-required: a bare/dimensionless spacing is rejected (op dropped)
+    // instead of silently read as SI metres; the IR/kernel spacing
+    // representation is unchanged.
     let spacing1 = required_length_value(
         "spacing1",
         kind,
@@ -4273,24 +4220,26 @@ fn pattern_linear2d(
         functions,
         meta_map,
         diagnostics,
-    )?;
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
-    let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
-    let count2_raw = f64_arg("count2")?;
-    let count2 = validate_pattern_count(count2_raw, "count2", kind, diagnostics)?;
+    );
+    let direction2 = required_direction_arg(
+        "direction2",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|unit| unit.components());
+    let count2 = required_pattern_count(
+        "count2",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
     let spacing2 = required_length_value(
         "spacing2",
         kind,
@@ -4299,15 +4248,15 @@ fn pattern_linear2d(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    );
     Ok(reify_ir::GeometryOp::LinearPattern2D {
         target: target_id,
-        direction1,
-        count1,
-        spacing1,
-        direction2,
-        count2,
-        spacing2,
+        direction1: direction1?,
+        count1: count1?,
+        spacing1: spacing1?,
+        direction2: direction2?,
+        count2: count2?,
+        spacing2: spacing2?,
     })
 }
 
@@ -4908,34 +4857,28 @@ fn curve_arc(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // The centre is a point in space and the radius is a length, so all four
-    // are gated (task 5623's R1 sweep) — as ONE group, so a bare centre still
-    // reports the bare radius alongside it. They are read BEFORE the `f64_arg`
-    // closure is declared — the borrow-ordering contract on
-    // `required_length_args` makes that mandatory, and it preserves the
-    // pre-existing read order exactly (centre and radius were already first).
-    //
-    // What stays BARE is a deliberate triage decision, not an omission:
-    // `start_angle`/`end_angle` are angles (PRD 3's scope — gated by #5779)
-    // and `ax`/`ay`/`az` are a dimensionless unit vector.
-    let [cx, cy, cz, radius] = required_length_args(
-        ["cx", "cy", "cz", "radius"],
+    // Every argument is read before any `?`, so a bare centre, a bare radius
+    // and a bare angle are all reported in one build.
+    let center = required_length_point3_arg(
+        "center",
+        ["center.x", "center.y", "center.z"],
         kind,
         args,
         values,
         functions,
         meta_map,
         diagnostics,
-    )?;
-    let center = [cx, cy, cz];
-    // Both ANGLES are gated (PRD 3 leaf γ) and read FIRST, which is also their
-    // existing source order — so the diagnostic order is unchanged. They go
-    // through the GROUP reader for the same reason the centre and radius above
-    // do: `arc` is the one builtin with two angle slots, they are written as
-    // one gesture, and a bare `start_angle` is almost always beside a bare
-    // `end_angle`. The axis DIRECTION stays bare (C1 inv. 4) behind a scoped
-    // closure.
-    let [start_angle, end_angle] = required_angle_args(
+    );
+    let radius = required_length_arg(
+        "radius",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
+    let angles = required_angle_args(
         ["start_angle", "end_angle"],
         kind,
         args,
@@ -4943,30 +4886,26 @@ fn curve_arc(
         functions,
         meta_map,
         diagnostics,
-    )?;
-    let axis = {
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-        };
-        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
-    };
+    );
+    let normal = required_direction_arg(
+        "normal",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|unit| unit.components());
+    let center = center?;
+    let radius = radius?;
+    let [start_angle, end_angle] = angles?;
     Ok(reify_ir::GeometryOp::Arc {
         center,
         radius,
         start_angle,
         end_angle,
-        axis,
+        axis: normal?,
     })
 }
 

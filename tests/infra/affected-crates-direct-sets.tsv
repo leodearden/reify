@@ -4695,7 +4695,6 @@ tests/prd-gate/fixtures/ivf_override_violates_constraint.ri	ALL
 tests/prd-gate/fixtures/jacobian_column_members.ri	ALL
 tests/prd-gate/fixtures/joint_constrained_dof_compliance.ri	ALL
 tests/prd-gate/fixtures/kernel_interface_boolean_stl_export.ri	ALL
-tests/prd-gate/fixtures/kernel_interface_halfspace_nonnumeric_normal.ri	ALL
 tests/prd-gate/fixtures/kernel_interface_pattern_dimensioned_count.ri	ALL
 tests/prd-gate/fixtures/kernel_interface_query_reply_oracle.ri	ALL
 tests/prd-gate/fixtures/kernel_interface_scale_dimensioned_factor.ri	ALL

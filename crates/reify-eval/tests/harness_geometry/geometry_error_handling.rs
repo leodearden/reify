@@ -2363,20 +2363,25 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
             ("size_z".into(), mm_literal(5.0)),
         ],
     };
-    // Circular pattern with full ox/oy/oz/ax/ay/az/angle but no `count`.
-    // The axis ORIGIN must be a dimensioned Length (task 5350): with a bare
-    // origin the Length gate short-circuits FIRST and masks the missing-`count`
-    // condition this test exercises. The axis DIRECTION stays bare.
+    // Circular pattern with a valid `axis` and `angle` but no `count`.
     let circular_op = CompiledGeometryOp::Pattern {
         kind: PatternKind::Circular,
         target: GeomRef::Step(0),
         args: vec![
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)),
+            (
+                "axis".into(),
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Axis {
+                        origin: Box::new(reify_ir::Value::Point(vec![
+                            reify_ir::Value::length(0.0),
+                            reify_ir::Value::length(0.0),
+                            reify_ir::Value::length(0.0),
+                        ])),
+                        direction: Box::new(reify_test_support::direction_val(0.0, 0.0, 1.0)),
+                    },
+                    reify_core::Type::dimensionless_scalar(),
+                ),
+            ),
             ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
             // count deliberately omitted
         ],
@@ -2409,9 +2414,8 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
     );
 }
 
-/// Circular pattern dispatch rejects a missing `ax` (first axis-direction
-/// component) at compile time. `ax` is read after ox/oy/oz; this exercises
-/// the Circular arm after the origin components already resolved.
+/// Circular pattern dispatch rejects a missing `axis` at compile time, with a
+/// valid `count` and `angle` beside it.
 #[test]
 fn build_circular_pattern_missing_axis_no_kernel_error() {
     use reify_compiler::PatternKind;
@@ -2425,20 +2429,12 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
             ("size_z".into(), mm_literal(5.0)),
         ],
     };
-    // Circular pattern missing `ax` (axis X-component).
-    // The axis ORIGIN must be a dimensioned Length (task 5350): with a bare
-    // origin the Length gate short-circuits FIRST and masks the missing-`ax`
-    // condition this test exercises. The axis DIRECTION stays bare.
+    // Circular pattern missing its `axis`.
     let circular_op = CompiledGeometryOp::Pattern {
         kind: PatternKind::Circular,
         target: GeomRef::Step(0),
         args: vec![
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            // ax deliberately omitted
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)),
+            // axis deliberately omitted
             ("count".into(), real_literal(3.0)),
             ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
@@ -2448,7 +2444,7 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
         .realization(e, 0, vec![box_op, circular_op])
         .build();
     let module =
-        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_circular_missing_ax"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_circular_missing_axis"))
             .template(template)
             .build();
 
@@ -2464,7 +2460,7 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
         Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
         &[
             "missing required geometry argument",
-            "ax",
+            "axis",
             "circular_pattern",
         ],
     );

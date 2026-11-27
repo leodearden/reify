@@ -47,7 +47,7 @@ const ROWS: &[Row] = &[
     Row { bare: "mirror(g, point3(0, 0, 0), dir(1, 0, 0))", dimensioned: "mirror(g, point3(0mm, 0mm, 0mm), dir(1, 0, 0))", layer: Layer::Eval, blamed: &["origin.x", "origin.y", "origin.z"] },
     Row { bare: "helix(10, 2, 50)", dimensioned: "helix(10mm, 2mm, 50mm)", layer: Layer::Eval, blamed: &["radius", "pitch", "height"] },
     Row { bare: "polygon(0, 0, 10, 0, 5, 10)", dimensioned: "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)", layer: Layer::Eval, blamed: &["x1", "y1", "x2", "y2", "x3", "y3"] },
-    Row { bare: "arc(0, 0, 0, 10, 0deg, 90deg, 0, 0, 1)", dimensioned: "arc(0mm, 0mm, 0mm, 10mm, 0deg, 90deg, 0, 0, 1)", layer: Layer::Eval, blamed: &["cx", "cy", "cz", "radius"] },
+    Row { bare: "arc(point3(0, 0, 0), 10, 0deg, 90deg, dir(0, 0, 1))", dimensioned: "arc(point3(0mm, 0mm, 0mm), 10mm, 0deg, 90deg, dir(0, 0, 1))", layer: Layer::Eval, blamed: &["center.x", "center.y", "center.z", "radius"] },
     Row { bare: "line_segment(0, 0, 0, 0, 200, 0)", dimensioned: "line_segment(0mm, 0mm, 0mm, 0mm, 200mm, 0mm)", layer: Layer::Eval, blamed: &["x1", "y1", "z1", "x2", "y2", "z2"] },
     Row { bare: "interp(0, 0, 0, 10, 5, 0)", dimensioned: "interp(0mm, 0mm, 0mm, 10mm, 5mm, 0mm)", layer: Layer::Eval, blamed: &["x1", "y1", "z1", "x2", "y2", "z2"] },
     Row { bare: "bezier(0, 0, 0, 10, 5, 0)", dimensioned: "bezier(0mm, 0mm, 0mm, 10mm, 5mm, 0mm)", layer: Layer::Eval, blamed: &["x1", "y1", "z1", "x2", "y2", "z2"] },

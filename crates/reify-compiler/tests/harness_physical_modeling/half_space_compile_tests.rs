@@ -1,9 +1,6 @@
-//! Compiler recognition and lowering tests for `half_space` (task #3465 step-3).
-//!
-//! RED until step-4 adds the `"half_space"` arm to `compile_geometry_call` in
-//! `geometry.rs` — until then, `half_space(...)` calls are not recognised and
-//! the lowering test fails because no `Primitive { kind: HalfSpace }` op is
-//! produced.
+//! Compiler recognition and lowering tests for `half_space` (task #3465), in its
+//! `half_space(origin: Point3<Length>, normal: Direction)` form (direction-typing
+//! ι-c).
 
 use reify_compiler::{CompiledGeometryOp, GEOMETRY_FUNCTION_NAMES, PrimitiveKind};
 use reify_test_support::{
@@ -20,17 +17,15 @@ fn half_space_is_geometry_function() {
     );
 }
 
-/// Compiling `half_space(0mm, 0mm, 0mm, 0, 0, 1)` must produce a
-/// `CompiledGeometryOp::Primitive { kind: PrimitiveKind::HalfSpace, args }` where
-/// `args` carries exactly the six named scalar args: `px`, `py`, `pz`, `nx`, `ny`, `nz`
-/// in that order.
-///
-/// RED until step-4 adds the `"half_space"` compile arm.
+/// Compiling `half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))` must produce a
+/// `CompiledGeometryOp::Primitive { kind: PrimitiveKind::HalfSpace, args }` whose
+/// `args` are exactly the Point3 `origin` and the Direction `normal`, in that
+/// order (direction-typing ι-c).
 #[test]
-fn half_space_lowers_to_primitive_half_space_with_six_named_args() {
+fn half_space_lowers_to_primitive_half_space_with_origin_and_normal() {
     let source = r#"
 structure S {
-    let hs = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+    let hs = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -55,55 +50,42 @@ structure S {
             )
         });
 
-    assert!(
-        half_space_op.is_some(),
-        "expected a Primitive(HalfSpace) op in the compiled realizations, got: {:?}",
-        template
-            .realizations
-            .iter()
-            .flat_map(|r| r.operations.iter())
-            .collect::<Vec<_>>()
-    );
-
-    if let Some(CompiledGeometryOp::Primitive {
-        kind: PrimitiveKind::HalfSpace,
-        args,
-    }) = half_space_op
-    {
-        let arg_names: Vec<&str> = args.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(
-            arg_names,
-            vec!["px", "py", "pz", "nx", "ny", "nz"],
-            "HalfSpace Primitive op must carry exactly the six args [px, py, pz, nx, ny, nz] in order, got: {:?}",
-            arg_names
+    let Some(CompiledGeometryOp::Primitive { args, .. }) = half_space_op else {
+        panic!(
+            "expected a Primitive(HalfSpace) op in the compiled realizations, got: {:?}",
+            template
+                .realizations
+                .iter()
+                .flat_map(|r| r.operations.iter())
+                .collect::<Vec<_>>()
         );
-    }
+    };
+    let arg_names: Vec<&str> = args.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        arg_names,
+        vec!["origin", "normal"],
+        "the HalfSpace Primitive op must carry exactly [origin, normal] in order"
+    );
 }
 
-/// Wrong-arity call `half_space(0mm, 0mm, 0mm)` (only 3 args, expects 6) must
-/// emit an arg-count diagnostic naming `"half_space"`. Mirrors the arity tests
-/// for cone, wedge, and torus in `geometry_arg_count_span_tests.rs`.
-///
-/// RED until step-4 adds the `"half_space"` compile arm (which calls
-/// `check_arg_count_exact`).
+/// The retired scalar `half_space(0mm, 0mm, 0mm, 0, 0, 1)` is an arity error
+/// that names the Direction form (PRD direction-typing B13).
 #[test]
-fn half_space_wrong_arity_emits_arg_count_diagnostic() {
+fn half_space_retired_6_arg_call_names_the_direction_form() {
     let source = r#"
 structure S {
-    let hs = half_space(0mm, 0mm, 0mm)
+    let hs = half_space(0mm, 0mm, 0mm, 0, 0, 1)
 }
 "#;
     let module = compile(source);
-    let errors = errors_only(&module);
-
-    let arg_count_error = errors
-        .iter()
-        .find(|d| d.message.contains("half_space") && d.message.contains("6"));
-
+    let expected =
+        "half_space() expects 2 arguments: half_space(point3(x, y, z), dir(x, y, z)), got 6";
     assert!(
-        arg_count_error.is_some(),
-        "expected an arg-count diagnostic for `half_space()` with 3 args (expects 6), \
-         but none was found. All diagnostics: {:?}",
-        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        errors_only(&module).iter().any(|d| d.message == expected),
+        "expected the Error {expected:?}; got: {:?}",
+        errors_only(&module)
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }

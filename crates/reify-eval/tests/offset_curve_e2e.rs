@@ -39,12 +39,12 @@ use reify_test_support::{errors_only, parse_and_compile_with_stdlib, scalar_si};
 // symmetry guarantees the offset arc's angle-0 point (its bounding-box maximum
 // in X) lies on the +X axis at the offset radius.
 //
-//   arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
+//   arc(center, radius, start_angle, end_angle, normal)
 
 /// Overload 1 — planar 2-D offset, plus the `bounding_box` radius probe.
 const PLANAR_SOURCE: &str = r#"
 structure def OffsetPlanar {
-    let c = arc(0mm, 0mm, 0mm, 10mm, -0.7853981633974483rad, 0.7853981633974483rad, 0mm, 0mm, 1mm)
+    let c = arc(point3(0mm, 0mm, 0mm), 10mm, -0.7853981633974483rad, 0.7853981633974483rad, dir(0, 0, 1))
     let o = offset_curve(c, 2mm)
     let bb = bounding_box(o)
 }
@@ -54,7 +54,7 @@ structure def OffsetPlanar {
 /// at eval time as the offset direction.
 const DIRECTIONAL_SOURCE: &str = r#"
 structure def OffsetDirectional {
-    let c = arc(0mm, 0mm, 0mm, 10mm, -0.7853981633974483rad, 0.7853981633974483rad, 0mm, 0mm, 1mm)
+    let c = arc(point3(0mm, 0mm, 0mm), 10mm, -0.7853981633974483rad, 0.7853981633974483rad, dir(0, 0, 1))
     let o = offset_curve(c, 2mm, dir(0, 0, 1))
     let bb = bounding_box(o)
 }
@@ -66,7 +66,7 @@ structure def OffsetDirectional {
 /// `split` consumes its solid arg).
 const ON_SURFACE_SOURCE: &str = r#"
 structure def OffsetOnSurface {
-    let c = arc(0mm, 0mm, 0mm, 10mm, -0.7853981633974483rad, 0.7853981633974483rad, 0mm, 0mm, 1mm)
+    let c = arc(point3(0mm, 0mm, 0mm), 10mm, -0.7853981633974483rad, 0.7853981633974483rad, dir(0, 0, 1))
     let b = box(20mm, 20mm, 20mm)
     let f = faces(b)[0]
     let o = offset_curve(c, 2mm, f)

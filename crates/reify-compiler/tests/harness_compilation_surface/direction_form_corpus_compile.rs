@@ -1,6 +1,7 @@
-//! Kernel-free compile witness for the committed `.ri` sites that call
-//! `rotate`, `rotate_around` or `mirror` and that no other gate compiles
-//! (direction-typing ι-a, task 9646).
+//! Kernel-free compile witness for the committed `.ri` sites that call a
+//! Direction-taking builtin and that no other gate compiles: ι-a's `rotate`,
+//! `rotate_around` and `mirror` (task 9646), and ι-c's `linear_pattern` and
+//! `linear_pattern_2d` (task 9648) (direction-typing).
 //!
 //! `prj/` and `designs/` sit outside the corpus roots `examples_smoke` and
 //! `unresolved_function_corpus_sweep` walk, and `reify check` segfaults on
@@ -32,6 +33,12 @@ struct DirectionForms {
     rotate_around: usize,
     /// `Pattern{Mirror}` carrying `normal`: `mirror(geo, point3(..), dir(..))`.
     mirror: usize,
+    /// `Pattern{Linear}` carrying `direction`:
+    /// `linear_pattern(geo, dir(..), count, spacing)`.
+    linear_pattern: usize,
+    /// `Pattern{Linear2D}` carrying `direction1`:
+    /// `linear_pattern_2d(geo, dir(..), count1, spacing1, dir(..), count2, spacing2)`.
+    linear_pattern_2d: usize,
 }
 
 impl DirectionForms {
@@ -39,14 +46,24 @@ impl DirectionForms {
         self.rotate >= floor.rotate
             && self.rotate_around >= floor.rotate_around
             && self.mirror >= floor.mirror
+            && self.linear_pattern >= floor.linear_pattern
+            && self.linear_pattern_2d >= floor.linear_pattern_2d
     }
 }
 
-const fn floor(rotate: usize, rotate_around: usize, mirror: usize) -> DirectionForms {
+const fn floor(
+    rotate: usize,
+    rotate_around: usize,
+    mirror: usize,
+    linear_pattern: usize,
+    linear_pattern_2d: usize,
+) -> DirectionForms {
     DirectionForms {
         rotate,
         rotate_around,
         mirror,
+        linear_pattern,
+        linear_pattern_2d,
     }
 }
 
@@ -55,17 +72,31 @@ const fn floor(rotate: usize, rotate_around: usize, mirror: usize) -> DirectionF
 /// later `let` builds on the one holding it, since each realization lowers its
 /// dependencies' ops again. A floor drops only with a new measurement saying why.
 const CORPUS: &[(&str, DirectionForms)] = &[
-    ("designs/litter_tray/bottom_deck.ri", floor(4, 0, 0)),
-    ("designs/litter_tray/bottom_deck_split.ri", floor(6, 0, 0)),
-    ("designs/litter_tray/top_deck.ri", floor(4, 0, 0)),
-    ("designs/litter_tray/top_deck_split.ri", floor(5, 0, 0)),
-    ("prj/printer_v01/printer.ri", floor(3, 0, 1)),
-    ("prj/printer_v01/dev_capstan.ri", floor(1, 0, 0)),
+    ("designs/litter_tray/bottom_deck.ri", floor(4, 0, 0, 0, 0)),
+    (
+        "designs/litter_tray/bottom_deck_split.ri",
+        floor(6, 0, 0, 0, 0),
+    ),
+    ("designs/litter_tray/top_deck.ri", floor(4, 0, 0, 0, 2)),
+    (
+        "designs/litter_tray/top_deck_split.ri",
+        floor(5, 0, 0, 0, 2),
+    ),
+    (
+        "designs/litter_tray/probe_5318_unit_spacing.ri",
+        floor(0, 0, 0, 0, 2),
+    ),
+    ("designs/litter_tray/sieve_coupon.ri", floor(0, 0, 0, 0, 2)),
+    ("prj/printer_v01/printer.ri", floor(3, 0, 1, 3, 0)),
+    ("prj/printer_v01/dev_capstan.ri", floor(1, 0, 0, 0, 0)),
     (
         "examples/geometric_relations/tangent_roller.ri",
-        floor(1, 0, 0),
+        floor(1, 0, 0, 0, 0),
     ),
-    ("examples/best_practices/symmetry_mirror.ri", floor(0, 0, 1)),
+    (
+        "examples/best_practices/symmetry_mirror.ri",
+        floor(0, 0, 1, 0, 0),
+    ),
 ];
 
 /// Mirrors docs/prds/v0_6/fixtures/helix_sweep_dep_5342.ri's `Test` structure.
@@ -90,11 +121,19 @@ structure PnrgSpline {
 /// Each mirrored fixture's stem, used as its module path, with its call sites
 /// inlined and counted as a floor the way `CORPUS` counts them.
 const MIRRORED: &[(&str, &str, DirectionForms)] = &[
-    ("helix_sweep_dep_5342", HELIX_SWEEP_DEP_5342, floor(1, 0, 0)),
-    ("pnrg_envelope_spline", PNRG_ENVELOPE_SPLINE, floor(2, 0, 0)),
+    (
+        "helix_sweep_dep_5342",
+        HELIX_SWEEP_DEP_5342,
+        floor(1, 0, 0, 0, 0),
+    ),
+    (
+        "pnrg_envelope_spline",
+        PNRG_ENVELOPE_SPLINE,
+        floor(2, 0, 0, 0, 0),
+    ),
 ];
 
-/// What one file's lowered rotate/rotate_around/mirror ops look like.
+/// What one file's lowered Direction-taking ops look like.
 #[derive(Debug, Default)]
 struct Tally {
     direction_forms: DirectionForms,
@@ -135,6 +174,28 @@ fn tally_op(op: &CompiledGeometryOp, site: &str, tally: &mut Tally) {
             args,
             ..
         } => ("mirror", args, "normal", Some("plane"), &mut forms.mirror),
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            args,
+            ..
+        } => (
+            "linear_pattern",
+            args,
+            "direction",
+            None,
+            &mut forms.linear_pattern,
+        ),
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear2D,
+            args,
+            ..
+        } => (
+            "linear_pattern_2d",
+            args,
+            "direction1",
+            None,
+            &mut forms.linear_pattern_2d,
+        ),
         _ => return,
     };
     let names: Vec<&str> = args.iter().map(|(name, _)| name.as_str()).collect();
@@ -214,7 +275,11 @@ fn problems_in(
     let mut problems: Vec<String> = program
         .entry_own_diagnostics()
         .filter(|d| d.severity == Severity::Error)
-        .filter(|d| d.message.starts_with("rotate") || d.message.starts_with("mirror"))
+        .filter(|d| {
+            ["rotate", "mirror", "linear_pattern"]
+                .iter()
+                .any(|call| d.message.starts_with(call))
+        })
         .map(|d| format!("{rel}: error: {}", d.message))
         .collect();
     let tally = tally(&program);
@@ -245,7 +310,7 @@ fn every_witnessed_corpus_site_lowers_through_a_direction_form() {
             problems_in(rel, compile_file(&workspace_root().join(rel)), *floor)
         })
         .collect();
-    assert_no_problems("rotate/rotate_around/mirror corpus", problems);
+    assert_no_problems("Direction-form corpus", problems);
 }
 
 #[test]

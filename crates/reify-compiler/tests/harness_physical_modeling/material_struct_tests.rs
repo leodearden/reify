@@ -281,7 +281,7 @@ const BOLTFLANGE_MIRROR_SOURCE: &str = r#"
 
             let body = cylinder(outer_radius, height)
             let hole = translate(cylinder(hole_radius, height), bolt_circle_radius, 0mm, 0mm)
-            let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, hole_count, 360deg)
+            let holes = circular_pattern(hole, axis_z(point3(0mm, 0mm, 0mm)), hole_count, 360deg)
             param geometry : Solid = difference(body, holes)
         }
     "#;

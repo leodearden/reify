@@ -62,7 +62,7 @@ fn entity_kind_as_label() {
 fn compile_linear_pattern_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = linear_pattern(w, 1, 0, 0, 4, 20mm)
+    let pattern = linear_pattern(w, dir(1, 0, 0), 4, 20mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat"));
     assert!(
@@ -104,7 +104,7 @@ fn compile_linear_pattern_produces_realization() {
 fn geometry_let_pattern_lowers_a_named_geometry_target_slot() {
     let source = r#"structure S {
     let elem = box(10mm, 10mm, 10mm)
-    let row = linear_pattern(elem, 1, 0, 0, 4, 20mm)
+    let row = linear_pattern(elem, dir(1, 0, 0), 4, 20mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_geolet_linpat"));
     assert!(
@@ -243,7 +243,7 @@ fn compile_mirror_direction_form_produces_realization() {
 fn compile_linear_pattern_2d_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20mm, 0, 1, 0, 4, 30mm)
+    let pattern = linear_pattern_2d(w, dir(1, 0, 0), 3, 20mm, dir(0, 1, 0), 4, 30mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat2d"));
     assert!(
@@ -271,16 +271,16 @@ fn compile_linear_pattern_2d_produces_realization() {
         "expected Pattern(Linear2D), got {:?}",
         op
     );
-    // Verify correct number of named args (11: target + 10 params)
+    // Verify correct number of named args (7: target + 6 params)
     if let CompiledGeometryOp::Pattern { args, .. } = op {
-        assert_eq!(args.len(), 11, "expected 11 args, got {}", args.len());
+        assert_eq!(args.len(), 7, "expected 7 args, got {}", args.len());
         assert_eq!(args[0].0, "target");
-        assert_eq!(args[1].0, "dx1");
-        assert_eq!(args[4].0, "count1");
-        assert_eq!(args[5].0, "spacing1");
-        assert_eq!(args[6].0, "dx2");
-        assert_eq!(args[9].0, "count2");
-        assert_eq!(args[10].0, "spacing2");
+        assert_eq!(args[1].0, "direction1");
+        assert_eq!(args[2].0, "count1");
+        assert_eq!(args[3].0, "spacing1");
+        assert_eq!(args[4].0, "direction2");
+        assert_eq!(args[5].0, "count2");
+        assert_eq!(args[6].0, "spacing2");
     }
 }
 
@@ -293,53 +293,39 @@ fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat2d_err"));
     assert!(parsed.errors.is_empty());
     let compiled = compile(&parsed);
+    let expected = "linear_pattern_2d() expects 7 arguments: \
+                    linear_pattern_2d(geo, dir(x, y, z), count1, spacing1, \
+                    dir(x, y, z), count2, spacing2), got 6";
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("linear_pattern_2d") && d.message.contains("11 arguments")),
-        "expected arity diagnostic, got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.message == expected),
+        "expected the arity diagnostic {expected:?}, got: {:?}",
         compiled.diagnostics
     );
 
-    // Task 5652: the bare `20` above is NOT migrated to `20mm` on purpose —
-    // this is an ARITY-error fixture, and a 6-arg `linear_pattern_2d` is
-    // slot-free by construction (the spacing slots are guarded on
-    // `arg_count == 11`). So the wrong-arity call must report ONLY the arity
-    // problem; piling an ArgTypeMismatch on top would bury the real error
-    // under a diagnostic about an argument whose position is meaningless in a
-    // call that has the wrong shape to begin with.
+    // PRD `docs/prds/v0_6/units-length-gate-completion.md` boundary row 9b
+    // (task 5750) — RESOLUTION RECORDED HERE because this fixture is the site
+    // the row is about. The arity-6 call is a malformed fixture, not an
+    // overload: it is an arity error that names the 7-arg Direction form
+    // (direction-typing ι-c), so nothing slips past and the bare `20` stays
+    // bare under contract C6's deliberate-negative-fixture clause.
     //
-    // Task 5750 (units-length η), PRD boundary row 9b — RESOLUTION RECORDED
-    // HERE because this fixture is the site the row is about.
-    // `docs/prds/v0_6/units-length-gate-completion.md` claimed the arity-6
-    // `linear_pattern_2d(w, 1, 0, 0, 3, 20)` "slips past today's
-    // `arg_count == 11` guard entirely", leaving the bare `20` ungated and
-    // implying η owed either a new arity-6 slot or a migration of this line.
-    //
-    // PROBED on 2026-07-28 and again during η, and the claim is FALSE IN BOTH
-    // DIRECTIONS: this call is neither a legitimate overload nor a malformed
-    // fixture. The arity guard in `geometry.rs` DOES reject it — `reify check`
-    // and `reify eval` both exit 1 with
-    // `linear_pattern_2d() expects 11 arguments, got 6` — so nothing "slips
-    // past" and there is no ungated position to gate.
-    //
-    // Resolution: NO arity-6 LENGTH slot is added, the bare `20` stays bare
-    // under contract C6's deliberate-negative-fixture clause, and this site was
-    // SUBTRACTED from η's migration list. The `arg_type_mismatches.is_empty()`
-    // assertion below IS the pin for all of that — do not weaken it to a
-    // "contains the arity message" check, which would hold even if a future
-    // slot started firing here.
-    let arg_type_mismatches: Vec<_> = compiled
+    // `linear_pattern_2d` is single-form, so its slot arm is arity-agnostic
+    // and a malformed call's PRESENT slot positions are still checked: the
+    // `1`, `0` and `3` here draw direction/spacing mismatches beside the arity
+    // error (accepted migration noise, as direction-typing ι-a recorded for
+    // `rotate_around`). What must never fire is a slot on a COUNT — an Int
+    // whose LENGTH slot would reject correct code. The slot table's unit test
+    // pins that at every arity; this pins it on a real call.
+    let count_mismatches: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch))
+        .filter(|d| d.message.contains("count1") || d.message.contains("count2"))
         .collect();
     assert!(
-        arg_type_mismatches.is_empty(),
-        "a wrong-arity linear_pattern_2d must emit no ArgTypeMismatch — the \
-         arity guard makes a 6-arg call slot-free. Got: {:?}",
-        arg_type_mismatches
+        count_mismatches.is_empty(),
+        "no ArgTypeMismatch may name a linear_pattern_2d count. Got: {:?}",
+        count_mismatches
     );
 }
 
@@ -364,7 +350,7 @@ fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
     // place — the eval-side resolution was already correct and covered, so
     // this compile-level test closes the actual gap.
     let source = r#"structure S {
-    let pattern = linear_pattern_2d(box(2mm, 2mm, 10mm), 1, 0, 0, 3, 20mm, 0, 1, 0, 4, 30mm)
+    let pattern = linear_pattern_2d(box(2mm, 2mm, 10mm), dir(1, 0, 0), 3, 20mm, dir(0, 1, 0), 4, 30mm)
 }"#;
     let parsed = reify_syntax::parse(
         source,
@@ -418,7 +404,7 @@ fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
         "expected Pattern(Linear2D) targeting Step(0), got {:?}",
         op
     );
-    // Verify correct number of named args (11: target + 10 params). Bound via
+    // Verify correct number of named args (7: target + 6 params). Bound via
     // `let-else` (rather than `if let`) so these assertions cannot be
     // silently skipped if `op` were ever not a Pattern — the preceding
     // `matches!` assert already guarantees the variant, but this keeps the
@@ -426,10 +412,12 @@ fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
     let CompiledGeometryOp::Pattern { args, .. } = op else {
         panic!("expected Pattern op to read args from, got {:?}", op);
     };
-    assert_eq!(args.len(), 11, "expected 11 args, got {}", args.len());
+    assert_eq!(args.len(), 7, "expected 7 args, got {}", args.len());
     assert_eq!(args[0].0, "target");
-    assert_eq!(args[1].0, "dx1");
-    assert_eq!(args[10].0, "spacing2");
+    assert_eq!(args[1].0, "direction1");
+    assert_eq!(args[3].0, "spacing1");
+    assert_eq!(args[4].0, "direction2");
+    assert_eq!(args[6].0, "spacing2");
 }
 
 #[test]
@@ -779,7 +767,7 @@ fn compile_draft_produces_realization() {
 fn compile_circular_pattern_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = circular_pattern(w, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)
+    let pattern = circular_pattern(w, axis_z(point3(0mm, 0mm, 0mm)), 6, 360deg)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_circpat"));
     assert!(

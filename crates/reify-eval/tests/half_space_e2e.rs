@@ -81,7 +81,7 @@ fn build_step(source: &str) -> Option<Vec<u8>> {
 // (a) G2.3: bounded intersection produces valid STEP export
 // ---------------------------------------------------------------------------
 
-/// `intersection(half_space(0mm,0mm,0mm, 0,0,1), box(20mm,20mm,20mm))`:
+/// `intersection(half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1)), box(20mm, 20mm, 20mm))`:
 ///   - The box (20mm cube centered at origin) is bisected by the z=0 plane.
 ///   - The retained half is bounded → must produce a valid STEP solid.
 ///
@@ -94,7 +94,7 @@ fn build_step(source: &str) -> Option<Vec<u8>> {
 fn bounded_intersection_step_export() {
     build_step(r#"
 structure S {
-    let result = intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(20mm, 20mm, 20mm))
+    let result = intersection(half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1)), box(20mm, 20mm, 20mm))
 }
 "#);
 }
@@ -121,7 +121,7 @@ fn bare_half_space_is_constructible() {
 
     let source = r#"
 structure S {
-    let hs = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+    let hs = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
 }
 "#;
 

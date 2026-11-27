@@ -234,7 +234,7 @@ fn arg_type_mismatch_errors(
 /// emitted from two wiring sites.
 #[test]
 fn linear_pattern_bare_spacing_gives_one_arg_type_mismatch() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
         errors.len(),
@@ -257,7 +257,7 @@ fn linear_pattern_bare_spacing_gives_one_arg_type_mismatch() {
 /// wrong reason (e.g. a slot that fires on every `linear_pattern` call).
 #[test]
 fn linear_pattern_dimensioned_spacing_gives_no_arg_type_mismatch() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10mm)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10mm)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(
         errors.is_empty(),
@@ -282,7 +282,7 @@ fn linear_pattern_dimensioned_spacing_gives_no_arg_type_mismatch() {
 /// friendly `"Angle"` used on the expected side of other slots' messages.
 #[test]
 fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10deg)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10deg)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
         errors.len(),
@@ -321,7 +321,7 @@ fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
 fn nested_linear_pattern_bare_spacing_emits_exactly_one_diagnostic() {
     let compiled = compile_struct_body(
         "    let c = box(1mm, 1mm, 1mm)\n\
-         \x20   let u = union(linear_pattern(b, 1, 0, 0, 5, 10), c)\n",
+         \x20   let u = union(linear_pattern(b, dir(1, 0, 0), 5, 10), c)\n",
     );
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
@@ -340,8 +340,9 @@ fn nested_linear_pattern_bare_spacing_emits_exactly_one_diagnostic() {
 /// grid scattered cutting tools hundreds of metres from the plate.
 #[test]
 fn linear_pattern_2d_bare_spacing1_gives_one_arg_type_mismatch() {
-    let compiled =
-        compile_struct_body("    let g = linear_pattern_2d(b, 1, 0, 0, 3, 10, 0, 1, 0, 4, 20mm)\n");
+    let compiled = compile_struct_body(
+        "    let g = linear_pattern_2d(b, dir(1, 0, 0), 3, 10, dir(0, 1, 0), 4, 20mm)\n",
+    );
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
         errors.len(),
@@ -367,7 +368,7 @@ fn linear_pattern_2d_bare_spacing1_gives_one_arg_type_mismatch() {
 #[test]
 fn linear_pattern_2d_dimensioned_spacings_give_no_arg_type_mismatch() {
     let compiled = compile_struct_body(
-        "    let g = linear_pattern_2d(b, 1, 0, 0, 3, 10mm, 0, 1, 0, 4, 20mm)\n",
+        "    let g = linear_pattern_2d(b, dir(1, 0, 0), 3, 10mm, dir(0, 1, 0), 4, 20mm)\n",
     );
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(
@@ -453,7 +454,7 @@ const ANGLE_HINT: &str = "pass a dimensioned angle such as `45deg` or `1.5rad`";
 /// one says nothing about the other.
 #[test]
 fn linear_pattern_bare_int_spacing_message_carries_the_migration_hint() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
         errors.len(),
@@ -488,7 +489,7 @@ fn linear_pattern_bare_int_spacing_message_carries_the_migration_hint() {
 /// keeps the two layers independently observable as they do.
 #[test]
 fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
     assert_eq!(
@@ -595,7 +596,7 @@ fn angle_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
 #[test]
 fn builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different() {
     let builtin = {
-        let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+        let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10)\n");
         let errors = arg_type_mismatch_errors(&compiled);
         assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
         errors[0].message.clone()
@@ -1051,37 +1052,10 @@ fn mirror_bare_point3_origin_draws_no_check_time_slot_mismatch() {
     );
 }
 
-/// SIGNAL — a bare 9-arg `circular_pattern` axis ORIGIN is rejected, naming
-/// `ox`/`oy`/`oz`.
-///
-/// Three errors, not seven: the axis DIRECTION `0, 0, 1`, the Int `count` and
-/// the `60deg` angle in this same call must all stay silent. The direction and
-/// count are never slotted; the angle IS slotted (PRD 3 leaf ζ), and is silent
-/// here because `60deg` SATISFIES its slot.
-#[test]
-fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
-    let compiled =
-        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
-    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
-        .iter()
-        .map(|d| d.message.as_str())
-        .collect();
-    assert_eq!(
-        messages,
-        vec![
-            "circular_pattern: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-            "circular_pattern: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-            "circular_pattern: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-        ],
-        "only the bare axis ORIGIN may fire — the direction and count are \
-         unslotted and the dimensioned angle satisfies its slot.\n\
-         All diagnostics: {:#?}",
-        compiled.diagnostics
-    );
-}
-
-/// BOUNDARY ok — dimensioned origins on both builtins (`mirror`'s `Point3`,
-/// `circular_pattern`'s scalar triple) produce NO `ArgTypeMismatch`.
+/// BOUNDARY ok — a dimensioned `mirror` `Point3` origin produces NO
+/// `ArgTypeMismatch`. (`circular_pattern`'s scalar origin triple was the other
+/// case until direction-typing ι-c retired that form; its origin now reaches it
+/// only inside an `Axis`.)
 ///
 /// A no-error guard that holds both BEFORE and after the slots land (this
 /// file's Case-2/4/5 convention): before, because there is no slot to fire;
@@ -1089,10 +1063,8 @@ fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
 /// reject the bare form specifically, not the shape of the call.
 #[test]
 fn dimensioned_pattern_origins_give_no_arg_type_mismatch() {
-    let compiled = compile_struct_body(
-        "    let m = mirror(b, point3(0mm, 0mm, 0mm), dir(1, 0, 0))\n\
-         \x20   let p = circular_pattern(b, 12mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)\n",
-    );
+    let compiled =
+        compile_struct_body("    let m = mirror(b, point3(0mm, 0mm, 0mm), dir(1, 0, 0))\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(
         errors.is_empty(),
@@ -1106,11 +1078,9 @@ fn dimensioned_pattern_origins_give_no_arg_type_mismatch() {
 ///
 /// Also a no-error guard holding both before and after — but the one that
 /// matters most, because index 1 EXISTS in both of these calls, holding a
-/// `Plane` / an `Axis`. It is the arity guard on each arm, not the
-/// `compiled_args.get(index)` bounds check, that keeps them quiet; an
-/// arity-agnostic `ox@1 LENGTH` slot would demand a Length of a Plane here, on
-/// correct code. `circular_pattern`'s value form does slot its angle@3 (PRD 3
-/// leaf ζ), which `60deg` satisfies.
+/// `Plane` / an `Axis`, and no slot may name it: an `ox@1 LENGTH` slot would
+/// demand a Length of a Plane here, on correct code. `circular_pattern` does
+/// slot its angle@3 (PRD 3 leaf ζ), which `60deg` satisfies.
 #[test]
 fn pattern_value_forms_give_no_arg_type_mismatch() {
     let compiled = compile_struct_body(
@@ -1631,12 +1601,14 @@ fn revolve_full_yields_no_arg_type_mismatch() {
 /// made `arc` report both bare angles together: stopping at the first would
 /// degrade the fix to two edit-build cycles for one authoring mistake.
 ///
-/// The centre and radius are dimensioned here so the count is a statement about
-/// the ANGLE slots alone — they are Length-semantic but deliberately unslotted,
-/// which the unit test states positively.
+/// The centre and radius are dimensioned and the normal is a Direction here, so
+/// the count is a statement about the ANGLE slots alone — the centre and radius
+/// are Length-semantic but deliberately unslotted, which the unit test states
+/// positively.
 #[test]
 fn arc_bare_angles_are_both_rejected_in_one_pass() {
-    let compiled = compile_struct_body("    let c = arc(0mm, 0mm, 0mm, 5mm, 0, 90, 0, 0, 1)\n");
+    let compiled =
+        compile_struct_body("    let c = arc(point3(0mm, 0mm, 0mm), 5mm, 0, 90, dir(0, 0, 1))\n");
     let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
         .iter()
         .map(|d| d.message.as_str())
@@ -1647,8 +1619,41 @@ fn arc_bare_angles_are_both_rejected_in_one_pass() {
             format!("arc: start_angle argument expects Angle, got Int; {ANGLE_HINT}"),
             format!("arc: end_angle argument expects Angle, got Int; {ANGLE_HINT}"),
         ],
-        "both angles must be reported together, and the axis DIRECTION must stay \
-         silent.\nAll diagnostics: {:#?}",
+        "both angles must be reported together, and the Direction normal must \
+         stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// TRIPWIRE — the constrained-sketch `arc(start, centre, end)` must never draw
+/// the geometry `arc`'s slot mismatches.
+///
+/// The geometry `arc` slot arm is arity-agnostic and checks index 2 as an
+/// Angle, which is a point in the sketch form. Today the sketch block is
+/// rejected before its members reach `check_builtin_arg_types`, so this holds
+/// without any guard. When #5508 lowers sketch members through that check, it
+/// must guard the `arc` arm with `arg_count == 5`, or this test goes red.
+#[test]
+fn sketch_arc_three_point_form_draws_no_geometry_arc_slot_mismatch() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure def SketchArc {
+    sketch profile {
+        let b = point(10mm, 0mm)
+        let c1 = arc(point(9mm, 1mm), b, point(10mm, 2mm))
+    }
+}
+"#,
+    );
+    let arc_mismatches: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .filter(|m| m.starts_with("arc:"))
+        .collect();
+    assert!(
+        arc_mismatches.is_empty(),
+        "a sketch arc/3 drew the geometry arc/5 slot checks: {arc_mismatches:?}\n\
+         All diagnostics: {:#?}",
         compiled.diagnostics
     );
 }
@@ -1704,32 +1709,45 @@ fn draft_curated_form_does_not_reject_its_face_selector() {
     );
 }
 
-/// SIGNAL — a bare `circular_pattern` angle is rejected at BOTH forms, naming
-/// `angle`.
+/// SIGNAL — a bare `circular_pattern` angle is rejected, naming `angle`.
 ///
-/// Two separate compiles, each keyed independently (PRD row B4's third
-/// clause): the angle is arg8 of the 9-arg scalar form and arg3 of the 4-arg
-/// value form. Exactly one error each — the dimensioned origin, the axis
-/// DIRECTION, the decoded `Axis` value and the Int `count` must all stay
-/// silent.
+/// The angle is arg3 of `circular_pattern(target, axis, count, angle)`, the
+/// only form since direction-typing ι-c. Exactly one error — the decoded `Axis`
+/// value and the Int `count` must stay silent.
 #[test]
-fn circular_pattern_bare_angle_is_rejected_at_both_forms() {
-    for body in [
-        "    let p = circular_pattern(b, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)\n",
-        "    let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 360)\n",
-    ] {
-        let compiled = compile_struct_body(body);
-        let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
-            .iter()
-            .map(|d| d.message.as_str())
-            .collect();
-        assert_eq!(
-            messages,
-            vec![format!(
-                "circular_pattern: angle argument expects Angle, got Int; {ANGLE_HINT}"
-            )],
-            "body {body:?}: exactly the angle must be rejected.\nAll diagnostics: {:#?}",
-            compiled.diagnostics
-        );
-    }
+fn circular_pattern_bare_angle_is_rejected() {
+    let body = "    let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 360)\n";
+    let compiled = compile_struct_body(body);
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![format!(
+            "circular_pattern: angle argument expects Angle, got Int; {ANGLE_HINT}"
+        )],
+        "body {body:?}: exactly the angle must be rejected.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+// ── direction-typing ι-c (task 9648): linear_pattern's Direction ──────────
+
+/// SIGNAL — a `vec3` direction on the 4-arg `linear_pattern` is one Direction
+/// mismatch. The spacing is dimensioned so the count isolates the direction.
+#[test]
+fn linear_pattern_vector_direction_is_rejected_with_the_dir_hint() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, vec3(1, 0, 0), 5, 10mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [format!(
+            "linear_pattern: direction argument expects Direction, got Vector3<Int>; \
+             {DIRECTION_HINT}"
+        )],
+        "All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
 }

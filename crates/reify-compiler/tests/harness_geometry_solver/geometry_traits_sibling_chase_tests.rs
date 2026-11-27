@@ -221,7 +221,7 @@ fn translate_of_unbounded_sibling_let_at_bounded_slot_emits_geometry_unbounded()
             param g : Bounded
         }
         structure def Top {
-            let h = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let h = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
             let t = translate(h, 1mm, 0mm, 0mm)
             sub x = Foo(g: t)
         }
@@ -250,7 +250,7 @@ fn two_hop_transform_chain_of_unbounded_sibling_let_emits_geometry_unbounded() {
             param g : Bounded
         }
         structure def Top {
-            let h = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let h = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
             let t1 = translate(h, 1mm, 0mm, 0mm)
             let t2 = translate(t1, 0mm, 1mm, 0mm)
             sub x = Foo(g: t2)
@@ -278,7 +278,7 @@ fn shell_of_unbounded_sibling_let_at_bounded_slot_emits_geometry_unbounded() {
             param g : Bounded
         }
         structure def Top {
-            let h = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let h = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
             let s = shell(h, 1mm)
             sub x = Foo(g: s)
         }
@@ -399,7 +399,7 @@ fn cross_sub_geometry_reference_at_bounded_slot_is_unchanged_by_sub_chasing() {
             param g : Bounded
         }
         structure def Inner {
-            let body = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let body = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
         }
         structure def Top {
             sub inner = Inner()
@@ -435,7 +435,7 @@ fn intersection_of_unbounded_sibling_let_with_box_emits_no_geometry_unbounded() 
             param g : Bounded
         }
         structure def Top {
-            let cutter = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let cutter = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
             let upper = intersection(cutter, box(20mm, 20mm, 20mm))
             sub x = Foo(g: upper)
         }
@@ -451,7 +451,8 @@ fn intersection_of_unbounded_sibling_let_with_box_emits_no_geometry_unbounded() 
 /// of `let t{i} = translate(t{i-1}, ..)`, and pass the last one to a `Bounded`
 /// slot.
 fn sibling_let_chain_source(n: usize) -> String {
-    let mut body = String::from("            let t0 = half_space(0mm, 0mm, 0mm, 0, 0, 1)\n");
+    let mut body =
+        String::from("            let t0 = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))\n");
     for i in 1..=n {
         body.push_str(&format!(
             "            let t{i} = translate(t{}, 1mm, 0mm, 0mm)\n",
@@ -574,7 +575,8 @@ fn fan_out_sibling_let_chain_source(n: usize, x0_init: &str) -> String {
 /// not once per path that reaches it.
 #[test]
 fn fan_out_sibling_let_chain_within_the_depth_cap_still_emits_geometry_unbounded_promptly() {
-    let source = fan_out_sibling_let_chain_source(40, "half_space(0mm, 0mm, 0mm, 0, 0, 1)");
+    let source =
+        fan_out_sibling_let_chain_source(40, "half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))");
     within_anti_hang_budget("the 40-hop fan-out sibling-let chain", move || {
         let (count, diags) = geometry_unbounded_count(&source);
         assert_eq!(
@@ -591,7 +593,8 @@ fn fan_out_sibling_let_chain_within_the_depth_cap_still_emits_geometry_unbounded
 /// rather than re-chased at every level above the cut.
 #[test]
 fn fan_out_sibling_let_chain_past_the_depth_cap_terminates_promptly() {
-    let source = fan_out_sibling_let_chain_source(300, "half_space(0mm, 0mm, 0mm, 0, 0, 1)");
+    let source =
+        fan_out_sibling_let_chain_source(300, "half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))");
     within_anti_hang_budget("the 300-hop fan-out sibling-let chain", move || {
         assert_compiles_with_no_geometry_unbounded(
             &source,
@@ -635,7 +638,7 @@ fn solid_param_default_direct_at_bounded_slot_emits_geometry_unbounded() {
             param g : Bounded
         }
         structure def Top {
-            param p : Solid = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            param p : Solid = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
             sub x = Foo(g: p)
         }
     "#;
@@ -655,7 +658,7 @@ fn solid_param_default_through_sibling_let_at_bounded_slot_emits_geometry_unboun
             param g : Bounded
         }
         structure def Top {
-            param p : Solid = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            param p : Solid = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
             let t = translate(p, 1mm, 0mm, 0mm)
             sub x = Foo(g: t)
         }

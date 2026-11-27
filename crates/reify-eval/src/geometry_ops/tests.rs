@@ -1462,15 +1462,11 @@
         CompiledGeometryOp::Curve {
             kind: CurveKind::Arc,
             args: vec![
-                ("cx".into(), literal_length(0.0)),
-                ("cy".into(), literal_length(0.0)),
-                ("cz".into(), literal_length(0.0)),
+                ("center".into(), literal_length_point3([0.0, 0.0, 0.0])),
                 ("radius".into(), literal_length(0.01)),
                 ("start_angle".into(), start_angle),
                 ("end_angle".into(), end_angle),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                ("normal".into(), literal_direction([0.0, 0.0, 1.0])),
             ],
         }
     }
@@ -1591,11 +1587,10 @@
     ///
     /// The table above exercises each arc angle bare with the OTHER dimensioned,
     /// so it cannot see a short-circuit: `?`-chained per-slot reads pass it
-    /// while `arc(0mm, 0mm, 0mm, 10mm, 0, 90, 0, 0, 1)` — bare in both, which
-    /// is how an author who forgot the units actually writes it — reports only
-    /// `start_angle` and costs a second edit-build cycle to find `end_angle`.
-    /// This is the LENGTH guarantee `arc`'s own centre/radius group twelve
-    /// lines above already has, held to by [`required_angle_args`].
+    /// while `arc(point3(0mm, 0mm, 0mm), 10mm, 0, 90, dir(0, 0, 1))` — bare in
+    /// both, which is how an author who forgot the units actually writes it —
+    /// reports only `start_angle` and costs a second edit-build cycle to find
+    /// `end_angle`. Held to by [`required_angle_args`].
     #[test]
     fn compile_geometry_op_arc_reports_both_bare_angles_in_one_pass() {
         let (result, diagnostics) =
@@ -3596,14 +3591,12 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        // LinearPattern with direction/count but OMITS spacing
         let op = CompiledGeometryOp::Pattern {
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 // spacing deliberately omitted
             ],
@@ -3634,14 +3627,8 @@
             kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                // Axis ORIGIN is length-semantic → must be dimensioned Length.
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                // The axis: a LENGTH origin and a +Z Direction (ι-c's only form).
+                ("axis".into(), axis_z_literal()),
                 ("count".into(), literal_f64(4.0)),
                 // angle deliberately omitted
             ],
@@ -3671,9 +3658,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 ("spacing".into(), literal_length(0.02)),
             ],
@@ -3696,7 +3681,7 @@
                 spacing,
             }) => {
                 assert_eq!(target, GeometryHandleId(42));
-                assert_eq!(direction, [10.0, 0.0, 0.0]);
+                assert_eq!(direction, [1.0, 0.0, 0.0]);
                 assert_eq!(count, 3);
                 // spacing should be a Scalar value, not Undef
                 assert!(
@@ -3721,9 +3706,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 // BARE dimensionless spacing — must be rejected.
                 ("spacing".into(), literal_f64(0.02)),
@@ -3765,9 +3748,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 ("spacing".into(), spacing_expr),
             ],
@@ -3785,8 +3766,9 @@
     // These drive the SHARED `eval_named_arg_length` chokepoint through real,
     // already-shipped Contract C callers (`linear_pattern` spacing and the
     // `mirror` plane origin) rather than calling the helper in isolation, so the
-    // retrofit is proven where users actually meet it. The same edit reaches
-    // `linear_pattern_2d`, `circular_pattern` and the arbitrary-pattern offsets.
+    // retrofit is proven where users actually meet it. The same edit reached
+    // `linear_pattern_2d`, the since-retired scalar `circular_pattern` origin and
+    // the arbitrary-pattern offsets.
 
     /// The `eval_named_arg_length` REJECTION is a `Severity::Error` carrying
     /// `DiagnosticCode::DimensionedArgRejected`, and its wording is still
@@ -4015,7 +3997,7 @@
     /// WHY THE UNDEF ROUTE, not a bare `spacing`: the bare-spacing route is
     /// SHADOWED. `linear_pattern` has a compile-layer LENGTH slot
     /// (`reify-compiler`'s `builtin_signatures.rs`), so
-    /// `linear_pattern(b, 1, 0, 0, 3, 20)` is rejected at COMPILE with a
+    /// `linear_pattern(b, dir(1, 0, 0), 3, 20)` is rejected at COMPILE with a
     /// message minted by `ArgRejection::message` from the DSL builtin name —
     /// already correct, and never routed through `PatternKind::Display`. The
     /// UNRESOLVED (`Undef`) arm of `required_length_arg` is the reachable route
@@ -4034,14 +4016,10 @@
             kind: PatternKind::Linear2D,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx1".into(), literal_f64(1.0)),
-                ("dy1".into(), literal_f64(0.0)),
-                ("dz1".into(), literal_f64(0.0)),
+                ("direction1".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count1".into(), literal_f64(3.0)),
                 ("spacing1".into(), literal_undef()),
-                ("dx2".into(), literal_f64(0.0)),
-                ("dy2".into(), literal_f64(1.0)),
-                ("dz2".into(), literal_f64(0.0)),
+                ("direction2".into(), literal_direction([0.0, 1.0, 0.0])),
                 ("count2".into(), literal_f64(4.0)),
                 ("spacing2".into(), literal_length(0.03)),
             ],
@@ -4056,11 +4034,14 @@
                 "argument 'spacing1' for linear_pattern_2d is unresolved (Undef)",
             ),
             (
-                circular_pattern_with_origin(
-                    literal_undef(),
-                    literal_length(0.0),
-                    literal_length(0.0),
-                ),
+                circular_pattern_with_axis_value(axis_of(
+                    reify_ir::Value::Vector(vec![
+                        reify_ir::Value::Undef,
+                        reify_ir::Value::length(0.0),
+                        reify_ir::Value::length(0.0),
+                    ]),
+                    unit_dir(0.0, 0.0, 1.0),
+                )),
                 "argument 'ox' for circular_pattern is unresolved (Undef)",
             ),
             (
@@ -4284,71 +4265,43 @@
 
     // ---- units-length β (task 5743 step-9): the remaining 18 primitive slots ----
 
-    /// The β slice's remaining seven primitives, each as
-    /// `(kind, &[(arg name, is_length_semantic)])` in the op's own field order.
-    ///
-    /// The `bool` is the SLICE BOUNDARY made data: `true` marks a slot this leaf
-    /// gates, `false` marks one it must leave alone. Only `half_space` carries
-    /// `false` entries — `nx`/`ny`/`nz` are a DIMENSIONLESS unit normal, not a
-    /// point in space, and the same split is already documented at
-    /// `required_length_origin3` for the co-located `ax`/`ay`/`az` triple.
+    /// The β slice's remaining six primitives, each as `(kind, &[arg name])`
+    /// in the op's own field order; every listed slot is length-semantic.
     ///
     /// Arg names are the compiler's, read from the lowering arms in
     /// `reify-compiler/src/geometry.rs` — `outer_r`/`inner_r` (not
-    /// `outer_radius`), `px`/`py`/`pz` (not `ox`/`oy`/`oz`).
-    const BETA_PRIMITIVE_SLOTS: &[(reify_compiler::PrimitiveKind, &[(&str, bool)])] = &[
-        (
-            reify_compiler::PrimitiveKind::Cylinder,
-            &[("radius", true), ("height", true)],
-        ),
-        (reify_compiler::PrimitiveKind::Sphere, &[("radius", true)]),
+    /// `outer_radius`). `half_space` is absent: its origin is a Point3 that no
+    /// scalar slot table describes, and
+    /// `half_space_bare_origin_component_is_rejected_at_build`
+    /// (`tests/harness_geometry/direction_pattern_primitive_forms_e2e.rs`) pins
+    /// its gate.
+    const BETA_PRIMITIVE_SLOTS: &[(reify_compiler::PrimitiveKind, &[&str])] = &[
+        (reify_compiler::PrimitiveKind::Cylinder, &["radius", "height"]),
+        (reify_compiler::PrimitiveKind::Sphere, &["radius"]),
         (
             reify_compiler::PrimitiveKind::Tube,
-            &[("outer_r", true), ("inner_r", true), ("height", true)],
+            &["outer_r", "inner_r", "height"],
         ),
         (
             reify_compiler::PrimitiveKind::Cone,
-            &[
-                ("bottom_radius", true),
-                ("top_radius", true),
-                ("height", true),
-            ],
+            &["bottom_radius", "top_radius", "height"],
         ),
         (
             reify_compiler::PrimitiveKind::Wedge,
-            &[
-                ("width", true),
-                ("depth", true),
-                ("height", true),
-                ("top_width", true),
-            ],
+            &["width", "depth", "height", "top_width"],
         ),
         (
             reify_compiler::PrimitiveKind::Torus,
-            &[("major_radius", true), ("minor_radius", true)],
-        ),
-        (
-            reify_compiler::PrimitiveKind::HalfSpace,
-            &[
-                ("px", true),
-                ("py", true),
-                ("pz", true),
-                // NOT gated: a dimensionless unit normal.
-                ("nx", false),
-                ("ny", false),
-                ("nz", false),
-            ],
+            &["major_radius", "minor_radius"],
         ),
     ];
 
     /// Helper: build one of [`BETA_PRIMITIVE_SLOTS`]' primitives with `slot`
-    /// bound to `expr` and every other arg bound to a valid value for its own
-    /// kind — a LENGTH `Scalar` for a length-semantic slot, a bare `Real` for a
-    /// dimensionless one. Lets each slot's three-state table vary ONLY the
-    /// value under test.
+    /// bound to `expr` and every other arg bound to a valid LENGTH `Scalar`.
+    /// Lets each slot's three-state table vary ONLY the value under test.
     fn beta_primitive_with(
         kind: reify_compiler::PrimitiveKind,
-        arg_names: &[(&str, bool)],
+        arg_names: &[&str],
         slot: &str,
         expr: reify_ir::CompiledExpr,
     ) -> CompiledGeometryOp {
@@ -4356,13 +4309,11 @@
             kind,
             args: arg_names
                 .iter()
-                .map(|(name, is_length)| {
+                .map(|name| {
                     let bound = if *name == slot {
                         expr.clone()
-                    } else if *is_length {
-                        literal_length(0.05)
                     } else {
-                        literal_f64(1.0)
+                        literal_length(0.05)
                     };
                     ((*name).to_string(), bound)
                 })
@@ -4392,9 +4343,6 @@
             (G::Wedge { top_width, .. }, "top_width") => Some(top_width),
             (G::Torus { major_radius, .. }, "major_radius") => Some(major_radius),
             (G::Torus { minor_radius, .. }, "minor_radius") => Some(minor_radius),
-            (G::HalfSpace { px, .. }, "px") => Some(px),
-            (G::HalfSpace { py, .. }, "py") => Some(py),
-            (G::HalfSpace { pz, .. }, "pz") => Some(pz),
             _ => None,
         };
         found
@@ -4402,12 +4350,12 @@
             .clone()
     }
 
-    /// Contract C1's THREE-STATE mapping at the 18 remaining primitive LENGTH
+    /// Contract C1's THREE-STATE mapping at the 15 remaining primitive LENGTH
     /// slots — `cylinder` radius/height, `sphere` radius, `tube`
     /// outer_r/inner_r/height, `cone` bottom_radius/top_radius/height, `wedge`
-    /// width/depth/height/top_width, `torus` major_radius/minor_radius and
-    /// `half_space` px/py/pz — asserted through `compile_geometry_op`, the sole
-    /// IR-build funnel (contract C2).
+    /// width/depth/height/top_width and `torus` major_radius/minor_radius —
+    /// asserted through `compile_geometry_op`, the sole IR-build funnel
+    /// (contract C2).
     ///
     /// This is the box test's table, driven over the slot table rather than
     /// re-spelled per primitive. Every slot is exercised INDEPENDENTLY (the
@@ -4423,12 +4371,7 @@
         let values = ValueMap::new();
 
         for (kind, arg_names) in BETA_PRIMITIVE_SLOTS {
-            for (slot, is_length) in arg_names.iter() {
-                if !*is_length {
-                    // Slice boundary — covered by the dedicated negative test
-                    // below, not by this rejection table.
-                    continue;
-                }
+            for slot in arg_names.iter() {
                 let at = format!("{kind}.{slot}");
 
                 // (i) ACCEPTED — stored unchanged, no diagnostics.
@@ -4558,44 +4501,24 @@
         }
     }
 
-    /// SLICE BOUNDARY, and the load-bearing half of step-9: `half_space`'s
-    /// `nx`/`ny`/`nz` are a DIMENSIONLESS unit normal — a direction, not a point
-    /// — so they must STILL accept bare numbers after the origin triple is
-    /// gated.
+    /// `half_space`'s Direction `normal` is stored as its UNIT components, as
+    /// `Real`s (direction-typing ι-c; PRD §10 Q6 changes this pin on purpose:
+    /// the retired scalar form stored the bare components unnormalised).
     ///
-    /// The fixture is the shape of `examples/half_space.ri:18` — dimensioned
-    /// point, bare normal — with THREE DISTINCT normal components
-    /// `(0.25, 0.5, 1)` rather than the corpus's literal `(0, 0, 1)`. A
-    /// two-zero normal cannot see an `nx`/`ny` transposition, and the sibling
-    /// primitive tables use distinct values (0.02 vs 0.05) for exactly that
-    /// reason. Corpus fidelity itself is pinned separately, end to end, by
-    /// `half_space_bare_normal_still_builds_with_a_dimensioned_point` in
-    /// `tests/harness_geometry/primitive_profile_length_units_e2e.rs`.
-    ///
-    /// It must compile with ZERO diagnostics, and each normal component must be
-    /// stored as the bare `Real` it was written as — re-wrapping `nz` as a
-    /// LENGTH `Scalar` would be just as wrong as rejecting it.
-    ///
-    /// Without this assertion an over-broad gate that also caught the normal
-    /// would pass the rejection table above while breaking the shipped corpus.
-    /// The same dimensionless-direction carve-out is already documented at
-    /// `required_length_origin3` for the co-located `ax`/`ay`/`az` triple.
+    /// Three DISTINCT components `(0.25, 0.5, 1)` rather than the corpus's
+    /// `(0, 0, 1)`: a two-zero normal cannot see an `nx`/`ny` transposition, nor
+    /// a skipped normalisation. A dimensioned origin and a Direction normal push
+    /// ZERO diagnostics.
     #[test]
-    fn compile_geometry_op_half_space_normal_stays_dimensionless() {
+    fn compile_geometry_op_half_space_normal_is_the_unit_direction() {
         let values = ValueMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::HalfSpace,
             args: vec![
-                ("px".into(), literal_length(0.0)),
-                ("py".into(), literal_length(0.0)),
-                ("pz".into(), literal_length(0.0)),
-                // Three DISTINCT components so a slot transposition is
-                // detectable.
-                ("nx".into(), literal_f64(0.25)),
-                ("ny".into(), literal_f64(0.5)),
-                ("nz".into(), literal_f64(1.0)),
+                ("origin".into(), literal_length_point3([0.0, 0.0, 0.0])),
+                ("normal".into(), literal_direction([0.25, 0.5, 1.0])),
             ],
         };
         let compiled = compile_geometry_op(
@@ -4607,27 +4530,27 @@
             &HashMap::new(),
             &mut diagnostics,
         )
-        .expect(
-            "half_space(0mm,0mm,0mm, 0.25,0.5,1) is the shipped corpus SHAPE \
-             (dimensioned point, bare normal) and must compile",
-        );
+        .expect("half_space(point3(0mm, 0mm, 0mm), dir(0.25, 0.5, 1)) must compile");
 
         let reify_ir::GeometryOp::HalfSpace { nx, ny, nz, .. } = compiled else {
             panic!("expected GeometryOp::HalfSpace, got {compiled:?}");
         };
+        let [ux, uy, uz] = reify_ir::UnitVec3::from_vector([0.25, 0.5, 1.0])
+            .expect("non-degenerate")
+            .components();
         assert_eq!(
             (nx, ny, nz),
             (
-                reify_ir::Value::Real(0.25),
-                reify_ir::Value::Real(0.5),
-                reify_ir::Value::Real(1.0),
+                reify_ir::Value::Real(ux),
+                reify_ir::Value::Real(uy),
+                reify_ir::Value::Real(uz),
             ),
-            "the unit normal must be stored as the bare Reals it was written as, \
-             neither rejected nor re-wrapped as a LENGTH Scalar"
+            "the normal must be stored as the Direction's unit components, as Reals"
         );
         assert!(
             diagnostics.is_empty(),
-            "a bare unit normal must push ZERO diagnostics; got: {diagnostics:?}"
+            "a dimensioned origin and a Direction normal must push ZERO diagnostics; \
+             got: {diagnostics:?}"
         );
     }
 
@@ -5903,14 +5826,8 @@
             kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                // Axis ORIGIN is length-semantic → must be dimensioned Length.
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                // The axis: a LENGTH origin and a +Z Direction (ι-c's only form).
+                ("axis".into(), axis_z_literal()),
                 ("count".into(), literal_f64(4.0)),
                 // Explicitly dimensioned. Since ε there is no other kind: the
                 // degrees→radians coercion a bare f64 used to get is gone.
@@ -5960,58 +5877,32 @@
         }
     }
 
-    /// `circular_pattern`'s SCALAR-axis form with `angle` under test. Origin is
-    /// LENGTH (PRD-1's gate), direction stays a bare unit vector (C1 inv. 4).
-    fn circular_pattern_scalar_axis_with_angle(
-        angle: reify_ir::CompiledExpr,
-    ) -> CompiledGeometryOp {
-        CompiledGeometryOp::Pattern {
-            kind: PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("count".into(), literal_f64(4.0)),
-                ("angle".into(), angle),
-            ],
-        }
+    /// `axis_z` through the origin as a literal `Value::Axis`: a LENGTH origin
+    /// and a +Z Direction.
+    fn axis_z_literal() -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            axis_of(length_point3(0.0, 0.0, 0.0), unit_dir(0.0, 0.0, 1.0)),
+            reify_core::Type::dimensionless_scalar(),
+        )
     }
 
-    /// `circular_pattern`'s VALUE-axis form — a single `Value::Axis` arg rather
-    /// than six scalars. A separate eval branch, so it needs its own coverage.
+    /// `circular_pattern`'s axis form with `angle` under test — a single
+    /// `Value::Axis` arg, its only form since direction-typing ι-c.
     fn circular_pattern_value_axis_with_angle(
         angle: reify_ir::CompiledExpr,
     ) -> CompiledGeometryOp {
-        let axis = reify_ir::Value::Axis {
-            origin: Box::new(reify_ir::Value::Vector(vec![
-                reify_ir::Value::length(0.0),
-                reify_ir::Value::length(0.0),
-                reify_ir::Value::length(0.0),
-            ])),
-            direction: Box::new(unit_dir(0.0, 0.0, 1.0)),
-        };
         CompiledGeometryOp::Pattern {
             kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                (
-                    "axis".into(),
-                    reify_ir::CompiledExpr::literal(
-                        axis,
-                        reify_core::Type::dimensionless_scalar(),
-                    ),
-                ),
+                ("axis".into(), axis_z_literal()),
                 ("count".into(), literal_f64(4.0)),
                 ("angle".into(), angle),
             ],
         }
     }
 
-    /// ε — a BARE `circular_pattern` angle is REJECTED, at BOTH axis forms.
+    /// ε — a BARE `circular_pattern` angle is REJECTED.
     ///
     /// REVERSES task #1763 (done, 2026-04), which ruled that this one builtin
     /// should read a bare angle as DEGREES per CAD convention. This test
@@ -6025,79 +5916,71 @@
     /// Covers the bare `Int` shape too — the one ε site whose literal is bound
     /// to a local, which is why a regex sweep over the test corpus cannot see it.
     #[test]
-    fn compile_geometry_op_circular_pattern_bare_angle_is_rejected_at_both_axis_forms() {
+    fn compile_geometry_op_circular_pattern_bare_angle_is_rejected() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        for (form, build) in [
+        let form = "axis";
+        for (label, expr) in [
+            ("bare Real", literal_f64(360.0)),
             (
-                "scalar-axis",
-                &circular_pattern_scalar_axis_with_angle
-                    as &dyn Fn(reify_ir::CompiledExpr) -> CompiledGeometryOp,
-            ),
-            ("value-axis", &circular_pattern_value_axis_with_angle),
-        ] {
-            for (label, expr) in [
-                ("bare Real", literal_f64(360.0)),
-                (
-                    "bare Int",
-                    reify_ir::CompiledExpr::literal(
-                        reify_ir::Value::Int(360),
-                        reify_core::Type::Int,
-                    ),
+                "bare Int",
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Int(360),
+                    reify_core::Type::Int,
                 ),
-            ] {
-                let mut diagnostics: Vec<Diagnostic> = Vec::new();
-                let result = compile_geometry_op(
-                    &build(expr),
-                    &values,
-                    &step_handles,
-                    &[],
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    &mut diagnostics,
-                );
-                assert!(
-                    result.is_err(),
-                    "{form} {label}: must drop the op, got: {result:?}"
-                );
+            ),
+        ] {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &circular_pattern_value_axis_with_angle(expr),
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "{form} {label}: must drop the op, got: {result:?}"
+            );
 
-                let rejections = angle_rejections(&diagnostics);
-                assert_eq!(
-                    rejections.len(),
-                    1,
-                    "{form} {label}: exactly ONE rejection; got: {diagnostics:?}"
-                );
-                let rej = rejections[0];
-                assert_eq!(
-                    rej.severity,
-                    reify_core::Severity::Error,
-                    "{form} {label}: was a Warning + exit 0 before ε; got: {rej:?}"
-                );
-                assert_eq!(
-                    rej.code,
-                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
-                    "{form} {label}: the retired warning carried NO code at all \
-                     (INV-SF-6); got: {rej:?}"
-                );
-                for needle in [
-                    "circular_pattern: angle argument expects Angle, got ",
-                    reify_core::units::ANGLE_MIGRATION_HINT,
-                ] {
-                    assert!(
-                        rej.message.contains(needle),
-                        "{form} {label}: message must contain {needle:?}; got: {:?}",
-                        rej.message
-                    );
-                }
+            let rejections = angle_rejections(&diagnostics);
+            assert_eq!(
+                rejections.len(),
+                1,
+                "{form} {label}: exactly ONE rejection; got: {diagnostics:?}"
+            );
+            let rej = rejections[0];
+            assert_eq!(
+                rej.severity,
+                reify_core::Severity::Error,
+                "{form} {label}: was a Warning + exit 0 before ε; got: {rej:?}"
+            );
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{form} {label}: the retired warning carried NO code at all \
+                 (INV-SF-6); got: {rej:?}"
+            );
+            for needle in [
+                "circular_pattern: angle argument expects Angle, got ",
+                reify_core::units::ANGLE_MIGRATION_HINT,
+            ] {
                 assert!(
-                    !diagnostics
-                        .iter()
-                        .any(|d| d.message.contains("bare numeric angle")),
-                    "{form} {label}: the deprecation warning must be GONE, not \
-                     merely joined by a rejection; got: {diagnostics:?}"
+                    rej.message.contains(needle),
+                    "{form} {label}: message must contain {needle:?}; got: {:?}",
+                    rej.message
                 );
             }
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("bare numeric angle")),
+                "{form} {label}: the deprecation warning must be GONE, not \
+                 merely joined by a rejection; got: {diagnostics:?}"
+            );
         }
     }
 
@@ -6115,14 +5998,8 @@
             kind: reify_compiler::PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                // Axis ORIGIN is length-semantic → must be dimensioned Length.
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                // The axis: a LENGTH origin and a +Z Direction (ι-c's only form).
+                ("axis".into(), axis_z_literal()),
                 ("count".into(), literal_f64(6.0)),
                 // Explicit angle unit: PI radians
                 ("angle".into(), literal_angle(std::f64::consts::PI)),
@@ -6161,35 +6038,9 @@
         }
     }
 
-    /// Build the 9-arg SCALAR form of `circular_pattern` with caller-supplied
-    /// origin components. The axis DIRECTION (+Z), `count` and `angle` are held
-    /// fixed so each rejection test varies exactly one thing.
-    fn circular_pattern_with_origin(
-        ox: reify_ir::CompiledExpr,
-        oy: reify_ir::CompiledExpr,
-        oz: reify_ir::CompiledExpr,
-    ) -> CompiledGeometryOp {
-        CompiledGeometryOp::Pattern {
-            kind: PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                ("ox".into(), ox),
-                ("oy".into(), oy),
-                ("oz".into(), oz),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
-            ],
-        }
-    }
-
-    /// Build the axis-VALUE form of `circular_pattern` around a caller-supplied
-    /// `Value`. `count` and `angle` are held fixed so each test varies exactly
-    /// the axis it hands in — the value-form sibling of
-    /// [`circular_pattern_with_origin`].
+    /// Build `circular_pattern(target, axis, count, angle)` — its only form since
+    /// direction-typing ι-c — around a caller-supplied axis `Value`. `count` and
+    /// `angle` are held fixed so each test varies exactly the axis it hands in.
     fn circular_pattern_with_axis_value(axis: reify_ir::Value) -> CompiledGeometryOp {
         CompiledGeometryOp::Pattern {
             kind: PatternKind::Circular,
@@ -6203,233 +6054,6 @@
                 ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
             ],
         }
-    }
-
-    /// A BARE (dimensionless) circular-pattern axis-origin component must be
-    /// REJECTED — an axis ORIGIN is length-semantic (a point in space), so a
-    /// bare `12` would be silently read as 12 SI **metres** rather than 12 mm,
-    /// scattering the pattern 1000× too far with no diagnostic. The op is
-    /// dropped (Err) with a diagnostic naming the component and Length.
-    ///
-    /// Run once per component: `ox`/`oy`/`oz` are three separate call sites, so
-    /// an `ox`-only test would not notice one of the other two regressing back
-    /// to the bare-accepting `f64_arg` closure. Transposed from
-    /// `compile_geometry_op_mirror_bare_origin_rejected` (task 5214).
-    #[test]
-    fn compile_geometry_op_circular_pattern_bare_origin_rejected() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        for bare in ["ox", "oy", "oz"] {
-            // Exactly one origin component is BARE; the other two are Lengths.
-            let component = |name: &str| -> reify_ir::CompiledExpr {
-                if name == bare {
-                    literal_f64(0.0)
-                } else {
-                    literal_length(0.0)
-                }
-            };
-            let op =
-                circular_pattern_with_origin(component("ox"), component("oy"), component("oz"));
-
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let result = compile_geometry_op(
-                &op,
-                &values,
-                &step_handles,
-                &[],
-                &HashMap::new(),
-                &HashMap::new(),
-                &mut diagnostics,
-            );
-            assert!(
-                result.is_err(),
-                "bare (dimensionless) circular-pattern axis origin {bare} must \
-                 drop the op, got: {:?}",
-                result
-            );
-            assert!(
-                diagnostics
-                    .iter()
-                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
-                "a diagnostic must name the {bare} arg and the Length units \
-                 requirement; got: {:?}",
-                diagnostics
-            );
-        }
-    }
-
-    /// A WRONG-DIMENSION `Value::Scalar` axis origin must be rejected exactly
-    /// like a bare `Value::Real` — `accept_arg`'s dimension check is strict, so
-    /// only a LENGTH Scalar passes.
-    ///
-    /// Two arms, both of which a `Real`-only test would miss:
-    ///   (a) an ANGLE Scalar (`20deg` where an origin was meant) — a plausible
-    ///       argument-order slip on this 9-positional-arg signature, which ends
-    ///       in an angle;
-    ///   (b) a DIMENSIONLESS Scalar — the likeliest silent-regression path,
-    ///       since eval arithmetic can collapse to a dimensionless `Scalar`
-    ///       rather than a `Real`, so it would sneak past a `Real`-shaped guard.
-    #[test]
-    fn compile_geometry_op_circular_pattern_wrong_dimension_origin_rejected() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        for (label, ox_expr) in [
-            (
-                "ANGLE",
-                literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
-            ),
-            (
-                "dimensionless",
-                literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
-            ),
-        ] {
-            let op =
-                circular_pattern_with_origin(ox_expr, literal_length(0.0), literal_length(0.0));
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let result = compile_geometry_op(
-                &op,
-                &values,
-                &step_handles,
-                &[],
-                &HashMap::new(),
-                &HashMap::new(),
-                &mut diagnostics,
-            );
-            assert!(
-                result.is_err(),
-                "a {label} Scalar axis origin must drop the op, got: {:?}",
-                result
-            );
-            assert!(
-                diagnostics
-                    .iter()
-                    .any(|d| d.message.contains("ox") && d.message.contains("Length")),
-                "a diagnostic must name the ox arg and the Length requirement \
-                 for a {label} Scalar; got: {:?}",
-                diagnostics
-            );
-        }
-    }
-
-    /// A LENGTH-dimensioned but NON-FINITE axis origin (NaN / ±inf — e.g. from a
-    /// divide-by-zero in a parametric expression) must also drop the op, and
-    /// must say so specifically: the value IS a Length, so the generic
-    /// wrong-dimension wording would be wrong. Pins `eval_named_arg_length`'s
-    /// dedicated non-finite arm for this call site.
-    #[test]
-    fn compile_geometry_op_circular_pattern_non_finite_length_origin_rejected() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        for (label, si) in [
-            ("NaN", f64::NAN),
-            ("+inf", f64::INFINITY),
-            ("-inf", f64::NEG_INFINITY),
-        ] {
-            let op = circular_pattern_with_origin(
-                literal_length(si),
-                literal_length(0.0),
-                literal_length(0.0),
-            );
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let result = compile_geometry_op(
-                &op,
-                &values,
-                &step_handles,
-                &[],
-                &HashMap::new(),
-                &HashMap::new(),
-                &mut diagnostics,
-            );
-            assert!(
-                result.is_err(),
-                "a {label} Length axis origin must drop the op, got: {:?}",
-                result
-            );
-            assert!(
-                diagnostics.iter().any(|d| {
-                    d.message.contains("ox") && d.message.contains("non-finite Length")
-                }),
-                "the diagnostic for a {label} Length must name the arg and say \
-                 'non-finite Length' (NOT the wrong-dimension wording — the \
-                 value IS a Length); got: {:?}",
-                diagnostics
-            );
-        }
-    }
-
-    /// Locks the split: the circular-pattern axis ORIGIN must be a Length, but
-    /// the axis DIRECTION is a dimensionless unit vector — so a `Length` origin
-    /// with BARE direction components is accepted, no error. Also pins the
-    /// mm→metre semantics: a `12mm` origin reaches the IR as `0.012`, never
-    /// `12`.
-    ///
-    /// Every component is DISTINCT so this also pins the ox/oy/oz → `axis_origin`
-    /// COMPONENT ORDERING: the three reads happen outside the `f64_arg` closure
-    /// and the array is assembled separately, so a transposition to
-    /// `[ox, oz, oy]` is a live regression that an all-zero (or single-non-zero)
-    /// fixture could not see.
-    #[test]
-    fn compile_geometry_op_circular_pattern_length_origin_bare_direction_accepted() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        let op = circular_pattern_with_origin(
-            // 12mm/34mm/56mm — the values the bare form would have read as
-            // 12/34/56 metres.
-            literal_length(0.012),
-            literal_length(0.034),
-            literal_length(0.056),
-        );
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        match result {
-            Ok(reify_ir::GeometryOp::CircularPattern {
-                target,
-                axis_origin,
-                axis_dir,
-                count,
-                ..
-            }) => {
-                assert_eq!(target, GeometryHandleId(42));
-                // Bit-exact: each SI value is an identity pass-through of its
-                // literal, with no arithmetic applied. Distinct components ⇒
-                // this also rejects a transposed assembly.
-                assert_eq!(axis_origin, [0.012, 0.034, 0.056]);
-                assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
-                assert_eq!(count, 4);
-            }
-            other => panic!(
-                "expected Ok(CircularPattern) for Length origin + bare direction, \
-                 got {:?}",
-                other
-            ),
-        }
-        // Assert on CONTENT, not severity: the units gate never emits an
-        // `Error` here — `eval_named_arg_length` pushes `Diagnostic::warning`
-        // for every rejection, and the Error only materialises when the caller
-        // maps `compile_geometry_op`'s `Err(String)`. A severity filter would
-        // therefore pass even if a valid Length origin spuriously warned. The
-        // fixture uses a dimensioned `literal_angle`, so no bare-angle
-        // deprecation warning is expected either — the clean path is silent.
-        assert!(
-            diagnostics.is_empty(),
-            "Length origin + dimensionless direction is the fully clean path and \
-             must emit NO diagnostic at all (in particular no 'expects Length' / \
-             'non-finite Length' warning); got: {:?}",
-            diagnostics
-        );
     }
 
     /// FLIPPED by units-length δ (task 5745). This test previously asserted the
@@ -6504,9 +6128,8 @@
         for (d, name) in rejections.iter().zip(["ox", "oy", "oz"]) {
             assert_eq!(
                 d.message,
-                // The value form names the builtin the author typed, which is
-                // what the compile layer reports for the same mistake in the
-                // scalar form.
+                // The value form names the builtin the author typed, as the
+                // compile layer's messages for the same builtin do.
                 expected_length_rejection("circular_pattern", name, "Real"),
                 "the value form's rejection must name `circular_pattern`, the \
                  builtin the author typed"
@@ -6598,57 +6221,6 @@
             "a wrong variant is the decoder's own Err, not a units rejection, so \
              nothing is pushed; got: {:?}",
             diagnostics
-        );
-    }
-
-    /// Both forms of `circular_pattern` label the SAME bare-origin mistake with
-    /// the builtin the author typed (D7): the scalar form's
-    /// `required_length_origin3` and the value form's `decode_axis` render one
-    /// rejection template under one label, so neither form can drift from the
-    /// other.
-    #[test]
-    fn compile_geometry_op_circular_pattern_origin_rejection_label_agrees_across_forms() {
-        let origin_rejections = |op: CompiledGeometryOp| -> Vec<String> {
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            compile_geometry_op(
-                &op,
-                &ValueMap::new(),
-                &[GeometryHandleId(42)],
-                &[],
-                &HashMap::new(),
-                &HashMap::new(),
-                &mut diagnostics,
-            )
-            .expect_err("a bare origin must drop the op in both forms");
-            diagnostics
-                .into_iter()
-                .filter(|d| d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected))
-                .map(|d| d.message)
-                .collect()
-        };
-        let rejections_under = |label: &str| -> Vec<String> {
-            ["ox", "oy", "oz"]
-                .into_iter()
-                .map(|name| expected_length_rejection(label, name, "Real"))
-                .collect()
-        };
-
-        let scalar =
-            circular_pattern_with_origin(literal_f64(0.01), literal_f64(0.02), literal_f64(0.03));
-        let value = circular_pattern_with_axis_value(axis_of(
-            bare_real_vector3(0.01, 0.02, 0.03),
-            unit_dir(0.0, 0.0, 1.0),
-        ));
-
-        assert_eq!(
-            origin_rejections(scalar),
-            rejections_under("circular_pattern"),
-            "the scalar form names the builtin the author typed"
-        );
-        assert_eq!(
-            origin_rejections(value),
-            rejections_under("circular_pattern"),
-            "the value form names the builtin the author typed"
         );
     }
 
@@ -6851,14 +6423,10 @@
             kind: PatternKind::Linear2D,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx1".into(), literal_f64(1.0)),
-                ("dy1".into(), literal_f64(0.0)),
-                ("dz1".into(), literal_f64(0.0)),
+                ("direction1".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count1".into(), literal_f64(3.0)),
                 ("spacing1".into(), literal_length(0.02)),
-                ("dx2".into(), literal_f64(0.0)),
-                ("dy2".into(), literal_f64(1.0)),
-                ("dz2".into(), literal_f64(0.0)),
+                ("direction2".into(), literal_direction([0.0, 1.0, 0.0])),
                 ("count2".into(), literal_f64(4.0)),
                 ("spacing2".into(), literal_length(0.03)),
             ],
@@ -6914,15 +6482,11 @@
             kind: PatternKind::Linear2D,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx1".into(), literal_f64(1.0)),
-                ("dy1".into(), literal_f64(0.0)),
-                ("dz1".into(), literal_f64(0.0)),
+                ("direction1".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count1".into(), literal_f64(3.0)),
                 // BARE dimensionless spacing1 — must be rejected.
                 ("spacing1".into(), literal_f64(0.02)),
-                ("dx2".into(), literal_f64(0.0)),
-                ("dy2".into(), literal_f64(1.0)),
-                ("dz2".into(), literal_f64(0.0)),
+                ("direction2".into(), literal_direction([0.0, 1.0, 0.0])),
                 ("count2".into(), literal_f64(4.0)),
                 ("spacing2".into(), literal_length(0.03)),
             ],
@@ -7292,14 +6856,10 @@
             kind: PatternKind::Linear2D,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx1".into(), literal_f64(1.0)),
-                ("dy1".into(), literal_f64(0.0)),
-                ("dz1".into(), literal_f64(0.0)),
+                ("direction1".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count1".into(), literal_f64(3.0)),
                 ("spacing1".into(), literal_length(0.02)),
-                ("dx2".into(), literal_f64(0.0)),
-                ("dy2".into(), literal_f64(1.0)),
-                ("dz2".into(), literal_f64(0.0)),
+                ("direction2".into(), literal_direction([0.0, 1.0, 0.0])),
                 ("count2".into(), literal_f64(4.0)),
                 // spacing2 deliberately omitted
             ],
@@ -8743,9 +8303,7 @@
         let translate_op = CompiledGeometryOp::Transform {
             kind: reify_compiler::TransformKind::Translate,
             target: reify_compiler::GeomRef::Step(0),
-            // Translation components are LENGTH-semantic (task 5623); the
-            // `PatternKind::Linear` dx/dy/dz below share the names but are a
-            // dimensionless DIRECTION vector and stay bare.
+            // Translation components are LENGTH-semantic (task 5623).
             args: vec![
                 ("dx".into(), literal_length(1.0)),
                 ("dy".into(), literal_length(0.0)),
@@ -8774,9 +8332,7 @@
             kind: reify_compiler::PatternKind::Linear,
             target: reify_compiler::GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 ("spacing".into(), literal_length(0.02)),
             ],
@@ -8910,14 +8466,12 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        // LinearPattern with direction/count but OMITS spacing
         let op = CompiledGeometryOp::Pattern {
             kind: PatternKind::Linear,
             target: reify_compiler::GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 // spacing deliberately omitted
             ],
@@ -10234,11 +9788,11 @@
     // ---------------------------------------------------------------------------
     // `arc`'s CENTRE and RADIUS (task 5623, R1 sweep)
     //
-    // `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)` — the
-    // angles come BEFORE the axis. Unlike `line_segment` and `helix`, `arc`
-    // DOES have dimensionless neighbours: the two angles (PRD 3's scope, never
-    // ours) and the `ax`/`ay`/`az` unit vector. Four of its nine args are
-    // gated; the other five keep the bare-accepting `f64_arg` path.
+    // `arc(center, radius, start_angle, end_angle, normal)` (direction-typing
+    // ι-c): the centre is a `Point3` gated per component as
+    // `center.x`/`center.y`/`center.z`, and the radius a Length. Its other
+    // arguments are the two angles (PRD 3's scope, never ours) and the
+    // Direction normal.
     //
     // SCOPE PIN (PRD decision D13): every assertion here is on a rejection
     // DIAGNOSTIC or on a `GeometryOp::Arc` IR field as returned by
@@ -10249,34 +9803,36 @@
     // MEANS, not about who currently reads it.
     // ---------------------------------------------------------------------------
 
-    /// Build an `arc` op from its four gated positions (centre triple, then
-    /// radius) in gate order, holding both angles and the axis fixed and BARE.
+    /// Build an `arc` op from its four gated positions in gate order — the
+    /// three literal centre components assembled into one `Point3`, then the
+    /// radius — holding the dimensioned angles and the +Z normal fixed.
     fn arc_with_center_radius(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        let component = |e: &reify_ir::CompiledExpr| match &e.kind {
+            reify_ir::CompiledExprKind::Literal(v) => v.clone(),
+            other => panic!("a centre component must be a literal, got {other:?}"),
+        };
         CompiledGeometryOp::Curve {
             kind: CurveKind::Arc,
             args: vec![
-                ("cx".into(), c[0].clone()),
-                ("cy".into(), c[1].clone()),
-                ("cz".into(), c[2].clone()),
+                (
+                    "center".into(),
+                    literal_value(reify_ir::Value::Point(c[..3].iter().map(component).collect())),
+                ),
                 ("radius".into(), c[3].clone()),
-                // ANGLES are PRD 3's, never ours → stay bare.
                 ("start_angle".into(), literal_angle(0.0)),
                 ("end_angle".into(), literal_angle(1.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                ("normal".into(), literal_direction([0.0, 0.0, 1.0])),
             ],
         }
     }
 
     /// `arc`'s row in the shared gate table — a gated POINT plus a gated
-    /// standalone EXTENT, four of nine args.
+    /// standalone EXTENT.
     const ARC_GATE: LengthGateCase = LengthGateCase {
         label: "arc",
         build: arc_with_center_radius,
-        // Deliberately EXCLUDES `start_angle`/`end_angle`/`ax`/`ay`/`az`.
-        gated: &["cx", "cy", "cz", "radius"],
+        // Deliberately EXCLUDES the angles and the normal.
+        gated: &["center.x", "center.y", "center.z", "radius"],
         // Non-zero: a zero radius is degenerate independently of units.
         filler: 1.0,
         step_handles: &[],
@@ -10287,20 +9843,15 @@
         assert_length_gated(ARC_GATE);
     }
 
-    /// Locks the split AND the scope boundary: a Length centre + Length radius
-    /// alongside BARE angles and a BARE dimensionless axis is the fully clean
-    /// path and must emit NO diagnostic at all.
+    /// Locks the split: a Length centre + Length radius alongside dimensioned
+    /// angles and a Direction normal is the fully clean path and must emit NO
+    /// diagnostic at all.
     ///
-    /// The bare-angle half is binding scope protection, not decoration — `arc`
-    /// is the only gated builtin carrying TWO angle args, and both belong to
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3). Gating
-    /// either here would be a scope violation this test would catch.
-    ///
-    /// Distinct centre components pin the cx/cy/cz → `center` ORDERING, and the
+    /// Distinct centre components pin the `center` component ORDERING, and the
     /// radius is distinct from all three so a centre/radius transposition
     /// cannot pass. Assertions are on IR fields only (PRD D13).
     #[test]
-    fn compile_geometry_op_arc_length_center_radius_bare_angles_axis_accepted() {
+    fn compile_geometry_op_arc_length_center_and_radius_accepted() {
         let values = ValueMap::new();
 
         let op = arc_with_center_radius(&[
@@ -10335,16 +9886,15 @@
                 assert_eq!(axis, [0.0, 0.0, 1.0]);
             }
             other => panic!(
-                "expected Ok(Arc) for a Length centre and radius with bare angles \
-                 and a bare axis, got {:?}",
+                "expected Ok(Arc) for a Length centre and radius with dimensioned \
+                 angles and a Direction normal, got {:?}",
                 other
             ),
         }
         assert!(
             diagnostics.is_empty(),
-            "a Length centre + Length radius + dimensionless axis + BARE angles \
-             is the fully clean path and must emit NO diagnostic at all — in \
-             particular neither angle may be gated here (that is PRD 3's scope); \
+            "a Length centre + Length radius + dimensioned angles + Direction \
+             normal is the fully clean path and must emit NO diagnostic at all; \
              got: {:?}",
             diagnostics
         );
@@ -12417,9 +11967,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(1e15)),
                 ("spacing".into(), literal_length(0.01)),
             ],
@@ -12461,9 +12009,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(100_000.0)),
                 ("spacing".into(), literal_length(0.01)),
             ],
@@ -12509,9 +12055,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(100_001.0)),
                 ("spacing".into(), literal_length(0.01)),
             ],
@@ -25814,9 +25358,9 @@
         assert_eq!(
             got,
             Err("missing or non-Length argument 'ox' for circular_pattern".to_string()),
-            "the caller-facing `Err` is the SCALAR form's — same `ox`/`oy`/`oz` \
-             names since task 5350 — under the label the caller threads in: the \
-             builtin the author typed"
+            "the caller-facing `Err` keeps the retired SCALAR form's \
+             `ox`/`oy`/`oz` names (task 5350) under the label the caller threads \
+             in: the builtin the author typed"
         );
         assert_eq!(
             diagnostics.len(),

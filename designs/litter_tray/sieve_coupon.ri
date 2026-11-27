@@ -51,8 +51,8 @@ structure def SieveCoupon : Rigid {
     // ── Geometry ────────────────────────────────────────────────────────
     aux let plate  = translate(box(plate_w, plate_d, floor_t), 0mm, 0mm, floor_t / 2)
     // Spacings MUST carry units (a bare number is read as metres, #5318).
-    aux let grid_a = linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, nx_a, hole_pitch, 0, 1, 0, ny_a, 2 * row_step)
-    aux let grid_b = linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, nx_b, hole_pitch, 0, 1, 0, ny_b, 2 * row_step)
+    aux let grid_a = linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), dir(1, 0, 0), nx_a, hole_pitch, dir(0, 1, 0), ny_a, 2 * row_step)
+    aux let grid_b = linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), dir(1, 0, 0), nx_b, hole_pitch, dir(0, 1, 0), ny_b, 2 * row_step)
     aux let holes  = union_all(grid_a, grid_b)
     param geometry : Solid = difference(plate, holes)
 

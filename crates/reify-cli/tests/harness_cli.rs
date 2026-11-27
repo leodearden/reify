@@ -100,6 +100,8 @@ mod cli_eval_geometry;
 mod cli_eval_joint_direction_axis;
 #[path = "harness_cli/cli_eval_joint_position_enum.rs"]
 mod cli_eval_joint_position_enum;
+#[path = "harness_cli/cli_eval_pattern_primitive_direction_forms.rs"]
+mod cli_eval_pattern_primitive_direction_forms;
 #[path = "harness_cli/cli_eval_registry_determinism.rs"]
 mod cli_eval_registry_determinism;
 #[path = "harness_cli/cli_eval_result_fallback.rs"]

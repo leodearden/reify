@@ -2,7 +2,8 @@ use reify_core::{Diagnostic, SourceSpan};
 use reify_ir::CompiledExpr;
 
 use crate::arg_check::{
-    check_arg_count_at_least, check_arg_count_exact, push_labeled_arg_count_error,
+    check_arg_count_at_least, check_arg_count_exact, check_arg_count_exact_form,
+    push_labeled_arg_count_error,
 };
 use crate::types::{CompiledGeometryOp, CurveKind};
 
@@ -49,24 +50,28 @@ pub(crate) fn compile_curve_op(
             });
             Some(sub_ops)
         }
-        // arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
+        // arc(center, radius, start_angle, end_angle, normal) — a Point3
+        // centre and a Direction normal (direction-typing ι-c).
         "arc" => {
-            if !check_arg_count_exact("arc", compiled_args.len(), 9, expr_span, diagnostics) {
+            if !check_arg_count_exact_form(
+                "arc",
+                compiled_args.len(),
+                5,
+                "point3(x, y, z), radius, start_angle, end_angle, dir(x, y, z)",
+                expr_span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
             sub_ops.push(CompiledGeometryOp::Curve {
                 kind: CurveKind::Arc,
                 args: vec![
-                    ("cx".to_string(), it.next().unwrap()),
-                    ("cy".to_string(), it.next().unwrap()),
-                    ("cz".to_string(), it.next().unwrap()),
+                    ("center".to_string(), it.next().unwrap()),
                     ("radius".to_string(), it.next().unwrap()),
                     ("start_angle".to_string(), it.next().unwrap()),
                     ("end_angle".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
+                    ("normal".to_string(), it.next().unwrap()),
                 ],
             });
             Some(sub_ops)

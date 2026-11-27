@@ -39,7 +39,6 @@ affine_translate
 axis_through
 axis_x
 axis_y
-axis_z
 bbox
 bbox_center
 bbox_size

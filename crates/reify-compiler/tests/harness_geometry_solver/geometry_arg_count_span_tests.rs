@@ -99,14 +99,14 @@ fn sphere_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn linear_pattern_arg_count_diagnostic_has_span_label() {
-    // linear_pattern() expects 6 arguments — passing 1 should produce a labeled diagnostic
+    // linear_pattern() expects 4 arguments — passing 1 should produce a labeled diagnostic
     assert_arg_count_label(
         r#"
             structure S {
                 let p = linear_pattern(box(10mm, 10mm, 10mm))
             }
         "#,
-        "linear_pattern() expects 6 arguments",
+        "linear_pattern() expects 4 arguments",
     );
 }
 
@@ -114,14 +114,15 @@ fn linear_pattern_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn circular_pattern_arg_count_diagnostic_has_span_label() {
-    // circular_pattern() expects 9 arguments — passing 2 should produce a labeled diagnostic
+    // The retired 9-argument scalar form is an arity error naming the Axis
+    // form, the only one left.
     assert_arg_count_label(
         r#"
             structure S {
-                let p = circular_pattern(box(10mm, 10mm, 10mm), 1.0)
+                let p = circular_pattern(box(10mm, 10mm, 10mm), 12mm, 34mm, 56mm, 0, 0, 1, 6, 60deg)
             }
         "#,
-        "circular_pattern() expects 9 arguments",
+        "circular_pattern() expects 4 arguments: circular_pattern(geo, axis, count, angle), got 9",
     );
 }
 
@@ -160,14 +161,14 @@ fn mirror_retired_scalar_form_is_an_arity_error_naming_the_direction_form() {
 
 #[test]
 fn linear_pattern_2d_arg_count_diagnostic_has_span_label() {
-    // linear_pattern_2d() expects 11 arguments — passing 2 should produce a labeled diagnostic
+    // linear_pattern_2d() expects 7 arguments — passing 2 should produce a labeled diagnostic
     assert_arg_count_label(
         r#"
             structure S {
                 let p = linear_pattern_2d(box(10mm, 10mm, 10mm), 1mm)
             }
         "#,
-        "linear_pattern_2d() expects 11 arguments",
+        "linear_pattern_2d() expects 7 arguments",
     );
 }
 
@@ -447,14 +448,14 @@ fn line_segment_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn arc_arg_count_diagnostic_has_span_label() {
-    // arc() expects 9 arguments — passing 3 should produce a labeled diagnostic
+    // arc() expects 5 arguments — passing 3 should produce a labeled diagnostic
     assert_arg_count_label(
         r#"
             structure S {
                 let c = arc(0mm, 0mm, 0mm)
             }
         "#,
-        "arc() expects 9 arguments",
+        "arc() expects 5 arguments",
     );
 }
 

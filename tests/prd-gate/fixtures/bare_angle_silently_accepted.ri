@@ -13,7 +13,7 @@
 //          (≈ 2578°), not 45 degrees. Mechanism: the bare-accepting
 //          eval_named_arg_f64 in geometry_ops.rs.
 //
-//   circular_pattern(b, 0mm,0mm,0mm, 0.0,0.0,1.0, 4, 360)
+//   circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 4, 360)
 //       -> builds, exit 0, with
 //          `warning: circular_pattern: bare numeric angle \`360\` interpreted as
 //           360°; use \`360deg\` or \`6.283185rad\` for explicit units`
@@ -58,5 +58,5 @@ structure def BareAngleSilentlyAccepted {
     let spun = rotate(b, dir(0.0, 0.0, 1.0), 45)
 
     // Warned degrees — the contradictory convention, same literal shape.
-    let ring = circular_pattern(b, 0mm, 0mm, 0mm, 0.0, 0.0, 1.0, 4, 360)
+    let ring = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 4, 360)
 }

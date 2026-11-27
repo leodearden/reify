@@ -153,7 +153,7 @@ const MINIMUM_LISTING_FORMS: usize = 30;
 /// Forms each listing block must yield, so a block the reading stops reaching is
 /// named: the Primitives, 2D-profile / Prelude, GD&T-zone and Free-form listings.
 const SENTINELS: &[(&str, &str, Arity)] = &[
-    ("geometry", "half_space", Arity::Exact(6)),
+    ("geometry", "half_space", Arity::Exact(2)),
     ("geometry", "polygon", Arity::AtLeast(6)),
     ("geometry", "zone_annulus", Arity::Exact(4)),
     ("geometry", "nurbs_surface", Arity::Exact(6)),
