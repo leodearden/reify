@@ -155,18 +155,18 @@ class Cli(UnitFixture):
                               capture_output=True, text=True, check=False,
                               env=env)
 
-    def test_prints_sorted_key_and_path_lines(self):
+    def test_prints_sorted_key_and_assignment_site_lines(self):
         self.write("u.service.d/10-a.conf",
                    "[Service]\nEnvironment=ZED=1 ALPHA=1\n")
         self.write("u.service.d/20-b.conf",
-                   "[Service]\nEnvironment=MID=1\n")
+                   "[Service]\n# a comment\nEnvironment=MID=1\n")
         drop_in = self.root / "u.service.d"
         result = self.run_cli(str(drop_in))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout,
-                         f"ALPHA\t{drop_in}/10-a.conf\n"
-                         f"MID\t{drop_in}/20-b.conf\n"
-                         f"ZED\t{drop_in}/10-a.conf\n")
+                         f"ALPHA\t{drop_in}/10-a.conf:2\n"
+                         f"MID\t{drop_in}/20-b.conf:3\n"
+                         f"ZED\t{drop_in}/10-a.conf:2\n")
 
     def test_reads_utf8_whatever_the_locale_encoding(self):
         unit = self.write("a.conf",
@@ -176,7 +176,7 @@ class Cli(UnitFixture):
                             PYTHONUTF8="0")
         result = self.run_cli(str(unit), env=ascii_locale)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, f"FOO\t{unit}\n")
+        self.assertEqual(result.stdout, f"FOO\t{unit}:3\n")
 
     def test_unit_error_exits_1_with_one_diagnostic_line(self):
         unit = self.write("bad.conf",

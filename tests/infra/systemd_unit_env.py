@@ -3,15 +3,16 @@
 
 Reads unit files and drop-in directories as text, merged in the order systemd
 merges them, and reports every key that Environment= leaves in effect in the
-[Service] section, with the file that last set it. It fails closed on anything
-those files alone cannot answer: EnvironmentFile=, PassEnvironment= and
-UnsetEnvironment= draw keys from outside the tracked tree, so they raise
+[Service] section, with the file and line that last set it. It fails closed on
+anything those files alone cannot answer: EnvironmentFile=, PassEnvironment=
+and UnsetEnvironment= draw keys from outside the tracked tree, so they raise
 UnitEnvError, as do a malformed assignment, a missing path and a drop-in
 directory holding no *.conf file.
 
 CLI: systemd_unit_env.py <unit-file-or-drop-in-dir>... prints one
-`KEY<TAB>PATH` line per key, sorted by key; exit 1 on UnitEnvError (one
-diagnostic line on stderr), 2 on a usage error.
+`KEY<TAB>PATH:LINE` line per key, sorted by key, naming the assignment that
+left the key in effect; exit 1 on UnitEnvError (one diagnostic line on
+stderr), 2 on a usage error.
 """
 
 import os
@@ -140,7 +141,7 @@ def main(argv):
         print(f"systemd_unit_env.py: {err}", file=sys.stderr)
         return 1
     for entry in entries:
-        print(f"{entry.key}\t{entry.path}")
+        print(f"{entry.key}\t{entry.path}:{entry.line}")
     return 0
 
 

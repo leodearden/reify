@@ -334,7 +334,8 @@ done <<< "$PROBE_KEYS"
 # verbatim), and dark-factory hands that process environment to verify.
 # Read from the tracked files, never `systemctl show`, so the verdict is the
 # same on every host; systemd_unit_env.py fails closed on any directive whose
-# keys the tracked text cannot answer. Each key's origin is its own file.
+# keys the tracked text cannot answer. Each key's origin is the file:line of
+# the assignment that left it in effect.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Derivation (4/4): orchestrator systemd unit Environment= (deploy/systemd/orchestrator-reify.service.d) ---"
@@ -347,10 +348,10 @@ assert "orchestrator unit Environment= parse succeeded (non-vacuity; systemd_uni
     test "$_unit_rc" -eq 0
 
 UNIT_ENV_KEYS=""
-while IFS=$'\t' read -r _unit_key _unit_path; do
+while IFS=$'\t' read -r _unit_key _unit_site; do
     [ -z "$_unit_key" ] && continue
     UNIT_ENV_KEYS+="$_unit_key"$'\n'
-    note_origin "$_unit_key" "${_unit_path#"$REPO_ROOT/"}"
+    note_origin "$_unit_key" "${_unit_site#"$REPO_ROOT/"}"
 done <<< "$UNIT_ENV_LINES"
 
 assert "orchestrator unit Environment= contains REIFY_LANE_LEAK_STATUS_CMD (parse sanity)" \
