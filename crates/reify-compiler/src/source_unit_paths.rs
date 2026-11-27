@@ -19,7 +19,7 @@ use crate::expr::{
 use crate::scope::CompilationScope;
 use crate::source_unit::SourceUnitRecorder;
 use crate::source_unit_tables::{ReferenceRead, ReferenceRoot, SourceStep, StructuralQuery};
-use crate::types::TopologyTemplate;
+use crate::types::{GuardedDeclGroup, TopologyTemplate};
 
 /// Why the source-unit mode does not compile an expression as a path.
 pub(crate) enum NotAPath {
@@ -132,6 +132,8 @@ enum Target<'s> {
     },
     Cell(Type),
     Geometry,
+    /// A match-arm cluster: one sub whose definition each arm chooses.
+    Cluster(Vec<Type>),
 }
 
 impl Target<'_> {
@@ -147,6 +149,7 @@ impl Target<'_> {
             Target::Port { .. } => return None,
             Target::Cell(ty) => ty.clone(),
             Target::Geometry => Type::Geometry,
+            Target::Cluster(arms) => Type::Union(arms.clone()),
         })
     }
 }
@@ -257,6 +260,20 @@ fn next_target<'s>(
             let ty = trait_member_type(&bound, member, scope);
             cell_hop(ty, member, steps).ok_or(Halt::NotAPath(NotAPath::ByReceiverType))
         }
+        (Target::Cluster(arms), Hop::Member(member)) => match arm_member(&arms, member, scope) {
+            Some(target) => {
+                steps.push(SourceStep::Member((*member).to_string()));
+                Ok(Next::Into(target))
+            }
+            None => {
+                let cluster = match steps.last() {
+                    Some(SourceStep::Member(name)) => name.as_str(),
+                    _ => "",
+                };
+                let owner = format!("match-arm sub '{cluster}'");
+                Err(member_not_found(&owner, member, span, diagnostics))
+            }
+        },
         (Target::Collection(definition), Hop::Index(index)) => match literal_position(index) {
             Some(position) => {
                 steps.push(SourceStep::Index(position));
@@ -387,8 +404,7 @@ fn own_member<'s>(member: &str, scope: &'s CompilationScope) -> Option<Target<'s
         return Some(Target::Instance(Definition::Named(definition)));
     }
     if let Some(group) = scope.resolve_match_arm_group(member) {
-        let arms = group.arms.iter().map(|arm| arm.arm_type.clone()).collect();
-        return Some(Target::Cell(Type::Union(arms)));
+        return Some(cluster(group));
     }
     if scope.geometry_realization_names.contains(member) {
         return Some(Target::Geometry);
@@ -401,12 +417,20 @@ fn own_member<'s>(member: &str, scope: &'s CompilationScope) -> Option<Target<'s
 
 /// A member of another definition, from its template.
 fn template_member<'s>(template: &'s TopologyTemplate, member: &str) -> Option<Target<'s>> {
+    let guarded = template
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.member_decls());
     if let Some(cell) = template
         .value_cells
         .iter()
+        .chain(guarded)
         .find(|cell| cell.id.member == member && !member.starts_with("__"))
     {
         return Some(Target::Cell(cell.cell_type.clone()));
+    }
+    if let Some(group) = template.match_arm_groups.iter().find(|g| g.name == member) {
+        return Some(cluster(group));
     }
     if let Some(sub) = template
         .sub_components
@@ -438,6 +462,34 @@ fn template_member<'s>(template: &'s TopologyTemplate, member: &str) -> Option<T
             definition: Definition::Named(template.name.clone()),
             port: member.to_string(),
         })
+}
+
+fn cluster<'s>(group: &GuardedDeclGroup) -> Target<'s> {
+    Target::Cluster(group.arms.iter().map(|arm| arm.arm_type.clone()).collect())
+}
+
+/// `member` of a match-arm cluster: what the arms that declare it agree on, or
+/// a `Union` of their types. An arm that lacks it is not an error, since that
+/// arm may not be the one chosen; `None` when no arm declares it.
+fn arm_member<'s>(arms: &[Type], member: &str, scope: &'s CompilationScope) -> Option<Target<'s>> {
+    let mut found = arms.iter().filter_map(|arm| match arm {
+        Type::StructureRef(definition) => {
+            member_of(&Definition::Named(definition.clone()), member, scope)
+        }
+        _ => None,
+    });
+    let first = found.next()?;
+    let mut types: Vec<Type> = first.value_type(scope).into_iter().collect();
+    for ty in found.filter_map(|target| target.value_type(scope)) {
+        if !types.contains(&ty) {
+            types.push(ty);
+        }
+    }
+    Some(if types.len() > 1 {
+        Target::Cell(Type::Union(types))
+    } else {
+        first
+    })
 }
 
 fn template_of<'s>(name: &str, scope: &'s CompilationScope) -> Option<&'s TopologyTemplate> {
