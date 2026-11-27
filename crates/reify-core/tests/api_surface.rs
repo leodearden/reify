@@ -48,6 +48,19 @@ use reify_core::identity::{
     VersionId as VersionIdMod,
 };
 
+// ── instance_path ────────────────────────────────────────────────────────────
+use reify_core::{
+    AutoAnchor, AutoSite, AutoSiteSegment, CallChain, DefinitionName, InstancePath,
+    InstancePathError, ModuleName, PathElement, PathKey, PathName, PathStep,
+};
+use reify_core::instance_path::{
+    AutoAnchor as AutoAnchorMod, AutoSite as AutoSiteMod, AutoSiteSegment as AutoSiteSegmentMod,
+    CallChain as CallChainMod, DefinitionName as DefinitionNameMod,
+    InstancePath as InstancePathMod, InstancePathError as InstancePathErrorMod,
+    ModuleName as ModuleNameMod, PathElement as PathElementMod, PathKey as PathKeyMod,
+    PathName as PathNameMod, PathStep as PathStepMod,
+};
+
 // ── source_location ──────────────────────────────────────────────────────────
 use reify_core::{
     SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,
@@ -207,6 +220,41 @@ fn identity_flat_and_module_path() {
     let _: fn() -> Option<MemberNameMod> = || None;
     let _: fn() -> Option<SourceNodeId> = || None;
     let _: fn() -> Option<SourceNodeMod> = || None;
+}
+
+#[test]
+fn instance_path_flat_and_module_path() {
+    let _: fn() -> Option<AutoAnchor> = || None;
+    let _: fn() -> Option<AutoAnchorMod> = || None;
+    let _: fn() -> Option<AutoSite> = || None;
+    let _: fn() -> Option<AutoSiteMod> = || None;
+    let _: fn() -> Option<AutoSiteSegment> = || None;
+    let _: fn() -> Option<AutoSiteSegmentMod> = || None;
+    let _: fn() -> Option<CallChain> = || None;
+    let _: fn() -> Option<CallChainMod> = || None;
+    let _: fn() -> Option<DefinitionName> = || None;
+    let _: fn() -> Option<DefinitionNameMod> = || None;
+    let _: fn() -> Option<InstancePath> = || None;
+    let _: fn() -> Option<InstancePathMod> = || None;
+    let _: fn() -> Option<InstancePathError> = || None;
+    let _: fn() -> Option<InstancePathErrorMod> = || None;
+    let _: fn() -> Option<ModuleName> = || None;
+    let _: fn() -> Option<ModuleNameMod> = || None;
+    let _: fn() -> Option<PathElement> = || None;
+    let _: fn() -> Option<PathElementMod> = || None;
+    let _: fn() -> Option<PathKey> = || None;
+    let _: fn() -> Option<PathKeyMod> = || None;
+    let _: fn() -> Option<PathName> = || None;
+    let _: fn() -> Option<PathNameMod> = || None;
+    let _: fn() -> Option<PathStep> = || None;
+    let _: fn() -> Option<PathStepMod> = || None;
+
+    let flat = InstancePath::new(DefinitionName::new(
+        None,
+        PathName::new("Asm").expect("an identifier"),
+    ));
+    let via_module: InstancePathMod = flat.clone();
+    assert_eq!(via_module, flat);
 }
 
 #[test]
