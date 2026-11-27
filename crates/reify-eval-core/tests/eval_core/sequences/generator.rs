@@ -1023,12 +1023,14 @@ mod tests {
             limits: true,
             budgets: true,
             call: true,
+            solve: true,
         };
         assert_eq!(Features::every(), every);
         assert!(!Features::structure().cycles);
         assert!(!Features::structure().limits);
         assert!(!Features::structure().budgets);
         assert!(!Features::structure().call);
+        assert!(!Features::structure().solve);
         for seed in GATE_SEEDS {
             let case = generate(seed, every, GATE_EVENTS);
             assert_eq!(gate_case(seed), case, "seed {seed}");
@@ -1044,7 +1046,7 @@ mod tests {
             ToyKind::Collection => features.collection,
             ToyKind::Shape | ToyKind::Measure => features.kernel,
             ToyKind::Call => features.call,
-            ToyKind::Solve | ToyKind::Solved(_) => false,
+            ToyKind::Solve | ToyKind::Solved(_) => features.solve,
         }
     }
 
@@ -1060,6 +1062,7 @@ mod tests {
             limits: false,
             budgets: false,
             call: false,
+            solve: false,
         };
         let every = Features::every();
         let some_off = [
@@ -1077,11 +1080,22 @@ mod tests {
                 call: false,
                 ..every
             },
+            Features {
+                solve: false,
+                ..every
+            },
         ];
         for features in some_off {
             for seed in GATE_SEEDS {
                 let case = generate(seed, features, GATE_EVENTS);
                 assert!(!case.events.is_empty(), "seed {seed}");
+                let problems = values(&case)
+                    .into_iter()
+                    .any(|(_, value)| matches!(value, Val::Problem(_)));
+                assert!(
+                    features.solve || !problems,
+                    "seed {seed}, {features:?}: a problem"
+                );
                 for decl in decls(&case) {
                     assert!(
                         allows(features, decl.kind),
@@ -1095,6 +1109,123 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A fingerprint of `case`: FNV-1a over its debug text.
+    fn fingerprint(case: &Case) -> u64 {
+        let text = format!("{case:?}");
+        text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    /// The fingerprint of each gate seed's case, in order, as the
+    /// generator drew it with every feature before the solve feature
+    /// existed (leaf ι).
+    const BEFORE_SOLVE: [u64; 64] = [
+        0x0455c81721f022cc,
+        0xcc1eb15296a74a59,
+        0x80ed6a8b0cb942cd,
+        0xbacfb99ca655859c,
+        0x6b445fe3d2e752c5,
+        0x9489b8783eea8154,
+        0x0b19a01cb7112896,
+        0x5fe1b7581acd651c,
+        0xb310d30cf8de21c7,
+        0x6cb380adae69b717,
+        0x1242ca1843587d9e,
+        0xb07f3a121a650d55,
+        0xf0b6a8a2c5851c40,
+        0x6ce7ecbe82806987,
+        0x18a14314565cbbc8,
+        0xe0eeb7e4dfcef89e,
+        0x8c416d61dc9f3ae5,
+        0x0dab9f6a46ed5e4c,
+        0x02a311b63ff82bdf,
+        0x274005af827b9907,
+        0xda017719ca0db424,
+        0xc675596680fd1d85,
+        0x20986ceb5ed49e23,
+        0x644a1e305b7f4366,
+        0x9ed4b40eaf50ebfb,
+        0xf7ef0654a9a7da0a,
+        0xc8aac38020920171,
+        0xdb47a2b07f54f205,
+        0xb24de29144cc582d,
+        0x7ca5fdc9ade79417,
+        0x98f0ba90f571f75e,
+        0x0aec668d0188c92c,
+        0xb96fe880501a64a2,
+        0x069d6c64f6ef431a,
+        0x4a4155fc5cee5765,
+        0x49f5cbb2d2a79dcf,
+        0x9a908c40e8c90830,
+        0x9d8b7f41151738bd,
+        0xebacb083027f6b7e,
+        0x78d8a3b9f1c78633,
+        0x21869731fe5f4dd8,
+        0xd2430d6ac272a219,
+        0x2ab6fa2e9e00362a,
+        0x42865c56f15fc1e1,
+        0xac520093462441a4,
+        0x72c00d90060d2874,
+        0xbc4fbe5313eb1c9f,
+        0x03325ee034a3231f,
+        0xac7b0cff91cfb453,
+        0x4a49f7e315281f42,
+        0x532698737095df07,
+        0xb9c8e9c47794be10,
+        0x5f781765b41d51bf,
+        0x5d95b0949e8f3da5,
+        0x2aa05bf363ba2781,
+        0xe78ced7f812920b2,
+        0x6319bcfeea0e2f2c,
+        0xfc35f1bd8f2ade5f,
+        0xa478d214b2cfb090,
+        0x5a7912d16c20fd5f,
+        0x2a353867997e35c4,
+        0x8051f61de0b81c70,
+        0x9e5f9efce2f2bc7d,
+        0x6da27425b4d7447b,
+    ];
+
+    #[test]
+    fn with_solve_off_the_cases_of_the_other_features_are_unchanged() {
+        let solve_off = Features {
+            solve: false,
+            ..Features::every()
+        };
+        for (seed, before) in GATE_SEEDS.zip(BEFORE_SOLVE) {
+            let case = generate(seed, solve_off, GATE_EVENTS);
+            assert_eq!(fingerprint(&case), before, "seed {seed}: {case:?}");
+        }
+    }
+
+    #[test]
+    fn every_solve_the_gate_draws_is_one_view_deep() {
+        let mut trials = 0;
+        for (seed, case) in gate_cases() {
+            assert_eq!(first_invalid(&case), None, "seed {seed}");
+            let demanded: BTreeSet<_> = case.demanded().collect();
+            for (snapshot, inputs) in case.snapshots().into_iter().enumerate() {
+                let mut reference = Reference::new(inputs);
+                for path in &demanded {
+                    reference.answer(path).expect("the case is valid");
+                }
+                for trial in reference.every_trial() {
+                    trials += 1;
+                    let solves = trial
+                        .answers()
+                        .filter(|(_, answer)| answer.node == Some(ToyKind::Solve));
+                    for (path, _) in solves {
+                        panic!(
+                            "seed {seed}, snapshot {snapshot}: a trial answered the solve {path:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(trials > 0, "no gate case runs a trial");
     }
 
     #[test]
