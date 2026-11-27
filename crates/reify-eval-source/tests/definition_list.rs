@@ -29,7 +29,9 @@ fn accepted(path: &Path, source: &str) -> SourceOutput {
 }
 
 fn names(list: &DefinitionList) -> Vec<DefinitionName> {
-    list.iter().map(|definition| definition.name.clone()).collect()
+    list.iter()
+        .map(|definition| definition.name.clone())
+        .collect()
 }
 
 const EVERY_TOP_LEVEL_FORM: &str = "
@@ -112,7 +114,10 @@ fn the_list_reaches_imports_and_the_standard_library() {
     let main = position(&entry_definition("Main"));
     let motor = position(&module_definition("lib", "Motor"));
     let hidden = position(&module_definition("lib", "Hidden"));
-    let tolerance = position(&module_definition("std.tolerancing", "DimensionalTolerance"));
+    let tolerance = position(&module_definition(
+        "std.tolerancing",
+        "DimensionalTolerance",
+    ));
 
     assert!(
         main < motor && motor < hidden,
