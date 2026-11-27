@@ -805,9 +805,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         }
 
         CompiledExprKind::Match { discriminant, arms } => {
+            let mark = ctx.pending_mark();
             let disc_val = eval_expr(discriminant, ctx);
             // §9.2.5 — wholly-undef discriminant short-circuits before any arm is tried.
-            if disc_val.is_undef() {
+            // So does one that read a cell not here yet: no arm is chosen on a pending
+            // discriminant, whatever its tag.
+            if disc_val.is_undef() || ctx.pending_since(mark) {
                 return Value::Undef;
             }
             match &disc_val {
@@ -856,7 +859,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             then_branch,
             else_branch,
         } => {
+            let mark = ctx.pending_mark();
             let cond = eval_expr(condition, ctx);
+            // No arm is chosen on a condition that read a cell not here yet,
+            // whatever its value.
+            if ctx.pending_since(mark) {
+                return Value::Undef;
+            }
             match cond {
                 Value::Bool(true) => eval_expr(then_branch, ctx),
                 Value::Bool(false) => eval_expr(else_branch, ctx),
