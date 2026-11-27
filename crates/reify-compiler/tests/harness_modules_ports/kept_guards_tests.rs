@@ -57,7 +57,9 @@ fn clear_kept_guards(module: &mut ParsedModule) -> usize {
         for member in &mut structure.members {
             match member {
                 MemberDecl::Sub(sub) => {
-                    sub.spec_param_override_guards.iter_mut().for_each(&mut clear);
+                    sub.spec_param_override_guards
+                        .iter_mut()
+                        .for_each(&mut clear);
                     for entry in &mut sub.keyed_members {
                         entry.param_override_guards.iter_mut().for_each(&mut clear);
                     }
@@ -78,8 +80,9 @@ fn render(module: &CompiledModule) -> String {
         .templates
         .iter_mut()
         .map(|template| {
-            let mut controlling: Vec<_> =
-                std::mem::take(&mut template.structure_controlling).into_iter().collect();
+            let mut controlling: Vec<_> = std::mem::take(&mut template.structure_controlling)
+                .into_iter()
+                .collect();
             controlling.sort();
             let meta: BTreeMap<_, _> = std::mem::take(&mut template.meta).into_iter().collect();
             (template.name.clone(), controlling, meta)

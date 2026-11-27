@@ -466,11 +466,16 @@ fn keyed_entry_assignment_guard_is_kept() {
 
     let overrides: Vec<_> = vents.keyed_members[0].guarded_param_overrides().collect();
     assert_eq!(
-        overrides.iter().map(|(name, _, _)| *name).collect::<Vec<_>>(),
+        overrides
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect::<Vec<_>>(),
         vec!["w", "h"],
         "both assignments stay overrides, in source order"
     );
-    let w_guard = overrides[0].2.expect("`w = 2mm where thick` must keep its guard");
+    let w_guard = overrides[0]
+        .2
+        .expect("`w = 2mm where thick` must keep its guard");
     match &w_guard.condition.kind {
         ExprKind::Ident(name) => assert_eq!(name, "thick"),
         other => panic!("expected the guard condition to be `thick`, got {other:?}"),

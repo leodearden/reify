@@ -268,9 +268,12 @@ structure S {
             })
             .unwrap_or_else(|| panic!("expected port `{name}`"))
     };
-    let guard_name = |name: &str| match port(name).where_clause.as_ref().map(|w| &w.condition.kind) {
-        Some(ExprKind::Ident(ident)) => ident.clone(),
-        other => panic!("port `{name}`: expected an identifier guard, got {other:?}"),
+    let guard_name = |name: &str| {
+        let guard = port(name).where_clause.as_ref();
+        match guard.map(|w| &w.condition.kind) {
+            Some(ExprKind::Ident(ident)) => ident.clone(),
+            other => panic!("port `{name}`: expected an identifier guard, got {other:?}"),
+        }
     };
 
     assert_eq!(guard_name("a"), "on", "the bodiless form keeps its guard");

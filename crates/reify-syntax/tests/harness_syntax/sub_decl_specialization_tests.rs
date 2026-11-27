@@ -331,11 +331,16 @@ fn braces_assignment_guard_is_kept() {
 
     let overrides: Vec<_> = sub.guarded_spec_param_overrides().collect();
     assert_eq!(
-        overrides.iter().map(|(name, _, _)| *name).collect::<Vec<_>>(),
+        overrides
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect::<Vec<_>>(),
         vec!["t", "w"],
         "both assignments stay overrides, in source order"
     );
-    let t_guard = overrides[0].2.expect("`t = 6mm where thick` must keep its guard");
+    let t_guard = overrides[0]
+        .2
+        .expect("`t = 6mm where thick` must keep its guard");
     assert_eq!(ident_name(&t_guard.condition), "thick");
     assert!(
         overrides[1].2.is_none(),

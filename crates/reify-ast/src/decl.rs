@@ -630,7 +630,10 @@ impl SubDecl {
         zip_override_guards(
             &format_args!("sub `{}`", self.name),
             ("spec_param_overrides", &self.spec_param_overrides),
-            ("spec_param_override_guards", &self.spec_param_override_guards),
+            (
+                "spec_param_override_guards",
+                &self.spec_param_override_guards,
+            ),
         )
     }
 }
