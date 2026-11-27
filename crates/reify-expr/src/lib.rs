@@ -1953,9 +1953,12 @@ fn eval_variant_bind_arm(
 ///   collection, bind each element value under `variable_id`, evaluate the
 ///   predicate.
 ///
-/// Both modes share Kleene short-circuit semantics: forall short-circuits on
-/// `false`, exists short-circuits on `true`, `Undef` is tracked through the
-/// loop and yields `Undef` if no short-circuit fired.
+/// Both modes share Kleene short-circuit semantics ([`QuantifierFold`]): forall
+/// short-circuits on `false`, exists short-circuits on `true`, `Undef` is
+/// tracked through the loop and yields `Undef` if no short-circuit fired.
+/// Under a reader that may answer "not here yet" the predicate is evaluated
+/// for every element, so one round asks for every cell, and the outcome is
+/// the same.
 fn eval_quantifier(
     kind: QuantifierKind,
     variable_id: &ValueCellId,
@@ -1978,7 +1981,7 @@ fn eval_quantifier(
             })
             .collect();
 
-        let mut has_undef = false;
+        let mut fold = QuantifierFold::new(kind);
         for cell_id in &cell_ids {
             let mut pred_clone = predicate.clone();
             pred_clone.remap_cell(variable_id, cell_id);
@@ -1998,28 +2001,19 @@ fn eval_quantifier(
             let frame = ctx.scope.open_frame(&binding);
 
             let pred_val = eval_expr(&pred_clone, &ctx.with_frame(&frame));
-            match (kind, pred_val) {
-                (QuantifierKind::ForAll, Value::Bool(false)) => return Value::Bool(false),
-                (QuantifierKind::ForAll, Value::Bool(true)) => {}
-                (QuantifierKind::Exists, Value::Bool(true)) => return Value::Bool(true),
-                (QuantifierKind::Exists, Value::Bool(false)) => {}
-                (_, Value::Undef) => has_undef = true,
-                (_, _) => return Value::Undef, // type error
+            if fold.take(pred_val) && !ctx.reads_every_operand() {
+                break;
             }
         }
-        return if has_undef {
-            Value::Undef
-        } else {
-            match kind {
-                QuantifierKind::ForAll => Value::Bool(true),
-                QuantifierKind::Exists => Value::Bool(false),
-            }
-        };
+        return fold.outcome();
     }
 
     // ── Value-iteration fallback ──────────────────────────────────────────
+    // A collection that read a cell not here yet has no known elements: no
+    // body is evaluated over it.
+    let mark = ctx.pending_mark();
     let coll_val = eval_expr(collection, ctx);
-    if coll_val.is_undef() {
+    if coll_val.is_undef() || ctx.pending_since(mark) {
         return Value::Undef;
     }
 
@@ -2030,43 +2024,63 @@ fn eval_quantifier(
         _ => return Value::Undef, // not a collection
     };
 
-    match kind {
-        QuantifierKind::ForAll => {
-            // Kleene forall: false short-circuits, undef tracked
-            let mut has_undef = false;
-            for elem in &elements {
-                let pred_val = eval_pred_for_value_elem(elem, variable_id, predicate, ctx);
-                match pred_val {
-                    Value::Bool(false) => return Value::Bool(false),
-                    Value::Bool(true) => {}
-                    Value::Undef => has_undef = true,
-                    _ => return Value::Undef, // type error
+    let mut fold = QuantifierFold::new(kind);
+    for elem in &elements {
+        let pred_val = eval_pred_for_value_elem(elem, variable_id, predicate, ctx);
+        if fold.take(pred_val) && !ctx.reads_every_operand() {
+            break;
+        }
+    }
+    fold.outcome()
+}
+
+/// A quantifier's Kleene outcome over the predicate values taken so far: the
+/// first deciding value (`false` for forall, `true` for exists, a non-Bool's
+/// type error), else `Undef` when some value was `Undef`, else the neutral
+/// value (`true` for forall, `false` for exists).
+struct QuantifierFold {
+    kind: QuantifierKind,
+    decided: Option<Value>,
+    has_undef: bool,
+}
+
+impl QuantifierFold {
+    fn new(kind: QuantifierKind) -> Self {
+        Self {
+            kind,
+            decided: None,
+            has_undef: false,
+        }
+    }
+
+    /// Take one element's predicate value; true once the outcome is decided.
+    /// A value taken after that changes nothing.
+    fn take(&mut self, pred_val: Value) -> bool {
+        if self.decided.is_none() {
+            match (self.kind, pred_val) {
+                (QuantifierKind::ForAll, Value::Bool(false)) => {
+                    self.decided = Some(Value::Bool(false))
                 }
-            }
-            if has_undef {
-                Value::Undef
-            } else {
-                Value::Bool(true)
+                (QuantifierKind::Exists, Value::Bool(true)) => {
+                    self.decided = Some(Value::Bool(true))
+                }
+                (_, Value::Bool(_)) => {}
+                (_, Value::Undef) => self.has_undef = true,
+                (_, _) => self.decided = Some(Value::Undef), // type error
             }
         }
-        QuantifierKind::Exists => {
-            // Kleene exists: true short-circuits, undef tracked
-            let mut has_undef = false;
-            for elem in &elements {
-                let pred_val = eval_pred_for_value_elem(elem, variable_id, predicate, ctx);
-                match pred_val {
-                    Value::Bool(true) => return Value::Bool(true),
-                    Value::Bool(false) => {}
-                    Value::Undef => has_undef = true,
-                    _ => return Value::Undef, // type error
-                }
+        self.decided.is_some()
+    }
+
+    fn outcome(self) -> Value {
+        self.decided.unwrap_or(if self.has_undef {
+            Value::Undef
+        } else {
+            match self.kind {
+                QuantifierKind::ForAll => Value::Bool(true),
+                QuantifierKind::Exists => Value::Bool(false),
             }
-            if has_undef {
-                Value::Undef
-            } else {
-                Value::Bool(false)
-            }
-        }
+        })
     }
 }
 
