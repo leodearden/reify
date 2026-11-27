@@ -2,6 +2,8 @@
 //! path below its declarer at the step the body chose, answered with its
 //! own outcome, shared like any node and reachable by path.
 
+use std::collections::BTreeMap;
+
 use reify_eval_core::{
     Answer, Binding, Budget, Core, Cx, Declaration, Erased, Event, Failure, Hash128, Input,
     InputKey, Kind, KindId, Limit, Outcome, Path, Produced, Ref, RequestError, Snapshot, Space,
@@ -650,4 +652,234 @@ fn an_identical_parent_of_a_run_that_conflicted_across_two_requests_finds_the_st
         [conflict, value(7)]
     );
     assert_eq!(core.counters().body_runs(Twice::ID), runs);
+}
+
+/// The inputs of R/v, a call over the constant 0 whose one site [1]
+/// declares a call of its own recipe given its sum plus one, under the
+/// depth setting `depth`.
+fn recursion(depth: u64) -> Vec<(InputKey, Input)> {
+    let callee = Declaration::new(Call::ID).bind("calls", Binding::Passed(Ref::binding("calls")));
+    let calls = Calls(vec![toy::site(&[1], false, 1, callee)]);
+    let v = toy::call(
+        [Binding::Constant(toy::input_of(0_i64))],
+        toy::input("calls"),
+    );
+    scope_r(
+        [("v", v)],
+        [toy::named("calls", calls), toy::limit(Limit::Depth, depth)],
+    )
+}
+
+/// Loops, one unit of work at a time, until it has done the work the i64
+/// at "work" allows, and answers that it is out of work.
+struct Spin;
+
+/// The code of `Spin`'s failure.
+const OUT_OF_WORK: &str = "out of work";
+
+impl Kind for Spin {
+    type Out = i64;
+    const ID: KindId = KindId("test.spin");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let work = match cx.read::<i64>(&Ref::binding("work")).await {
+            Outcome::Value(work) => *work,
+            other => return Produced::Outcome(other),
+        };
+        let mut done = 0;
+        loop {
+            if done >= work {
+                let out = Failure::OfKind {
+                    kind: Spin::ID,
+                    code: OUT_OF_WORK,
+                };
+                return Produced::Outcome(Outcome::Failure(out));
+            }
+            done += 1;
+        }
+    }
+}
+
+#[test]
+fn unbounded_body_declared_recursion_stops_at_the_depth_limit_with_one_failure() {
+    const LIMIT: u64 = 5;
+    let mut core = toy::with_calls().build();
+    let snapshot = core.snapshot(recursion(LIMIT));
+    let s = toy::call_step(&[1], None);
+    let chain: Vec<Path> = (1..=LIMIT + 1)
+        .scan(toy::below("R", &["v"]), |at, _| {
+            let here = at.clone();
+            *at = at.child(s.clone());
+            Some(here)
+        })
+        .collect();
+
+    assert_eq!(
+        i64s(&mut core, &snapshot, &[&chain[0]]),
+        [failure(toy::blocked_by_child(s.clone()))]
+    );
+    let limit = usize::try_from(LIMIT).expect("a small limit");
+    assert_eq!(core.counters().body_runs(Call::ID), LIMIT);
+    let mut expected = vec![failure(toy::blocked_by_child(s)); limit];
+    expected.push(failure(Failure::TooDeep { limit: LIMIT }));
+    let paths: Vec<&Path> = chain.iter().collect();
+    assert_eq!(i64s(&mut core, &snapshot, &paths), expected);
+    let mut stored = BTreeMap::new();
+    let _ = core.selected_store(|result| {
+        *stored.entry(result.kind()).or_insert(0) += 1;
+        true
+    });
+    assert_eq!(
+        stored,
+        BTreeMap::from([(Call::ID, limit), (toy::Scope::ID, 1)]),
+        "a result for each call and none for the path too deep"
+    );
+
+    let mut core = toy::with_calls()
+        .kind::<Spin>()
+        .expect("a kind of the test's own")
+        .build();
+    let spin = || Declaration::new(Spin::ID).bind("work", toy::input("work"));
+    let snapshot = core.snapshot(scope_r(
+        [("a", spin()), ("b", spin())],
+        [toy::named("work", 1000_i64)],
+    ));
+    let out_of_work = failure(Failure::OfKind {
+        kind: Spin::ID,
+        code: OUT_OF_WORK,
+    });
+    let (a, b) = (toy::below("R", &["a"]), toy::below("R", &["b"]));
+    assert_eq!(i64s(&mut core, &snapshot, &[&a]), [out_of_work.clone()]);
+    assert_eq!(i64s(&mut core, &snapshot, &[&b]), [out_of_work]);
+    assert_eq!(core.counters().body_runs(Spin::ID), 1);
+}
+
+/// The inputs of R with identical members c1 and c2 as `shared_calls`,
+/// each call over the input "a" = 4 declaring three cells at sites [1],
+/// [2] and [3], given 4, 5 and 6, under the children setting `children`.
+fn three_sites(children: u64) -> Vec<(InputKey, Input)> {
+    let calls = Calls(
+        (0..3)
+            .map(|site: u64| {
+                let offset = i64::try_from(site).expect("a small offset");
+                toy::site(&[site + 1], false, offset, plain_cell())
+            })
+            .collect(),
+    );
+    let mut inputs = shared_calls(4, calls, 0);
+    inputs.push(toy::limit(Limit::ChildrenPerNode, children));
+    inputs
+}
+
+#[test]
+fn children_per_node_counts_the_children_a_body_declares() {
+    let looping = |children| {
+        let mut inputs = looping_call(&["l0", "l1", "l2"], [10, 20, 30]);
+        inputs.push(toy::limit(Limit::ChildrenPerNode, children));
+        inputs
+    };
+    let call = toy::below("R", &["call"]);
+    let looped: Vec<Path> = (0..3)
+        .map(|index| child_of("call", toy::call_step(&[1], Some(index))))
+        .collect();
+    let paths: Vec<&Path> = [&call].into_iter().chain(&looped).collect();
+
+    let mut core = toy::with_calls().build();
+    let snapshot = core.snapshot(looping(2));
+    assert_eq!(
+        i64s(&mut core, &snapshot, &paths),
+        [
+            failure(Failure::TooManyChildren { limit: 2 }),
+            value(10),
+            value(20),
+            value(30),
+        ]
+    );
+    let snapshot = core.snapshot(looping(3));
+    assert_eq!(
+        i64s(&mut core, &snapshot, &paths),
+        [value(120), value(10), value(20), value(30)]
+    );
+
+    let mut core = toy::with_calls().build();
+    let snapshot = core.snapshot(three_sites(2));
+    let (first, second) = (result_of("c1"), result_of("c2"));
+    let found: Vec<Path> = (1..=3)
+        .map(|site| second.child(toy::call_step(&[site], None)))
+        .collect();
+    let too_many = failure(Failure::TooManyChildren { limit: 2 });
+    assert_eq!(i64s(&mut core, &snapshot, &[&first]), [too_many.clone()]);
+    let paths: Vec<&Path> = [&second].into_iter().chain(&found).collect();
+    assert_eq!(
+        i64s(&mut core, &snapshot, &paths),
+        [too_many, value(4), value(5), value(6)]
+    );
+    assert_eq!(core.counters().body_runs(Call::ID), 1, "found, not run");
+    let snapshot = core.snapshot(three_sites(3));
+    assert_eq!(i64s(&mut core, &snapshot, &[&second]), [value(19)]);
+    assert_eq!(core.counters().body_runs(Call::ID), 1);
+}
+
+/// Declares the member "a" by its value and, by its body, a child at that
+/// same step: both a cell over the constant 1.
+struct Same;
+
+impl Kind for Same {
+    type Out = Members;
+    const ID: KindId = KindId("test.same");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<Members> {
+        let child = cx.child::<i64>(Step::named("a"), constant_cell(1)).await;
+        Produced::Outcome(match child {
+            Outcome::Value(_) => Outcome::of(toy::members([("a", constant_cell(1))])),
+            Outcome::Failure(failure) => Outcome::Failure(failure),
+            Outcome::Absent => Outcome::Absent,
+        })
+    }
+
+    fn content(out: &Members) -> Option<Hash128> {
+        Some(out.content())
+    }
+
+    fn declares(out: &Members, step: &Step) -> Option<Declaration> {
+        out.0.get(step).cloned()
+    }
+
+    fn steps(out: &Members) -> impl Iterator<Item = Step> {
+        out.0.keys().cloned()
+    }
+}
+
+#[test]
+fn children_per_node_counts_a_step_both_a_body_and_its_result_declare_once() {
+    let mut core = toy::with_calls()
+        .kind::<Same>()
+        .and_then(|builder| builder.kind::<Both>())
+        .expect("kinds of the test's own")
+        .build();
+    let snapshot = core.snapshot([
+        toy::root("S", Declaration::new(Same::ID)),
+        toy::root("B", Declaration::new(Both::ID)),
+        toy::limit(Limit::ChildrenPerNode, 1),
+    ]);
+    let (same, both) = (toy::at("S"), toy::at("B"));
+
+    let answers: Vec<Answer<Members>> = toy::answers_to(&mut core, &snapshot, &[&same, &both])
+        .into_iter()
+        .map(Answer::downcast)
+        .collect();
+    assert_eq!(
+        answers,
+        [
+            Answer::Final(Outcome::of(toy::members([("a", constant_cell(1))]))),
+            Answer::Final(Outcome::Failure(Failure::TooManyChildren { limit: 1 })),
+        ],
+        "same declares one step by its body and its result; both declares two steps with equal keys"
+    );
+    assert_eq!(
+        i64s(&mut core, &snapshot, &[&same.child(Step::named("a"))]),
+        [value(1)]
+    );
 }
