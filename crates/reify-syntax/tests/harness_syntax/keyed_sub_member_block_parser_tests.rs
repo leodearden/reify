@@ -448,3 +448,35 @@ fn regression_specialization_body_has_empty_keyed_members() {
         sub.keyed_members.len(),
     );
 }
+
+/// A keyed entry's braces assignment keeps its `where` guard, one slot per
+/// override: `w = 2mm where thick` gives `Some`, `h = 1mm` gives `None`.
+#[test]
+fn keyed_entry_assignment_guard_is_kept() {
+    let source = r#"structure S {
+        param thick : Bool = true
+        sub vents : Keyed<Vent> {
+            "a" => {
+                w = 2mm where thick
+                h = 1mm
+            }
+        }
+    }"#;
+    let vents = parse_first_sub(source);
+
+    let overrides: Vec<_> = vents.keyed_members[0].guarded_param_overrides().collect();
+    assert_eq!(
+        overrides.iter().map(|(name, _, _)| *name).collect::<Vec<_>>(),
+        vec!["w", "h"],
+        "both assignments stay overrides, in source order"
+    );
+    let w_guard = overrides[0].2.expect("`w = 2mm where thick` must keep its guard");
+    match &w_guard.condition.kind {
+        ExprKind::Ident(name) => assert_eq!(name, "thick"),
+        other => panic!("expected the guard condition to be `thick`, got {other:?}"),
+    }
+    assert!(
+        overrides[1].2.is_none(),
+        "`h = 1mm` carries no guard, so its slot is None"
+    );
+}
