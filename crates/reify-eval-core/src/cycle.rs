@@ -61,7 +61,7 @@ fn rings(waits: &Waits, from: impl IntoIterator<Item = NodeKey>) -> Vec<BTreeSet
     let mut walk = Walk::default();
     for start in from {
         if !walk.order.contains_key(&start) {
-            walk.from(waits, start);
+            walk.visit(waits, start);
         }
     }
     walk.rings.sort();
@@ -94,7 +94,7 @@ struct Walk {
 
 impl Walk {
     /// Walks every node reachable from `start` that is not reached yet.
-    fn from(&mut self, waits: &Waits, start: NodeKey) {
+    fn visit(&mut self, waits: &Waits, start: NodeKey) {
         self.reach(start);
         let mut frames = vec![(start, waits.awaits(start))];
         while let Some(frame) = frames.last_mut() {
