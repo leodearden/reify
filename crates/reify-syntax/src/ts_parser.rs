@@ -3277,6 +3277,7 @@ impl<'a> Lowering<'a> {
                     // overrides body's `param_assignment` children and lower each
                     // `(name, value)` via the shared `lower_binding_value` helper.
                     let mut param_overrides: Vec<(String, Expr)> = Vec::new();
+                    let mut param_override_guards: Vec<Option<WhereClause>> = Vec::new();
                     let mut po_cursor = overrides_node.walk();
                     for child in overrides_node.children(&mut po_cursor) {
                         if child.kind() == "param_assignment"
@@ -3286,11 +3287,18 @@ impl<'a> Lowering<'a> {
                             let param_name = self.node_text(name_node).to_string();
                             if let Some(expr) = self.lower_binding_value(value_node) {
                                 param_overrides.push((param_name, expr));
+                                param_override_guards.push(self.lower_where_clause(child));
                             }
                         }
                     }
                     let span = self.span(entry);
-                    entries.push(KeyedSubMemberEntry { key, overrides, param_overrides, span });
+                    entries.push(KeyedSubMemberEntry {
+                        key,
+                        overrides,
+                        param_overrides,
+                        param_override_guards,
+                        span,
+                    });
                 }
                 (None, entries)
             }

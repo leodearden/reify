@@ -421,7 +421,30 @@ pub struct KeyedSubMemberEntry {
     /// `SubComponentDecl.keyed_member_overrides` and applies them as per-key
     /// elaboration args.
     pub param_overrides: Vec<(String, Expr)>,
+    /// The `where` guard of each entry of `param_overrides`: one slot per
+    /// override, in the same order, as on
+    /// [`SubDecl::spec_param_override_guards`]. Read the pair through
+    /// [`KeyedSubMemberEntry::guarded_param_overrides`]. The old compile does
+    /// not read this field.
+    pub param_override_guards: Vec<Option<WhereClause>>,
     pub span: SourceSpan,
+}
+
+impl KeyedSubMemberEntry {
+    /// Each assignment in this entry's braces as `(name, value, guard)`, in
+    /// source order.
+    ///
+    /// Panics if `param_overrides` and `param_override_guards` differ in
+    /// length.
+    pub fn guarded_param_overrides(
+        &self,
+    ) -> impl Iterator<Item = (&str, &Expr, Option<&WhereClause>)> {
+        zip_override_guards(
+            &format_args!("keyed entry \"{}\"", self.key),
+            ("param_overrides", &self.param_overrides),
+            ("param_override_guards", &self.param_override_guards),
+        )
+    }
 }
 
 /// `sub mount_hole = Hole(diameter: 6mm)` or `sub part = Box<Bolt>()`
@@ -2634,6 +2657,7 @@ mod member_test_fixtures {
                     key: key.to_string(),
                     overrides,
                     param_overrides: Vec::new(),
+                    param_override_guards: Vec::new(),
                     span: SourceSpan::new(0, 1),
                 })
                 .collect(),

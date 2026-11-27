@@ -126,6 +126,9 @@ pub(super) fn keyed_entry_param_override_exprs(
         // `SubDecl::body`.
         overrides: _,
         param_overrides,
+        // The old compile does not evaluate a braces assignment's guard, so no
+        // reference resolves through it.
+        param_override_guards: _,
         span: _,
     } = entry;
     param_overrides.iter().map(|(_, e)| e)

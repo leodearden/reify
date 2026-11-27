@@ -674,12 +674,16 @@ impl Collector {
             key: _,
             overrides,
             param_overrides,
+            param_override_guards,
             span: _,
         } in keyed_members
         {
             self.members(overrides);
             for (_, value) in param_overrides {
                 self.visit_expr(value);
+            }
+            for guard in param_override_guards {
+                self.where_clause(guard);
             }
         }
         if let Some(binder) = index_binder {
