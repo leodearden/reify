@@ -2,7 +2,7 @@
 //! call of design.rs's constructors or an enum variant, so a failing case
 //! found by the random run can be pasted in as a named test.
 
-use reify_eval_core::{Limit, Step, StepKey};
+use reify_eval_core::{Limit, Space, Step, StepKey};
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{
@@ -57,10 +57,24 @@ fn list(items: impl Iterator<Item = String>) -> String {
     items.collect::<Vec<_>>().join(", ")
 }
 
+/// A step as the call that rebuilds it, space and all: design.rs's
+/// constructors make only default-space steps, so a step in a named space
+/// prints as the core's own constructor.
 fn step_text(step: &Step) -> String {
-    match step.key() {
-        StepKey::Name(name) => format!("step({:?})", &**name),
-        StepKey::Index(index) => format!("index({index})"),
+    match (step.space(), step.key()) {
+        (Space::Default, StepKey::Name(name)) => format!("step({:?})", &**name),
+        (Space::Default, StepKey::Index(index)) => format!("index({index})"),
+        (Space::Named(space), key) => format!(
+            "reify_eval_core::Step::new(reify_eval_core::Space::Named({space:?}), {})",
+            step_key_text(key)
+        ),
+    }
+}
+
+fn step_key_text(key: &StepKey) -> String {
+    match key {
+        StepKey::Name(name) => format!("reify_eval_core::StepKey::Name({:?}.into())", &**name),
+        StepKey::Index(index) => format!("reify_eval_core::StepKey::Index({index})"),
     }
 }
 
@@ -222,9 +236,13 @@ fn event_text(event: &HostEvent) -> String {
 }
 
 mod tests {
+    use reify_eval_core::{Space, Step, StepKey};
+
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::*;
     use super::{Expectation, print_test};
+
+    const OTHER: Space = Space::Named("toy.other");
 
     /// A case using every key, value, binding, step, event and ending.
     fn every_variant() -> Case {
@@ -248,6 +266,10 @@ mod tests {
                         ),
                         (step("m4"), shape(input("i"))),
                         (step("m5"), measure(declarer([step("m4")]))),
+                        (
+                            Step::new(OTHER, StepKey::Name("m6".into())),
+                            shape(input("i")),
+                        ),
                     ]),
                 ),
                 (named("f"), flag(true)),
@@ -272,7 +294,10 @@ mod tests {
                 },
                 HostEvent::Drive {
                     on: 0,
-                    paths: vec![path("r", [step("m1"), index(3)])],
+                    paths: vec![
+                        path("r", [step("m1"), index(3)]),
+                        path("r", [Step::new(OTHER, StepKey::Index(0))]),
+                    ],
                     turns: 2,
                     then: Then::End,
                 },
@@ -298,12 +323,12 @@ fn printed_case() {
             (named("e"), declaration(cell([input("x")]))),
             (named("f"), flag(true)),
             (named("i"), int(-3)),
-            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e"))), (step("m2"), picker(input("i"), declarer([step("m1")]))), (step("m3"), divided(cell([input("i")]), declarer([step("m0")]))), (step("m4"), shape(input("i"))), (step("m5"), measure(declarer([step("m4")])))])),
+            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e"))), (step("m2"), picker(input("i"), declarer([step("m1")]))), (step("m3"), divided(cell([input("i")]), declarer([step("m0")]))), (step("m4"), shape(input("i"))), (step("m5"), measure(declarer([step("m4")]))), (reify_eval_core::Step::new(reify_eval_core::Space::Named("toy.other"), reify_eval_core::StepKey::Name("m6".into())), shape(input("i")))])),
         ]),
         events: vec![
             HostEvent::Edit { from: 0, changes: vec![(named("i"), Some(int(4))), (named("f"), None)] },
             HostEvent::Evaluate { on: 1, paths: vec![path("r", [step("m0")]), path("g", [])], budget: Some(5), then: Then::Leave },
-            HostEvent::Drive { on: 0, paths: vec![path("r", [step("m1"), index(3)])], turns: 2, then: Then::End },
+            HostEvent::Drive { on: 0, paths: vec![path("r", [step("m1"), index(3)]), path("r", [reify_eval_core::Step::new(reify_eval_core::Space::Named("toy.other"), reify_eval_core::StepKey::Index(0))])], turns: 2, then: Then::End },
         ],
     };
 "##;
