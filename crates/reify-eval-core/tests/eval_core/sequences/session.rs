@@ -18,10 +18,11 @@ use reify_eval_core::{
 use super::case::{Case, HostEvent, Then};
 use super::charge::surely_charged;
 use super::design::{Inputs, Key, ModelPath, ModelRef, ToyKind, Val, to_core};
+use super::expected::{Expect, Expected, Out};
 use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
 use super::mismatch::Mismatch;
 use super::reach::{Reach, Shape};
-use super::reference::{Expect, Expected, Out, Reference};
+use super::reference::Reference;
 use super::seen::Seen;
 use crate::toy;
 
@@ -652,9 +653,9 @@ mod tests {
 
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::*;
+    use super::super::expected::Invalid;
     use super::super::mismatch::Mismatch;
     use super::super::reach::Shape;
-    use super::super::reference::Invalid;
     use super::super::seen::Seen;
     use super::{check, toy_core};
     use crate::toy;

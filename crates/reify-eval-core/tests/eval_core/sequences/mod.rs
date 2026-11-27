@@ -5,6 +5,7 @@
 mod case;
 mod charge;
 mod design;
+mod expected;
 mod faulty;
 mod fresh;
 mod g0;

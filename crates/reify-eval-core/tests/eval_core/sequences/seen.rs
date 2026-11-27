@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use reify_eval_core::{Answer, Declaration, Erased, Failure, Outcome, OutsideFailure, Step, Value};
 
 use super::design::core_members;
-use super::reference::{Expect, Out};
+use super::expected::{Expect, Out};
 use crate::toy;
 
 #[derive(Debug, Clone, PartialEq)]

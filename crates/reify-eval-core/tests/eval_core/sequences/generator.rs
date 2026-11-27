@@ -936,7 +936,8 @@ mod tests {
 
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Bind, Decl, Key, ToyKind, Val};
-    use super::super::reference::{Expect, Invalid, Reference, first_invalid};
+    use super::super::expected::{Expect, Invalid};
+    use super::super::reference::{Reference, first_invalid};
     use super::{
         BLOCKED_PAIR_ZERO, Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate,
     };
