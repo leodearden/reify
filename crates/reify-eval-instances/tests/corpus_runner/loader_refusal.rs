@@ -72,3 +72,50 @@ fn a_path_the_text_form_cannot_read_is_refused_naming_it() {
         );
     }
 }
+
+/// An entry whose one row is a compile error, with `code_line` beside it.
+fn compile_error_entry(needs: &str, code_line: &str) -> String {
+    format!(
+        r#"tests = "A `let` written in a sub's braces is read only there."
+rule = "decision D10(f)"
+provenance = "design Part 4"
+needs = [{needs}]
+answer_basis = "stated"
+
+[[expect]]
+compile_error = "`zz` is a `let` written in the braces of `s` and can be read only there"
+{code_line}
+"#
+    )
+}
+
+#[test]
+fn a_compile_error_row_carries_a_real_code() {
+    let unknown = compile_error_entry(r#""compile-error""#, r#"code = "NoSuchCode""#);
+    let message = refusal(&unknown);
+    assert!(
+        message.contains("NoSuchCode"),
+        "an unknown code must be refused by name, got: {message}"
+    );
+
+    let uncoded = compile_error_entry(r#""compile-error", "braces""#, "");
+    let message = refusal(&uncoded);
+    assert!(
+        message.contains("a `compile_error` row needs a `code`"),
+        "a compile error of this PRD with no code must be refused, got: {message}"
+    );
+
+    let owned_elsewhere =
+        compile_error_entry(r#""compile-error", "braces", "required-arguments""#, "");
+    if let Err(error) = EntryRecord::from_toml(&owned_elsewhere) {
+        panic!("an entry needing a word owned outside this PRD may leave out the code: {error}");
+    }
+
+    let coded = compile_error_entry(
+        r#""compile-error""#,
+        r#"code = "PrivateLetReadFromAnotherDefinition""#,
+    );
+    if let Err(error) = EntryRecord::from_toml(&coded) {
+        panic!("a row naming a declared code must load: {error}");
+    }
+}
