@@ -1143,3 +1143,130 @@ fn structural_queries_are_typed_as_values() {
     );
     assert_eq!(tree.result_type, instances);
 }
+
+const GEOMETRY_OF_A_VALUE_SOURCE: &str = "
+structure def Tool {
+    param r : Real = 2
+    let body = cylinder(r * 1mm, 10mm)
+}
+structure def Asm {
+    sub held : Tool
+    let t = Tool(r: 3)
+    let tools = [Tool(r: 1), Tool(r: 2)]
+}
+";
+
+/// The nodes of the tree that `matches` picks.
+fn nodes_where(
+    tree: &reify_ir::CompiledExpr,
+    matches: impl Fn(&reify_ir::CompiledExpr) -> bool,
+) -> Vec<reify_ir::CompiledExpr> {
+    let mut found = Vec::new();
+    tree.walk(&mut |node| {
+        if matches(node) {
+            found.push(node.clone());
+        }
+    });
+    found
+}
+
+/// PRD §5.7 row "`tool.body` on a value": a geometry member of a value is
+/// read by opening the value, so it is a reference, not a field.
+#[test]
+fn geometry_member_of_a_value_is_a_reference() {
+    let module = compile_clean(GEOMETRY_OF_A_VALUE_SOURCE);
+    let registry = template_registry(&module);
+    let scope = definition_scope(&module, &registry, "Asm");
+
+    for (text, path) in [
+        ("t.body", &["t", "body"][..]),
+        ("self.held.body", &["held", "body"]),
+    ] {
+        let (unit, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(
+            errors_of(&diagnostics).is_empty(),
+            "{text}: {diagnostics:?}"
+        );
+        let (reference, ty) = sole_reference(&unit);
+        assert_eq!(shape(reference), own_value(members(path)), "{text}");
+        assert_eq!(ty, &Type::Geometry, "{text}");
+    }
+
+    // Through a binder that holds an element of a list of values (a
+    // quantifier's: a lambda's parameter is untyped here), the read opens the
+    // value the binder holds.
+    let (unit, diagnostics) = compile_unit(
+        "forall x in tools: volume(x.body) == volume(x.body)",
+        &scope,
+        &module,
+    );
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let binder = quantifier_variable(&unit.expr);
+    let opened: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|r| r.root != ReferenceRoot::Own)
+        .collect();
+    assert_eq!(
+        opened.iter().map(|r| shape(r)).collect::<Vec<_>>(),
+        vec![(
+            ReferenceRoot::Binder { id: binder },
+            members(&["body"]),
+            ReferenceRead::Value
+        )]
+    );
+    let opened_id = opened[0].id.clone();
+    let reads = nodes_where(
+        &unit.expr,
+        |node| matches!(&node.kind, CompiledExprKind::ValueRef(id) if id == &opened_id),
+    );
+    assert_eq!(reads.len(), 2, "{:?}", unit.expr);
+    assert!(
+        reads.iter().all(|read| read.result_type == Type::Geometry),
+        "{reads:?}"
+    );
+
+    // A parameter is a field the value carries: today's projection.
+    let (unit, diagnostics) = compile_unit("forall x in tools: x.r > 0", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let binder = quantifier_variable(&unit.expr);
+    let projections = nodes_where(&unit.expr, |node| {
+        matches!(&node.kind, CompiledExprKind::IndexAccess { object, .. }
+            if matches!(&object.kind, CompiledExprKind::ValueRef(id) if id == &binder))
+    });
+    assert_eq!(projections.len(), 1, "{:?}", unit.expr);
+    assert!(
+        unit.references
+            .iter()
+            .all(|r| shape(r) == own_value(members(&["tools"]))),
+        "{:?}",
+        unit.references
+    );
+
+    // A name the value's definition does not declare.
+    let (_, diagnostics) = compile_unit("forall x in tools: x.nosuch > 0", &scope, &module);
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::StructureMemberNotFound),
+        "{diagnostics:?}"
+    );
+
+    // The existing compile, on the same scope (outcomes measured when this
+    // test was written): a field projection of the cell, and the sub's
+    // member stamped with the definition's name.
+    let (tree, diagnostics) = compile_existing("t.body", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let CompiledExprKind::IndexAccess { object, .. } = &tree.kind else {
+        panic!("expected a field projection, got {tree:?}");
+    };
+    assert!(
+        matches!(&object.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm", "t")),
+        "{object:?}"
+    );
+    assert_eq!(tree.result_type, Type::Geometry);
+    let (tree, diagnostics) = compile_existing("self.held.body", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    assert!(
+        matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm.held", "body")),
+        "{tree:?}"
+    );
+}
