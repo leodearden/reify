@@ -1124,7 +1124,7 @@ const PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS: &[&str] =
 ///
 /// Runtime enumeration (actually populating the list) is deferred to the β/γ
 /// tasks; this α task provides compiler-typing only.
-const STRUCTURAL_QUERY_ACCESSORS: &[&str] = &["children", "members", "descendants"];
+const STRUCTURAL_QUERY_ACCESSORS: &[&str] = &crate::source_unit_tables::StructuralQuery::NAMES;
 
 /// Entity-kind name that acts as the purpose-subject wildcard.
 ///
@@ -1720,6 +1720,11 @@ fn compile_expr_guarded_with_expected_inner(
             CompiledExpr::literal(Value::String(s.clone()), Type::String)
         }
         reify_ast::ExprKind::Ident(name) => {
+            if let Some(unit) = scope.source_unit()
+                && let Some(read) = crate::source_unit_paths::compile_bare_name(name, scope, unit)
+            {
+                return read;
+            }
             // Intercept `self` in entity scope — bare `self` resolves to StructureRef(entity_name).
             // In function scopes (is_entity_scope == false), self falls through to "unresolved name".
             if name == "self" && scope.is_entity_scope {
@@ -5564,7 +5569,7 @@ fn compile_expr_guarded_with_expected_inner(
                     if has_bind {
                         // Mint a fresh per-arm entity for binder cell allocation.
                         let arm_entity =
-                            format!("$matcharm{}.{}", lambda_counter, scope.entity_name);
+                            format!("$matcharm{}.{}", lambda_counter, scope.binder_stamp());
                         *lambda_counter += 1;
 
                         let mut arm_scope = scope.clone();
@@ -5832,7 +5837,7 @@ fn compile_expr_guarded_with_expected_inner(
             }
         }
         reify_ast::ExprKind::Lambda { params, body } => {
-            let lambda_entity = format!("$lambda{}.{}", lambda_counter, scope.entity_name);
+            let lambda_entity = format!("$lambda{}.{}", lambda_counter, scope.binder_stamp());
             *lambda_counter += 1;
 
             let mut lambda_scope = scope.clone();
@@ -5943,7 +5948,7 @@ fn compile_expr_guarded_with_expected_inner(
             predicate,
             ..
         } => {
-            let quant_entity = format!("$quant{}.{}", lambda_counter, scope.entity_name);
+            let quant_entity = format!("$quant{}.{}", lambda_counter, scope.binder_stamp());
             *lambda_counter += 1;
 
             // Compile collection in the outer scope

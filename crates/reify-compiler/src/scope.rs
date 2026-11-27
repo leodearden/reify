@@ -2,6 +2,9 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use crate::source_unit::{ExprMode, SourceUnitRecorder};
+use crate::source_unit_tables::LOCAL_REFERENCE_ENTITY;
+
 // --- Compilation context ---
 
 /// Per-arm child-template member map for a match-arm cluster (task 2373).
@@ -464,6 +467,10 @@ pub struct CompilationScope<'u> {
     /// diagnostics) from outside the sub's structure. Populated in the
     /// entity.rs Sub pre-pass.
     pub sub_match_arm_groups: HashMap<String, Vec<SubClusterEntry>>,
+    /// Which compile expressions get in this scope. `Existing` from [`Self::new`];
+    /// only `source_unit::compile_source_unit` sets the source-unit mode, and
+    /// every scope derived from it by a clone inherits it.
+    pub(crate) expr_mode: ExprMode<'u>,
 }
 
 impl<'u> CompilationScope<'u> {
@@ -501,6 +508,27 @@ impl<'u> CompilationScope<'u> {
             match_arm_group_arm_member_types: HashMap::new(),
             sub_match_arm_groups: HashMap::new(),
             purpose_param_names: HashSet::new(),
+            expr_mode: ExprMode::Existing,
+        }
+    }
+
+    /// The reference table of the unit being compiled, in the source-unit mode.
+    pub(crate) fn source_unit(&self) -> Option<&'u SourceUnitRecorder> {
+        match self.expr_mode {
+            ExprMode::Existing => None,
+            ExprMode::SourceUnit(recorder) => Some(recorder),
+        }
+    }
+
+    /// The entity a lambda's, quantifier's or match arm's binder is minted
+    /// under: the definition's name in the existing compile, and in the
+    /// source-unit mode a stamp that names no definition, so equal text gives
+    /// equal binders. Either way it differs from `entity_name` once prefixed,
+    /// which is how a binder is told from a member.
+    pub(crate) fn binder_stamp(&self) -> &str {
+        match self.expr_mode {
+            ExprMode::Existing => &self.entity_name,
+            ExprMode::SourceUnit(_) => LOCAL_REFERENCE_ENTITY,
         }
     }
 

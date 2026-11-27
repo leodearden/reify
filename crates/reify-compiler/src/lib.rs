@@ -70,6 +70,9 @@ pub mod relation_signatures;
 mod scc;
 mod scope;
 pub mod si_units;
+mod source_unit;
+mod source_unit_paths;
+mod source_unit_tables;
 pub mod stdlib_loader;
 pub(crate) mod stdlib_topo;
 mod termination;
@@ -96,6 +99,13 @@ pub use port_path::{ElementIndex, PortPath, PortRoot};
 pub use prelude_context::PreludeContext;
 #[doc(hidden)]
 pub use scope::{ArmMemberMap, AssocFnDispatchCandidate, CompilationScope, SubClusterEntry};
+#[doc(hidden)]
+pub use source_unit::{SourceUnitNames, SourceUnitSpec, compile_source_unit};
+#[doc(hidden)]
+pub use source_unit_tables::{
+    CompiledSourceUnit, InstanceRequest, LOCAL_REFERENCE_ENTITY, LocalReference, ReferenceRead,
+    ReferenceRoot, RequestArgument, SourceStep, StructuralQuery,
+};
 pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
 

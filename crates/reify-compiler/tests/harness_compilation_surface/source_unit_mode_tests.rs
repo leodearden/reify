@@ -46,10 +46,17 @@ fn parse_expr(text: &str) -> reify_ast::Expr {
 /// Compile `source` with the standard library, failing on any error.
 fn compile_clean(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("unit_mode"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let module = reify_compiler::compile_with_stdlib(&parsed);
     let errors = errors_of(&module.diagnostics);
-    assert!(errors.is_empty(), "source does not compile clean: {errors:?}\n{source}");
+    assert!(
+        errors.is_empty(),
+        "source does not compile clean: {errors:?}\n{source}"
+    );
     module
 }
 
@@ -81,7 +88,11 @@ fn definition_scope<'a>(
     let mut scope = CompilationScope::new(name);
     scope.is_entity_scope = true;
     scope.set_template_registry(registry);
-    for cell in own.value_cells.iter().filter(|c| !c.id.member.starts_with("__")) {
+    for cell in own
+        .value_cells
+        .iter()
+        .filter(|c| !c.id.member.starts_with("__"))
+    {
         scope.register(&cell.id.member, cell.cell_type.clone());
     }
     for group in &own.guarded_groups {
@@ -250,6 +261,18 @@ fn has_error_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> bool {
     errors_of(diagnostics).iter().any(|d| d.code == Some(code))
 }
 
+/// Every `ValueRef` node of the tree, binder reads included (which
+/// `collect_value_refs`, a list of free reads, leaves out).
+fn every_value_ref(tree: &reify_ir::CompiledExpr) -> Vec<ValueCellId> {
+    let mut ids = Vec::new();
+    tree.walk(&mut |node| {
+        if let CompiledExprKind::ValueRef(id) = &node.kind {
+            ids.push(id.clone());
+        }
+    });
+    ids
+}
+
 fn quantifier_variable(tree: &reify_ir::CompiledExpr) -> ValueCellId {
     match &tree.kind {
         CompiledExprKind::Quantifier { variable_id, .. } => variable_id.clone(),
@@ -301,18 +324,13 @@ fn bare_names_and_self_are_local_references() {
     let (unit, _) = compile_unit("bolts", &scope, &module);
     let (reference, ty) = sole_reference(&unit);
     assert_eq!(shape(reference), own_value(members(&["bolts"])));
-    assert_eq!(
-        ty,
-        &Type::List(Box::new(Type::StructureRef("Bolt".into())))
-    );
+    assert_eq!(ty, &Type::List(Box::new(Type::StructureRef("Bolt".into()))));
 
     let (unit, diagnostics) = compile_unit("forall x in [1, 2, 3]: x < k", &scope, &module);
     assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
     let variable = quantifier_variable(&unit.expr);
     assert!(!variable.entity.contains("Asm"), "{variable:?}");
-    let binder_reads: Vec<_> = unit
-        .expr
-        .collect_value_refs()
+    let binder_reads: Vec<_> = every_value_ref(&unit.expr)
         .into_iter()
         .filter(|id| id.entity != LOCAL_REFERENCE_ENTITY)
         .collect();
@@ -325,7 +343,10 @@ fn bare_names_and_self_are_local_references() {
     assert_eq!(shape(&unit.references[0]), own_value(members(&["k"])));
 
     let (_, diagnostics) = compile_unit("nosuch + 1", &scope, &module);
-    assert!(has_error_code(&diagnostics, DiagnosticCode::UnresolvedName), "{diagnostics:?}");
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::UnresolvedName),
+        "{diagnostics:?}"
+    );
 
     // The existing compile, on the same scope.
     let (tree, _) = compile_existing("k + k", &scope, &module);
@@ -339,11 +360,17 @@ fn bare_names_and_self_are_local_references() {
         matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm", "__list_bolts__length")),
         "{tree:?}"
     );
-    assert_eq!(tree.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
+    assert_eq!(
+        tree.result_type,
+        Type::List(Box::new(Type::dimensionless_scalar()))
+    );
     let (tree, _) = compile_existing("forall x in [1, 2, 3]: x < k", &scope, &module);
     assert!(quantifier_variable(&tree).entity.contains("Asm"));
     let (_, diagnostics) = compile_existing("nosuch + 1", &scope, &module);
-    assert!(has_error_code(&diagnostics, DiagnosticCode::UnresolvedName), "{diagnostics:?}");
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::UnresolvedName),
+        "{diagnostics:?}"
+    );
 }
 
 /// PRD §10 C4: the source-unit mode is off unless the second output sets it.
