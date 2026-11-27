@@ -576,3 +576,78 @@ fn two_declarations_at_one_step_in_one_run_fail_the_run() {
         }
     }
 }
+
+/// The inputs of R with identical members c1 and c2, each a scope whose
+/// member "result" is a call over the input "a" with `calls`, and of an
+/// input nothing reads, "unrelated".
+fn shared_calls(a: i64, calls: Calls, unrelated: i64) -> Vec<(InputKey, Input)> {
+    let result = toy::call([toy::input("a")], toy::input("calls"));
+    let inner = toy::members([("result", result)]);
+    scope_r(
+        [("c1", toy::scope("inner")), ("c2", toy::scope("inner"))],
+        [
+            toy::named("inner", inner),
+            toy::named("a", a),
+            toy::named("calls", calls),
+            toy::named("unrelated", unrelated),
+        ],
+    )
+}
+
+fn result_of(member: &str) -> Path {
+    toy::below("R", &[member, "result"])
+}
+
+#[test]
+fn body_declared_child_is_shared_and_resolvable_without_rerunning_its_parent() {
+    let calls = || Calls(vec![toy::site(&[1], false, 0, plain_cell())]);
+    let mut core = toy::with_calls().build();
+    let snapshot = core.snapshot(shared_calls(4, calls(), 0));
+    let (first, second) = (result_of("c1"), result_of("c2"));
+
+    assert_eq!(i64s(&mut core, &snapshot, &[&first]), [value(8)]);
+    assert_eq!(i64s(&mut core, &snapshot, &[&second]), [value(8)]);
+    assert_eq!(core.counters().body_runs(Cell::ID), 1);
+    assert_eq!(core.counters().body_runs(Call::ID), 1);
+
+    let child = second.child(toy::call_step(&[1], None));
+    assert_eq!(i64s(&mut core, &snapshot, &[&child]), [value(4)]);
+    let edited = core.snapshot(shared_calls(4, calls(), 1));
+    assert_eq!(i64s(&mut core, &edited, &[&child]), [value(4)]);
+    assert_eq!(core.counters().body_runs(Call::ID), 1);
+    assert_eq!(core.counters().body_runs(Cell::ID), 1);
+}
+
+#[test]
+fn an_identical_parent_s_lookup_declares_its_children_so_their_paths_hold() {
+    let calls = Calls(vec![toy::site(&[1], true, 0, plain_cell())]);
+    let mut core = toy::with_calls().build();
+    let snapshot = core.snapshot(shared_calls(4, calls, 0));
+    let second = result_of("c2");
+    let children: Vec<Path> = (0..2)
+        .map(|index| second.child(toy::call_step(&[1], Some(index))))
+        .collect();
+
+    assert_eq!(i64s(&mut core, &snapshot, &[&result_of("c1")]), [value(8)]);
+    assert_eq!(
+        i64s(&mut core, &snapshot, &[&children[0], &children[1], &second]),
+        [value(4), absent(), value(8)]
+    );
+    assert_eq!(core.counters().body_runs(Call::ID), 1);
+}
+
+#[test]
+fn an_identical_parent_of_a_run_that_conflicted_across_two_requests_finds_the_stored_failure() {
+    let mut core = with_twice();
+    let snapshot = core.snapshot(twice(7, 8, false));
+    let (p, q) = (toy::below("R", &["P"]), toy::below("R", &["Q"]));
+    let conflict = failure(Failure::ConflictingChild { step: twice_step() });
+
+    assert_eq!(i64s(&mut core, &snapshot, &[&p]), [conflict.clone()]);
+    let runs = core.counters().body_runs(Twice::ID);
+    assert_eq!(
+        i64s(&mut core, &snapshot, &[&q, &child_of("Q", twice_step())]),
+        [conflict, value(7)]
+    );
+    assert_eq!(core.counters().body_runs(Twice::ID), runs);
+}
