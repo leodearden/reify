@@ -4602,7 +4602,7 @@ mod tests {
         modal_convergence_warning,
         mode_shape_value,
         nearest_node,
-        placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
+        placeholder_part, plan_modal_damping,
         resolve_location_node, rigid_body_mode_diagnostic, run_modal_analysis,
         run_transient_response,
         ModalSolveFault, shift_window_is_reportable,
@@ -10175,6 +10175,25 @@ mod tests {
         ])
     }
 
+    /// The SI magnitude of a numeric result value, read test-locally so the
+    /// assertions do not lean on a production reader.
+    fn si_of(value: &Value) -> f64 {
+        match value {
+            Value::Scalar { si_value, .. } => *si_value,
+            Value::Real(r) => *r,
+            Value::Int(n) => *n as f64,
+            other => panic!("expected a number, got {other:?}"),
+        }
+    }
+
+    /// [`si_of`] over every entry of a `Value::List`.
+    fn si_list(value: &Value) -> Vec<f64> {
+        match value {
+            Value::List(items) => items.iter().map(si_of).collect(),
+            other => panic!("expected a list, got {other:?}"),
+        }
+    }
+
     /// A `Time` scalar (SI seconds), as the trampoline reads `t_start/t_end/dt`.
     fn time_scalar(s: f64) -> Value {
         Value::Scalar {
@@ -10356,7 +10375,7 @@ mod tests {
                     "t_samples length must equal the grid count"
                 );
                 assert!(
-                    ts.iter().all(|v| read_scalar_si(v).is_finite()),
+                    ts.iter().all(|v| si_of(v).is_finite()),
                     "every t_sample must be finite",
                 );
             }
@@ -10380,7 +10399,7 @@ mod tests {
                                 "mode_coords[{i}] inner length must equal n_times",
                             );
                             assert!(
-                                series.iter().all(|v| read_scalar_si(v).is_finite()),
+                                series.iter().all(|v| si_of(v).is_finite()),
                                 "mode_coords[{i}] must be all finite",
                             );
                         }
@@ -10820,7 +10839,7 @@ mod tests {
         let n_times = fx.n_times;
 
         // Invoke the trampoline for `location` and return the List<Length> as
-        // Vec<f64> of SI metres (`read_scalar_si` tolerates either spelling).
+        // Vec<f64> of SI metres.
         let query = |location: &str| -> Vec<f64> {
             let value_inputs = vec![
                 fx.history.clone(),
@@ -10854,10 +10873,10 @@ mod tests {
                     );
                     assert_eq!(items.len(), n_times, "series length must equal n_times");
                     assert!(
-                        items.iter().map(read_scalar_si).all(f64::is_finite),
+                        items.iter().map(si_of).all(f64::is_finite),
                         "every reconstructed sample must be finite",
                     );
-                    items.iter().map(read_scalar_si).collect()
+                    items.iter().map(si_of).collect()
                 }
                 other => panic!("displacement_at must return a Value::List; got {other:?}"),
             }
@@ -11045,11 +11064,171 @@ mod tests {
         };
         match result {
             Value::StructureInstance(d) => match d.fields.get("mode_coords") {
-                Some(Value::List(series)) => series.iter().map(read_real_list).collect(),
+                Some(Value::List(series)) => series.iter().map(si_list).collect(),
                 other => panic!("mode_coords must be a Value::List; got {other:?}"),
             },
             other => panic!("expected a DisplacementTimeHistory StructureInstance; got {other:?}"),
         }
+    }
+
+    // ── S15 α (task 8674): transient_response / displacement_at decode their numbers ──
+
+    fn length_value(si: f64) -> Value {
+        Value::Scalar {
+            si_value: si,
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    /// `value`, a StructureInstance, with field `key` set to `field`, or
+    /// removed when `field` is `None`.
+    fn with_field(value: Value, key: &str, field: Option<Value>) -> Value {
+        let Value::StructureInstance(mut data) = value else {
+            panic!("with_field edits a StructureInstance");
+        };
+        match field {
+            Some(field) => data.fields.insert(key.to_string(), field),
+            None => data.fields.remove(&key.to_string()),
+        }
+        Value::StructureInstance(data)
+    }
+
+    /// The two-mode tip transient's well-formed inputs, with mode 0 passed
+    /// through `edit_mode0`.
+    fn tip_transient_inputs(edit_mode0: impl FnOnce(Value) -> Value) -> Vec<Value> {
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        transient_inputs(
+            modal_result_with_modes(vec![edit_mode0(mode0), mode1]),
+            forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]),
+            0.0,
+            0.1,
+            0.005,
+        )
+    }
+
+    fn run_transient(inputs: &[Value]) -> ComputeOutcome {
+        solve_transient_response_trampoline(
+            inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    fn run_displacement_at(inputs: &[Value]) -> ComputeOutcome {
+        displacement_at_trampoline(inputs, &[], &Value::Undef, None, &CancellationHandle::new())
+    }
+
+    fn assert_fails_quietly(outcome: &ComputeOutcome, what: &str) {
+        match outcome {
+            ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            } => {
+                assert!(diagnostics.is_empty(), "{what}: {diagnostics:?}");
+                assert!(structured_detail.is_empty(), "{what}");
+            }
+            other => panic!("{what} must fail quietly, got {other:?}"),
+        }
+    }
+
+    /// `t_start`, `t_end` and `dt` read through `time_spec`: a Length is
+    /// rejected naming the arg, and an unresolved `dt` fails quietly rather
+    /// than reading as 0 s.
+    #[test]
+    fn transient_response_reads_its_time_parameters_as_times() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        for (index, arg) in [(2, "t_start"), (3, "t_end"), (4, "dt")] {
+            let mut inputs = tip_transient_inputs(|mode| mode);
+            inputs[index] = length_value(0.01);
+            assert_one_coded_error(
+                &run_transient(&inputs),
+                reify_core::DiagnosticCode::DimensionedArgRejected,
+                &format!("transient_response: {arg} argument expects Time"),
+            );
+        }
+        let mut inputs = tip_transient_inputs(|mode| mode);
+        inputs[4] = Value::Undef;
+        assert_fails_quietly(&run_transient(&inputs), "an Undef dt");
+    }
+
+    /// Each `Mode` of the echoed ModalResult reads through its declared
+    /// types: `frequency : Frequency`, `shape : List<Vector3<Real>>`,
+    /// `damping_ratio : Real`.
+    #[test]
+    fn transient_response_reads_each_mode_through_its_declared_types() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        use reify_core::DiagnosticCode::{ComputeInputMalformed, DimensionedArgRejected};
+
+        let frequency = run_transient(&tip_transient_inputs(|mode| {
+            with_field(mode, "frequency", Some(length_value(40.0)))
+        }));
+        assert_one_coded_error(
+            &frequency,
+            DimensionedArgRejected,
+            "transient_response: Mode.frequency argument expects Frequency",
+        );
+
+        let length_shape = Value::List(vec![
+            vec3_value([0.0; 3]),
+            vec3_value([0.0, 0.0, 0.5]),
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), length_value(1.0)]),
+        ]);
+        let shape = run_transient(&tip_transient_inputs(|mode| {
+            with_field(mode, "shape", Some(length_shape))
+        }));
+        assert_one_coded_error(
+            &shape,
+            DimensionedArgRejected,
+            "transient_response: Mode.shape argument expects Real",
+        );
+
+        let no_damping_ratio = run_transient(&tip_transient_inputs(|mode| {
+            with_field(mode, "damping_ratio", None)
+        }));
+        assert_one_coded_error(
+            &no_damping_ratio,
+            ComputeInputMalformed,
+            "Mode.damping_ratio",
+        );
+    }
+
+    /// `displacement_at` reads its direction as a dimensionless Vector3 (an
+    /// absent one is malformed, not the zero vector) and each stored modal
+    /// coordinate as a dimensionless number.
+    #[test]
+    fn displacement_at_reads_its_direction_and_coordinates_as_dimensionless() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        use reify_core::DiagnosticCode::{ComputeInputMalformed, DimensionedArgRejected};
+        let fx = TwoModeTipFixture::new();
+        let tip = Value::String("tip".to_string());
+
+        let length_direction =
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), length_value(1.0)]);
+        assert_one_coded_error(
+            &run_displacement_at(&[fx.history.clone(), tip.clone(), length_direction]),
+            DimensionedArgRejected,
+            "displacement_at: direction argument expects Real",
+        );
+
+        assert_one_coded_error(
+            &run_displacement_at(&[fx.history.clone(), tip.clone()]),
+            ComputeInputMalformed,
+            "direction",
+        );
+
+        let length_coords = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), length_value(2.0)]),
+            Value::List(vec![Value::Real(0.1), Value::Real(0.2)]),
+        ]);
+        let history = with_field(fx.history.clone(), "mode_coords", Some(length_coords));
+        assert_one_coded_error(
+            &run_displacement_at(&[history, tip, vec3_value(TwoModeTipFixture::DIR)]),
+            DimensionedArgRejected,
+            "displacement_at: DisplacementTimeHistory.mode_coords argument expects Real",
+        );
     }
 
     /// step-5λ (RED → GREEN in step-6): cache-hit test for `run_transient_response`.
