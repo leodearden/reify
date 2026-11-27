@@ -666,7 +666,10 @@ impl Executor {
     }
 
     /// Steps the lookup at `key` if it is queued, or polls the body there
-    /// if it is owed a poll.
+    /// if it is owed a poll and serves what it asks. A body that opened a
+    /// view reads only through its views from then on (O9): a read of a
+    /// ref or a child ends its run with that failure, while a section,
+    /// which reads nothing, is served.
     fn advance(&mut self, key: NodeKey) {
         if self.lookups.contains_key(&key) {
             return self.step_lookup(key);
@@ -687,6 +690,9 @@ impl Executor {
             }
         };
         match posted {
+            Posted::Ask(Ask::Read(_)) if task.has_opened_view() => {
+                self.finish(key, Outcome::Failure(Failure::ReadOutsideView));
+            }
             Posted::Ask(Ask::Read(wanted)) => {
                 let index = self.indexes.of(key.state);
                 let declaration = task.declaration();

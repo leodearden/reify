@@ -101,6 +101,12 @@ impl Task {
         self.views.insert(ordinal, state);
     }
 
+    /// Whether its run has opened a view, by `Cx::suppose`, whether or not
+    /// it has read through it yet.
+    pub fn has_opened_view(&self) -> bool {
+        self.mailbox.has_opened_view()
+    }
+
     /// The states of the views its run opened.
     pub fn views(&self) -> impl Iterator<Item = StateId> + '_ {
         self.views.values().copied()

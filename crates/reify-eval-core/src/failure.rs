@@ -64,6 +64,10 @@ pub enum Failure {
     /// constant, or a place an earlier item names. Anything a view may
     /// substitute must have exactly one path (contract 6).
     NotSupposable { at: Ref },
+    /// A body that opened a view made a read outside it, of a ref or a
+    /// child (O9): from then on it reads only through its views. It names
+    /// no path.
+    ReadOutsideView,
 }
 
 impl Failure {
@@ -106,6 +110,9 @@ impl Failure {
             Failure::NotSupposable { at } => {
                 encoder.tag("failure.not_supposable");
                 at.encode(encoder);
+            }
+            Failure::ReadOutsideView => {
+                encoder.tag("failure.read_outside_view");
             }
         }
     }
