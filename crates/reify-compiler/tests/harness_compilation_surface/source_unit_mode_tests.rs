@@ -331,17 +331,20 @@ fn bare_names_and_self_are_local_references() {
     assert_eq!(unit.references.len(), 1, "{:?}", unit.references);
     assert_eq!(shape(&unit.references[0]), own_value(members(&["k"])));
 
-    let (unit, _) = compile_unit("self", &scope, &module);
+    let (unit, diagnostics) = compile_unit("self", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "self: {diagnostics:?}");
     let (reference, ty) = sole_reference(&unit);
     assert_eq!(shape(reference), own_value(vec![]));
     assert_eq!(ty, &Type::StructureRef("Asm".into()));
 
-    let (unit, _) = compile_unit("p", &scope, &module);
+    let (unit, diagnostics) = compile_unit("p", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "p: {diagnostics:?}");
     let (reference, ty) = sole_reference(&unit);
     assert_eq!(shape(reference), own_value(members(&["p"])));
     assert_eq!(ty, &Type::StructureRef("Plate".into()));
 
-    let (unit, _) = compile_unit("bolts", &scope, &module);
+    let (unit, diagnostics) = compile_unit("bolts", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "bolts: {diagnostics:?}");
     let (reference, ty) = sole_reference(&unit);
     assert_eq!(shape(reference), own_value(members(&["bolts"])));
     assert_eq!(ty, &Type::List(Box::new(Type::StructureRef("Bolt".into()))));
@@ -572,6 +575,12 @@ fn member_reads_through_subs_and_cells_are_references() {
         );
     }
 
+    // The receiver `k` is compiled, minting a reference, before the read is
+    // poisoned: the table lists only what the final tree reads.
+    let (unit, diagnostics) = compile_unit("k.foo", &scope, &module);
+    assert!(!errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    assert!(unit.references.is_empty(), "{:?}", unit.references);
+
     let (unit, diagnostics) = compile_unit("self.origin", &scope, &module);
     assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
     assert!(
@@ -650,15 +659,23 @@ structure def Plate {
     param thick : Bool = false
     where thick { param extra : Real = 1 }
 }
+structure def HexInner {
+    param x : Real = 1
+}
+structure def RoundInner {
+    param x : Real = 2
+}
 structure def HexHead {
     param across : Real = 8
     param hex_only : Real = 1
     param size : Real = 1
+    sub inner : HexInner
 }
 structure def RoundHead {
     param across : Real = 9
     param round_only : Real = 2
     param size : Int = 2
+    sub inner : RoundInner
 }
 structure def Bolt {
     param kind : HeadKind = HeadKind.Hex
@@ -693,6 +710,8 @@ fn member_reads_that_may_be_absent_are_references() {
         // Both arms declare it: the type they agree on, or a union.
         ("b.head.across", &["b", "head", "across"], &real),
         ("b.head.size", &["b", "head", "size"], &real_or_int),
+        // A sub of a different definition in each arm, read through.
+        ("b.head.inner.x", &["b", "head", "inner", "x"], &real),
     ] {
         let (unit, diagnostics) = compile_unit(text, &scope, &module);
         assert!(
@@ -747,6 +766,7 @@ fn member_reads_that_may_be_absent_are_references() {
         ("head.round_only", &["head", "round_only"], &real),
         ("head.size", &["head", "size"], &real_or_int),
         ("self.head", &["head"], &either_head),
+        ("self.head.inner.x", &["head", "inner", "x"], &real),
     ] {
         let (unit, diagnostics) = compile_unit(text, &bolt, &module);
         assert!(

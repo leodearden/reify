@@ -122,6 +122,7 @@ impl<'u> SourceUnitRecorder<'u> {
 /// Compile `expr`, written as `spec` says, on the scope of the definition it
 /// belongs to, minting references local to the unit.
 #[doc(hidden)]
+// G-allow: the second output's unit lowering in reify-eval-source calls this (#10643)
 pub fn compile_source_unit(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,

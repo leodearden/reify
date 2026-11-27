@@ -779,24 +779,49 @@ fn arm_member<'s>(
     member: &str,
     scope: &'s CompilationScope<'s>,
 ) -> Option<Target<'s>> {
-    let mut found = arms.iter().filter_map(|arm| match arm {
-        Type::StructureRef(definition) => {
-            member_of(&Definition::Named(definition.clone()), member, scope)
-        }
-        _ => None,
-    });
-    let first = found.next()?;
-    let mut types: Vec<Type> = first.value_type().into_iter().collect();
-    for ty in found.filter_map(|target| target.value_type()) {
+    let found: Vec<Target<'s>> = arms
+        .iter()
+        .filter_map(|arm| match arm {
+            Type::StructureRef(definition) => {
+                member_of(&Definition::Named(definition.clone()), member, scope)
+            }
+            _ => None,
+        })
+        .collect();
+    let mut types: Vec<Type> = Vec::new();
+    for ty in found.iter().filter_map(Target::value_type) {
         if !types.contains(&ty) {
             types.push(ty);
         }
     }
-    Some(if types.len() > 1 {
-        Target::Cell(Type::Union(types))
-    } else {
-        first
+    if types.len() <= 1 {
+        return found.into_iter().next();
+    }
+    Some(match instance_arms(&found) {
+        Some(definitions) => Target::Cluster(definitions),
+        None => Target::Cell(Type::Union(types)),
     })
+}
+
+/// The distinct definitions the targets are instances of, when every target is
+/// an instance or a cluster: a further hop then reads each arm's member.
+fn instance_arms(targets: &[Target]) -> Option<Vec<Type>> {
+    let mut definitions: Vec<Type> = Vec::new();
+    for target in targets {
+        let arms = match target {
+            Target::Instance(Definition::Named(definition)) => {
+                vec![Type::StructureRef(definition.clone())]
+            }
+            Target::Cluster(arms) => arms.clone(),
+            _ => return None,
+        };
+        for arm in arms {
+            if !definitions.contains(&arm) {
+                definitions.push(arm);
+            }
+        }
+    }
+    Some(definitions)
 }
 
 fn template_of<'s>(name: &str, scope: &'s CompilationScope) -> Option<&'s TopologyTemplate> {
