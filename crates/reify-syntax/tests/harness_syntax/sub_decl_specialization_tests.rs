@@ -351,14 +351,3 @@ fn braces_assignment_guard_is_kept() {
         "an assignment's guard must not be absorbed as the sub's own guard"
     );
 }
-
-#[test]
-#[should_panic(expected = "sub `p` has 1 spec_param_overrides but 0 spec_param_override_guards")]
-fn guarded_spec_param_overrides_refuses_misaligned_lists() {
-    let sub = SubDecl {
-        spec_param_overrides: vec![("t".into(), dummy_expr())],
-        spec_param_override_guards: vec![],
-        ..make_sub_with_body("p", None)
-    };
-    for _ in sub.guarded_spec_param_overrides() {}
-}

@@ -424,8 +424,8 @@ pub struct KeyedSubMemberEntry {
     /// The `where` guard of each entry of `param_overrides`: one slot per
     /// override, in the same order, as on
     /// [`SubDecl::spec_param_override_guards`]. Read the pair through
-    /// [`KeyedSubMemberEntry::guarded_param_overrides`]. The old compile does
-    /// not read this field.
+    /// [`KeyedSubMemberEntry::guarded_param_overrides`]. The old compile's
+    /// lowering ignores it, so there the assignment applies unconditionally.
     pub param_override_guards: Vec<Option<WhereClause>>,
     pub span: SourceSpan,
 }
@@ -494,8 +494,8 @@ pub struct SubDecl {
     /// The `where` guard of each entry of `spec_param_overrides`: one slot per
     /// override, in the same order. `t = 6mm where thick` gives `Some`,
     /// `t = 6mm` gives `None`. Read the pair through
-    /// [`SubDecl::guarded_spec_param_overrides`]. The old compile does not
-    /// read this field.
+    /// [`SubDecl::guarded_spec_param_overrides`]. The old compile's lowering
+    /// ignores it, so there the assignment applies unconditionally.
     pub spec_param_override_guards: Vec<Option<WhereClause>>,
     /// Keyed sub-member entries when this `sub` uses a keyed block
     /// `{ "k" => { overrides } }` (task 3929, PRD §2.2).
@@ -821,7 +821,8 @@ pub struct PortDecl {
     pub members: Vec<MemberDecl>,
     pub frame_expr: Option<Expr>,
     /// The port's own `where` guard: `port p : T where flag`, or
-    /// `port p : T { … } where flag`. The old compile does not read it.
+    /// `port p : T { … } where flag`. The old compile's lowering ignores it, so
+    /// there the port is declared unconditionally.
     pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
@@ -2670,6 +2671,58 @@ mod member_test_fixtures {
                 .collect(),
             ..sub_with_body(name, None)
         }
+    }
+}
+
+#[cfg(test)]
+mod override_guard_alignment_tests {
+    use super::member_test_fixtures::{dummy_expr, sub_with_body, sub_with_keyed_members};
+    use super::{SubDecl, WhereClause};
+    use reify_core::SourceSpan;
+
+    fn guard() -> WhereClause {
+        WhereClause {
+            condition: dummy_expr(),
+            span: SourceSpan::new(0, 1),
+        }
+    }
+
+    #[test]
+    fn guarded_spec_param_overrides_pairs_each_override_with_its_own_guard() {
+        let sub = SubDecl {
+            spec_param_overrides: vec![("t".into(), dummy_expr()), ("w".into(), dummy_expr())],
+            spec_param_override_guards: vec![Some(guard()), None],
+            ..sub_with_body("p", None)
+        };
+        let pairs: Vec<_> = sub
+            .guarded_spec_param_overrides()
+            .map(|(name, _, guard)| (name, guard.is_some()))
+            .collect();
+        assert_eq!(pairs, [("t", true), ("w", false)]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "sub `p` has 1 spec_param_overrides but 0 spec_param_override_guards"
+    )]
+    fn guarded_spec_param_overrides_refuses_misaligned_lists() {
+        let sub = SubDecl {
+            spec_param_overrides: vec![("t".into(), dummy_expr())],
+            ..sub_with_body("p", None)
+        };
+        for _ in sub.guarded_spec_param_overrides() {}
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "keyed entry \"a\" has 0 param_overrides but 1 param_override_guards"
+    )]
+    fn guarded_param_overrides_refuses_misaligned_lists() {
+        let mut sub = sub_with_keyed_members("vents", vec![("a", Vec::new())]);
+        sub.keyed_members[0]
+            .param_override_guards
+            .push(Some(guard()));
+        for _ in sub.keyed_members[0].guarded_param_overrides() {}
     }
 }
 
