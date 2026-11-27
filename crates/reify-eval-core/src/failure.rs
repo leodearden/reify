@@ -32,6 +32,12 @@ pub enum Failure {
     /// nothing is filed in the store for it; a reader off the ring that
     /// answers this failure as its own is filed like any other result.
     Cycle,
+    /// The path's node is more steps below its root than the snapshot's
+    /// depth setting, `limit`, allows (contract 7.6). It names no path, so
+    /// the first path too deep on a chain and every path below it have this
+    /// one value. A path is given it in the snapshot's index only, and
+    /// nothing is filed in the store for it.
+    TooDeep { limit: u64 },
 }
 
 impl Failure {
@@ -52,6 +58,9 @@ impl Failure {
             }
             Failure::Cycle => {
                 encoder.tag("failure.cycle");
+            }
+            Failure::TooDeep { limit } => {
+                encoder.tag("failure.too_deep").number(*limit);
             }
         }
     }

@@ -11,6 +11,25 @@ use crate::path::Root;
 pub enum InputKey {
     Root(Root),
     Named(Arc<str>),
+    /// A snapshot's setting of `Limit`, whose value is a u64.
+    Limit(Limit),
+}
+
+/// A limit that changes answers, set in a snapshot (contract 7.6) under
+/// `InputKey::Limit`; its value is a u64, and with no setting nothing is
+/// bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Limit {
+    /// How many steps below its root a node may be.
+    Depth,
+}
+
+impl Limit {
+    fn name(self) -> &'static str {
+        match self {
+            Limit::Depth => "depth",
+        }
+    }
 }
 
 impl InputKey {
@@ -22,6 +41,10 @@ impl InputKey {
         InputKey::Named(name.into())
     }
 
+    pub fn limit(limit: Limit) -> Self {
+        InputKey::Limit(limit)
+    }
+
     pub(crate) fn encode(&self, encoder: &mut Encoder) {
         match self {
             InputKey::Root(root) => {
@@ -30,6 +53,9 @@ impl InputKey {
             }
             InputKey::Named(name) => {
                 encoder.tag("input.named").text(name);
+            }
+            InputKey::Limit(limit) => {
+                encoder.tag("input.limit").text(limit.name());
             }
         }
     }

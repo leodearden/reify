@@ -27,6 +27,7 @@ use crate::input::{Input, InputKey};
 use crate::job::Report;
 use crate::key::Key;
 use crate::kinds::Kinds;
+use crate::limit_check;
 use crate::lookup::Lookup;
 use crate::mailbox::{Ask, Posted};
 use crate::outcome::{Erased, Outcome};
@@ -336,8 +337,9 @@ impl Executor {
 
     /// Works out what the path at `key` is: a root from its snapshot input,
     /// read with the typed read a body uses (decision D11); any other path
-    /// from its parent's final answer. A declaration starts a lookup; any
-    /// other outcome is the path's answer.
+    /// from its parent's final answer. A declaration of a node too deep for
+    /// the snapshot's depth setting answers that failure; any other
+    /// declaration starts a lookup; any other outcome is the path's answer.
     fn resolve(&mut self, key: NodeKey) -> Option<Work> {
         self.counters.count_path_resolved();
         let index = self.indexes.of(key.snapshot);
@@ -358,6 +360,13 @@ impl Executor {
                     .expect("a path is worked out once its parent is answered");
                 declaration_of(step, entry, &self.kinds)
             }
+        };
+        let declared = match declared {
+            Outcome::Value(_) => {
+                let depth = self.paths.depth(key.path);
+                limit_check::depth(depth, index.limits()).map_or(declared, Outcome::Failure)
+            }
+            other => other,
         };
         let (content, outcome) = match declared {
             Outcome::Value(declaration) => {

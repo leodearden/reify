@@ -29,7 +29,8 @@ impl Core {
     ///
     /// # Panics
     ///
-    /// If another core made `snapshot`.
+    /// If another core made `snapshot`, or if a limit setting of `snapshot`
+    /// is not a u64.
     pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand, budget: Budget) -> Request {
         self.executor.evaluate(snapshot, demand, budget)
     }

@@ -11,6 +11,7 @@ use imbl::OrdMap;
 use crate::content::Content;
 use crate::declaration::Declaration;
 use crate::input::{Input, InputKey};
+use crate::limits::Limits;
 use crate::outcome::{Erased, Outcome};
 use crate::path_table::PathId;
 use crate::snapshot::{Snapshot, SnapshotId};
@@ -34,12 +35,18 @@ pub(crate) struct Entry {
 
 pub(crate) struct Index {
     inputs: OrdMap<InputKey, Input>,
+    limits: Limits,
     entries: OrdMap<PathId, Entry>,
 }
 
 impl Index {
     pub fn input(&self, key: &InputKey) -> Option<&Input> {
         self.inputs.get(key)
+    }
+
+    /// The snapshot's limit settings.
+    pub fn limits(&self) -> &Limits {
+        &self.limits
     }
 
     pub fn entry(&self, path: PathId) -> Option<&Entry> {
@@ -54,11 +61,16 @@ pub(crate) struct Indexes {
 
 impl Indexes {
     /// The index of `snapshot`, made empty if it has none.
+    ///
+    /// # Panics
+    ///
+    /// If a limit setting of `snapshot` is not a u64.
     pub fn open(&mut self, snapshot: &Snapshot) {
         self.by_snapshot
             .entry(snapshot.id())
             .or_insert_with(|| Index {
                 inputs: snapshot.inputs().clone(),
+                limits: Limits::of(snapshot.inputs()),
                 entries: OrdMap::new(),
             });
     }
