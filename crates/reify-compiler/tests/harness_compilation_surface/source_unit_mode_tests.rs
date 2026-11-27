@@ -105,16 +105,26 @@ fn definition_scope<'a>(
         }
     }
     for sub in &own.sub_components {
+        let element = sub.element_structure_name().to_string();
         scope
             .sub_component_types
-            .insert(sub.name.clone(), sub.structure_name.clone());
+            .insert(sub.name.clone(), element.clone());
         if sub.is_collection {
             scope.collection_sub_names.insert(sub.name.clone());
         }
-        if let Some(child) = registry.get(&sub.structure_name) {
+        if !sub.keyed_members.is_empty() {
+            scope.keyed_sub_keys.insert(
+                sub.name.clone(),
+                sub.keyed_members.iter().map(|k| k.0.clone()).collect(),
+            );
+        }
+        if let Some(child) = registry.get(&element) {
             scope
                 .sub_member_types
                 .insert(sub.name.clone(), member_types(child));
+            scope
+                .sub_structure_traits
+                .insert(element, child.trait_bounds.clone());
         }
     }
     scope
@@ -461,31 +471,6 @@ structure def Asm {
     );
 }
 
-/// The keys a keyed sub's braces give it, read from the parsed source as the
-/// compiler's own sub pre-pass reads them (the template does not record them).
-fn register_keyed_sub_keys(scope: &mut CompilationScope, source: &str, definition: &str) {
-    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("unit_mode"));
-    for decl in &parsed.declarations {
-        let reify_ast::Declaration::Structure(def) = decl else {
-            continue;
-        };
-        if def.name != definition {
-            continue;
-        }
-        for member in &def.members {
-            if let reify_ast::MemberDecl::Sub(sub) = member
-                && !sub.keyed_members.is_empty()
-            {
-                scope
-                    .keyed_sub_keys
-                    .entry(sub.name.clone())
-                    .or_default()
-                    .extend(sub.keyed_members.iter().map(|entry| entry.key.clone()));
-            }
-        }
-    }
-}
-
 const PATHS_SOURCE: &str = r#"
 trait Rated {
     param rating : Real
@@ -524,8 +509,7 @@ fn member(name: &str) -> SourceStep {
 fn member_reads_through_subs_and_cells_are_references() {
     let module = compile_clean(PATHS_SOURCE);
     let registry = template_registry(&module);
-    let mut scope = definition_scope(&module, &registry, "Asm");
-    register_keyed_sub_keys(&mut scope, PATHS_SOURCE, "Asm");
+    let scope = definition_scope(&module, &registry, "Asm");
     let real = Type::dimensionless_scalar();
 
     let expect_reference = |text: &str, expected: Vec<SourceStep>, ty: &Type| {

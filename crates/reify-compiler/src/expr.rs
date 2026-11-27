@@ -57,6 +57,8 @@ use crate::datum_projection::{
 };
 use crate::trajectory_signatures::trajectory_scalar_intrinsic_result_type;
 use crate::type_compat::MulDivRefusal;
+use crate::source_unit_paths::{self, NotAPath};
+use crate::source_unit_tables::{ReferenceRead, ReferenceRoot, SourceStep};
 use reify_core::overload::slot_matches_wildcard_tier;
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
@@ -112,7 +114,7 @@ pub(crate) fn make_poison_literal(
 /// `Undef` literal typed `result_type` (the accessed member's static type for
 /// the member form, the element `StructureRef` for the bare form, or
 /// `Type::Error` when unknown): a clean eval-graph failure, never a panic.
-fn keyed_missing_key_poison(
+pub(crate) fn keyed_missing_key_poison(
     diagnostics: &mut Vec<Diagnostic>,
     sub_name: &str,
     key: &str,
@@ -134,7 +136,7 @@ fn keyed_missing_key_poison(
 /// "unsupported in v1" message and label text live in ONE place (amend,
 /// suggestion 3). Emits the named diagnostic and returns an `Undef` literal
 /// typed `result_type`.
-fn keyed_computed_index_poison(
+pub(crate) fn keyed_computed_index_poison(
     diagnostics: &mut Vec<Diagnostic>,
     sub_name: &str,
     span: reify_core::SourceSpan,
@@ -1721,7 +1723,7 @@ fn compile_expr_guarded_with_expected_inner(
         }
         reify_ast::ExprKind::Ident(name) => {
             if let Some(unit) = scope.source_unit()
-                && let Some(read) = crate::source_unit_paths::compile_bare_name(name, scope, unit)
+                && let Some(read) = source_unit_paths::compile_bare_name(name, scope, unit)
             {
                 return read;
             }
@@ -4363,6 +4365,33 @@ fn compile_expr_guarded_with_expected_inner(
                 return CompiledExpr::literal(Value::Int(elements.len() as i64), Type::Int);
             }
 
+            // The source-unit mode resolves a path before the name-directed
+            // pre-pass below, which mints absolute ids.
+            if let Some(unit) = scope.source_unit() {
+                match source_unit_paths::compile_member_path(expr, scope, unit, diagnostics) {
+                    Ok(compiled) => return compiled,
+                    Err(NotAPath::ByReceiverType) => {
+                        let compiled_obj = compile_expr_guarded(
+                            object,
+                            scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            current_guard,
+                            lambda_counter,
+                        );
+                        return member_access_by_receiver_type(
+                            compiled_obj,
+                            member,
+                            scope,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
+                    Err(NotAPath::Existing) => {}
+                }
+            }
+
             // ── compiler-type-hygiene ε1: PART A — name-directed pre-pass ───────
             //
             // Everything from here down to the `compile_expr_guarded` call that
@@ -5097,105 +5126,7 @@ fn compile_expr_guarded_with_expected_inner(
                 lambda_counter,
             );
 
-            // ── compiler-type-hygiene ε1 step-6: exhaustive receiver-type match ─
-            //
-            // THE RESHAPE (PRD docs/prds/v0_6/compiler-type-hygiene.md §7.4 /
-            // decision 8, INV-COMP-1). ONE exhaustive `match &compiled_obj
-            // .result_type` over all 39 `Type` variants, deliberately with NO
-            // `_` arm: a future 40th variant makes this fail to compile,
-            // forcing its author to make an explicit MemberAccess decision
-            // instead of silently inheriting the poison tail.
-            //
-            // The four special-receiver arms below partition a set of 11
-            // variants that is DISJOINT from the 28-variant tail arm (and from
-            // each other) — every `Type` variant appears in EXACTLY one arm —
-            // so, unlike the pre-step-6 if-chain, arm order cannot change
-            // which handler fires. That disjointness is also why the former
-            // `!compiled_obj.result_type.is_error()` guards ahead of the
-            // StructureRef/TraitObject and TypeParam checks are dropped here:
-            // they are subsumed by exhaustiveness — `Type::Error` is its own
-            // discriminant, grouped into the tail arm below, so an
-            // already-poisoned receiver can no longer reach a special handler
-            // at all. It always lands on `member_access_aggregation_or_
-            // unsupported`, whose own `is_error()` short-circuit (unchanged
-            // since step-2) propagates the poison exactly as before.
-            //
-            // Each handler's OWN doc comment (below) documents the
-            // intra-handler precedence it preserves verbatim from the
-            // pre-extraction if-chain (e.g. purpose-subject reflection running
-            // before StructureInstance projection inside
-            // `member_access_on_structure_like`).
-            //
-            // Collection-aggregation (`count`/`sum`/`keys`/`values`) is
-            // deliberately NOT its own arm and NOT hoisted ahead of this
-            // match: it is name-directed but NOT order-independent across
-            // receiver KINDS — `structRef.count` / `traitObj.count` / a
-            // non-ValueRef `typeParam.count` must keep resolving via their own
-            // handler (StructureMemberNotFound / projection / poison), not
-            // the receiver-agnostic `Type::Int` arm inside the tail. So it
-            // stays the shared residual: the 28 plain variants below map to
-            // it directly, and the 3 fall-through handlers (TypeParam
-            // non-ValueRef, datum non-projection-member, feature
-            // aggregation-member) delegate to it internally as their own
-            // residual.
-            match &compiled_obj.result_type {
-                Type::StructureRef(_) | Type::TraitObject(_) => member_access_on_structure_like(
-                    compiled_obj,
-                    member,
-                    scope,
-                    expr.span,
-                    diagnostics,
-                ),
-                Type::TypeParam(_) => {
-                    member_access_on_type_param(compiled_obj, member, scope, expr.span, diagnostics)
-                }
-                Type::Axis
-                | Type::Plane
-                | Type::Frame(_)
-                | Type::Direction
-                | Type::Point { .. } => {
-                    member_access_on_datum(compiled_obj, member, expr.span, diagnostics)
-                }
-                Type::Geometry | Type::Selector(_) | Type::AnySelector => {
-                    member_access_on_feature(compiled_obj, member, expr.span, diagnostics)
-                }
-                // The remaining 28 variants carry no special MemberAccess
-                // receiver-type semantics: collection-aggregation members
-                // (count/sum/keys/values) resolve here, and every other
-                // member is the generic unsupported-member poison.
-                // `Type::Error` is included here (not a fifth special arm) —
-                // see the module note above for why that is behavior-neutral.
-                Type::Bool
-                | Type::Int
-                | Type::String
-                | Type::Scalar { .. }
-                | Type::Enum(_)
-                | Type::List(_)
-                | Type::Set(_)
-                | Type::Map(_, _)
-                | Type::Keyed(_)
-                | Type::Option(_)
-                | Type::Function { .. }
-                | Type::Field { .. }
-                | Type::Feature
-                | Type::Vector { .. }
-                | Type::Tensor { .. }
-                | Type::Complex(_)
-                | Type::Orientation(_)
-                | Type::Transform(_)
-                | Type::AffineMap(_)
-                | Type::Range(_)
-                | Type::BoundingBox
-                | Type::ScalarParam(_)
-                | Type::Matrix { .. }
-                | Type::Error
-                | Type::Union(_)
-                | Type::Relation
-                | Type::Applied { .. }
-                | Type::Projection { .. } => {
-                    member_access_aggregation_or_unsupported(compiled_obj, member, expr.span, diagnostics)
-                }
-            }
+            member_access_by_receiver_type(compiled_obj, member, scope, expr.span, diagnostics)
         }
         reify_ast::ExprKind::ListLiteral(elements) => {
             // Classify engagement once: derive child_expected (pushed into each child)
@@ -5398,13 +5329,23 @@ fn compile_expr_guarded_with_expected_inner(
             CompiledExpr::map_literal(compiled_entries, result_type)
         }
         reify_ast::ExprKind::IndexAccess { object, index } => {
+            // The source-unit mode resolves a path, and never mints the
+            // keyed pre-pass's absolute id; anything else is the generic index.
+            let unit = scope.source_unit();
+            if let Some(unit) = unit
+                && let Ok(compiled) =
+                    source_unit_paths::compile_member_path(expr, scope, unit, diagnostics)
+            {
+                return compiled;
+            }
             // Keyed sub bare access: `keyed_sub["key"]` → scoped StructureRef
             // ValueRef at the key-addressed StructureInstance cell (task 3931 γ).
             // Must precede the generic object compilation: the bare `keyed_sub`
             // ident does not resolve as a value on its own. The cell path is
             // `keyed_member_cell(entity, sub, key)` — byte-identical to the SIR-α
             // StructureInstance the eval pass emits.
-            if let reify_ast::ExprKind::Ident(sub_name) = &object.kind
+            if unit.is_none()
+                && let reify_ast::ExprKind::Ident(sub_name) = &object.kind
                 && let Some(keys) = scope.keyed_sub_keys.get(sub_name.as_str())
             {
                 let structure_ref = scope
@@ -6387,6 +6328,10 @@ fn compile_expr_guarded_with_expected_inner(
                         )),
                     )
                 });
+            if let Some(unit) = scope.source_unit() {
+                let steps = vec![SourceStep::Member(sub_name), SourceStep::Member(member)];
+                return unit.reference(ReferenceRoot::Own, steps, ReferenceRead::Value, ty);
+            }
             CompiledExpr::value_ref(id, ty)
         }
         // ── task ζ 3941: trait-instance fn dispatch ─────────────────────────────
@@ -7175,6 +7120,111 @@ fn pending_default_error(
 }
 
 // ── compiler-type-hygiene ε1 step-4: named per-kind handlers ───────────────
+
+/// The member read `compiled_obj.member`, typed by the receiver's type.
+///
+/// Called by the `MemberAccess` arm of `compile_expr_guarded_with_expected_inner`
+/// after its name-directed pre-pass, and by the source-unit mode for a receiver
+/// that is not a path.
+fn member_access_by_receiver_type(
+    compiled_obj: CompiledExpr,
+    member: &str,
+    scope: &CompilationScope,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    // ── compiler-type-hygiene ε1 step-6: exhaustive receiver-type match ─
+    //
+    // THE RESHAPE (PRD docs/prds/v0_6/compiler-type-hygiene.md §7.4 /
+    // decision 8, INV-COMP-1). ONE exhaustive `match &compiled_obj
+    // .result_type` over all 39 `Type` variants, deliberately with NO
+    // `_` arm: a future 40th variant makes this fail to compile,
+    // forcing its author to make an explicit MemberAccess decision
+    // instead of silently inheriting the poison tail.
+    //
+    // The four special-receiver arms below partition a set of 11
+    // variants that is DISJOINT from the 28-variant tail arm (and from
+    // each other) — every `Type` variant appears in EXACTLY one arm —
+    // so, unlike the pre-step-6 if-chain, arm order cannot change
+    // which handler fires. That disjointness is also why the former
+    // `!compiled_obj.result_type.is_error()` guards ahead of the
+    // StructureRef/TraitObject and TypeParam checks are dropped here:
+    // they are subsumed by exhaustiveness — `Type::Error` is its own
+    // discriminant, grouped into the tail arm below, so an
+    // already-poisoned receiver can no longer reach a special handler
+    // at all. It always lands on `member_access_aggregation_or_
+    // unsupported`, whose own `is_error()` short-circuit (unchanged
+    // since step-2) propagates the poison exactly as before.
+    //
+    // Each handler's OWN doc comment (below) documents the
+    // intra-handler precedence it preserves verbatim from the
+    // pre-extraction if-chain (e.g. purpose-subject reflection running
+    // before StructureInstance projection inside
+    // `member_access_on_structure_like`).
+    //
+    // Collection-aggregation (`count`/`sum`/`keys`/`values`) is
+    // deliberately NOT its own arm and NOT hoisted ahead of this
+    // match: it is name-directed but NOT order-independent across
+    // receiver KINDS — `structRef.count` / `traitObj.count` / a
+    // non-ValueRef `typeParam.count` must keep resolving via their own
+    // handler (StructureMemberNotFound / projection / poison), not
+    // the receiver-agnostic `Type::Int` arm inside the tail. So it
+    // stays the shared residual: the 28 plain variants below map to
+    // it directly, and the 3 fall-through handlers (TypeParam
+    // non-ValueRef, datum non-projection-member, feature
+    // aggregation-member) delegate to it internally as their own
+    // residual.
+    match &compiled_obj.result_type {
+        Type::StructureRef(_) | Type::TraitObject(_) => {
+            member_access_on_structure_like(compiled_obj, member, scope, span, diagnostics)
+        }
+        Type::TypeParam(_) => {
+            member_access_on_type_param(compiled_obj, member, scope, span, diagnostics)
+        }
+        Type::Axis | Type::Plane | Type::Frame(_) | Type::Direction | Type::Point { .. } => {
+            member_access_on_datum(compiled_obj, member, span, diagnostics)
+        }
+        Type::Geometry | Type::Selector(_) | Type::AnySelector => {
+            member_access_on_feature(compiled_obj, member, span, diagnostics)
+        }
+        // The remaining 28 variants carry no special MemberAccess
+        // receiver-type semantics: collection-aggregation members
+        // (count/sum/keys/values) resolve here, and every other
+        // member is the generic unsupported-member poison.
+        // `Type::Error` is included here (not a fifth special arm) —
+        // see the module note above for why that is behavior-neutral.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::List(_)
+        | Type::Set(_)
+        | Type::Map(_, _)
+        | Type::Keyed(_)
+        | Type::Option(_)
+        | Type::Function { .. }
+        | Type::Field { .. }
+        | Type::Feature
+        | Type::Vector { .. }
+        | Type::Tensor { .. }
+        | Type::Complex(_)
+        | Type::Orientation(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Range(_)
+        | Type::BoundingBox
+        | Type::ScalarParam(_)
+        | Type::Matrix { .. }
+        | Type::Error
+        | Type::Union(_)
+        | Type::Relation
+        | Type::Applied { .. }
+        | Type::Projection { .. } => {
+            member_access_aggregation_or_unsupported(compiled_obj, member, span, diagnostics)
+        }
+    }
+}
 
 /// `<receiver>.<member>` where the receiver's static type is
 /// `Type::StructureRef` or `Type::TraitObject`.
