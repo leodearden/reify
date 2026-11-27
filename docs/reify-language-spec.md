@@ -450,7 +450,9 @@ The `Geometry` supertrait is the parent of all geometric entity types. `Transfor
 - **`Map<K,V>`:** `[key]` lookup, `keys`, `values`, `count`, `contains_key`. Iteration via `forall`/`exists` over entries.
 - **`Range<T>`:** `contains`, `lower`, `upper`, `span` (upper - lower).
 
-**Out-of-bounds / missing key:** Evaluation-graph-level failure (see Section 9), not a language-level exception.
+**Out of bounds:** An index out of range reads something that is not there and gives `undef` (§6.3), so `i < xs.count and xs[i].area > 0mm^2` does not depend on which operand is written first.
+
+**Missing key:** Evaluation-graph-level failure (see Section 9), not a language-level exception.
 
 **Empty collections:**
 
@@ -461,7 +463,7 @@ The `Geometry` supertrait is the parent of all geometric entity types. `Transfor
 - `exists x in []: P(x)` evaluates to `false` (vacuous falsity -- standard mathematical convention).
 - Empty set literal `set{}` and empty map literal `map{}` require type context (e.g., `let s : Set<Material> = set{}`).
 
-**Counted sub-structures use `List<T>` uniformly.** The `[n]` syntax for counted sub-structure arrays is removed. Declaration: `sub vents : List<Vent>` plus `constraint vents.count == vent_count`. The runtime recognizes `count == N` constraints on `List<Structure>` sub-declarations as structure-controlling, triggering schema re-elaboration. v0.1 uses positional indexing (`vents[0]`, `vents[1]`, ...).
+**Counted sub-structures use `List<T>` uniformly.** The `[n]` syntax for counted sub-structure arrays is removed. Declaration: `sub vents : List<Vent>` plus `constraint vents.count == vent_count`. A `count == N` constraint on a `List<Structure>` sub is the source of its count and gives no verdict. The count is read in dependency order like any other value, with no phases, so a count a solve decides is read after that solve. A count that reads its own elements is a compile error. v0.1 uses positional indexing (`vents[0]`, `vents[1]`, ...).
 
 **Collection literals:**
 
@@ -1358,7 +1360,7 @@ a == b      a != b
 a < b       a > b       a <= b      a >= b
 ```
 
-Equality is structural for value types, identity for structure references.
+Equality is structural for value types, and structure values are equal by content. Their content is their type, the value of every parameter that is present, and every value decided inside them, and nothing about how a value was reached: `Plate(t: 3mm)` equals a `Plate()` whose `t` was solved to 3 mm. This is the equality sets use, where two equal values are one member.
 
 `==` and `!=` on `Scalar<Q>` and `Real` operands are toleranced, not bit-exact: two values are equal when they differ by no more than the larger of a relative tolerance of the larger magnitude and an absolute floor chosen per dimension. The DimensionalSolver accepts equality constraints by the same rule, so a solved model never reports its own equalities violated. `Int`-to-`Int`, `Bool`, `String` and enum equality stay exact. An `Int` compared with a `Real` or dimensionless `Scalar` is promoted and compared by the toleranced rule, so `1000000001 == 1.0e9` holds while `1000000001 == 1000000000` does not. Toleranced equality is not transitive: `a == b` and `b == c` do not imply `a == c`. Ordering comparisons are never toleranced. The tolerance constants live in `crates/reify-core/src/scalar_tolerance.rs`.
 
@@ -1567,7 +1569,7 @@ connect motor.shaft -> coupling.driver : SplineConnection { tooth_count = 24 }
 // or explicitly: let shaft_spline = connect motor.shaft -> coupling.driver : SplineConnection { ... }
 ```
 
-**Connector ownership:** The connector structure instance is owned by the nearest common ancestor of the connected ports by default. A designer override is available to place it elsewhere.
+**Connector ownership:** The connector structure instance is owned by the nearest common ancestor of the connected ports by default. An end of a `connect` is a port of the declaring instance, or of one of its subs or elements, and for such ends this ancestor is the declaring instance. An end that is a value held in a cell (a `let` bound to a structure value) is a compile error, whose message says to write a sub. A designer override is available to place it elsewhere.
 
 **Cyclic connection topology:** Cyclic connection graphs are supported (e.g., four-bar linkages, closed kinematic chains).
 
@@ -2122,7 +2124,7 @@ Conflict resolution:
 
 ### 8.9 Recursive Structures
 
-Recursive structure definitions are permitted. Structural unfolding is eager -- once the parameters controlling recursion depth are determined, the full instance tree is materialized.
+Recursive structure definitions are permitted. Recursion is a guarded sub whose guard is read per level (§6.3), with no phases. Each level's guard reads that level's own arguments, and an undefined guard leaves that level's presence undetermined.
 
 ```
 structure def TreeBracket {
@@ -2142,8 +2144,6 @@ structure def TreeBracket {
 **Recursive generic enums:** A recursive enum such as `enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }` (§3.9.2) needs no separate termination check. A `Value::Enum` is a finite value built bottom-up — leaves constructed first, then each `Node` built from already-constructed children — so no single construction expression can build an unbounded value. The non-recursive variant (`Leaf`) is exactly the "variant type base case" named in the termination requirement above. This is consistent with §4.3's note that the compiler does not attempt termination checking: infinite recursion in a value-building function is a runtime stack overflow, as today, not a compile error. Contrast recursive *structures* (this section), whose eager unfolding is depth-controlled by a `where`-guarded `sub` — a recursive enum value has no analogous unfolding step to guard.
 
 **`undef` is NOT a valid termination mechanism.** `undef` means "not yet decided," not "structurally absent."
-
-**Unfolding preconditions:** Recursion-controlling parameters must be determined before structural unfolding proceeds.
 
 **Resolution order:** Resolution does not cross recursive instance boundaries. Each instance resolves its own `auto` parameters independently. The evaluation graph resolves in dependency order (typically leaves first).
 
@@ -2299,6 +2299,7 @@ When the condition is determined, only the selected branch's determinacy matters
 | `list.count` | List itself `undef` | `undef` |
 | `list.sum` | Structure determined | `undef` if any element is `undef` |
 | `list[i]` | Structure determined, valid index | Element value (may be `undef`) |
+| `list[i]` | Structure determined, index out of range | `undef` (§3.4) |
 | `list[i]` | List itself `undef` | `undef` |
 | `map[key]` | Structure determined, key present | Value (may be `undef`) |
 | `map[key]` | Structure determined, key absent | Evaluation failure (not `undef`) |
