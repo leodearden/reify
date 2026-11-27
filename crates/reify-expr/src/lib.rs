@@ -43,6 +43,7 @@ pub use dual_env::DualEnv;
 pub use dual_eval::{eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env};
 pub use dual_seeds::Seeds;
 pub use non_differentiable::NonDifferentiable;
+pub use reader::{CellRead, PendingReader};
 pub use upstream_values_hash::realization_upstream_values_hash;
 
 use std::cell::RefCell;
@@ -57,6 +58,7 @@ use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, Compiled
 
 use ctor_member_order::{CtorMember, ctor_member_order};
 use datum_projection::{datum_vec3, eval_datum_projection, eval_self_datum_projection};
+use reader::{CellReader, RoundReader};
 use scope_chain::{Frame, ScopeChain};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -317,10 +319,63 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    /// This context's functions, depth and attachments, with no local frame,
+    /// reading every store cell through `reader`.
+    fn reading_from<'b>(&self, reader: &'b dyn CellReader) -> EvalContext<'b>
+    where
+        'a: 'b,
+    {
+        EvalContext {
+            values: self.values,
+            functions: self.functions,
+            recursion_depth: self.recursion_depth,
+            meta: self.meta,
+            determinacy: self.determinacy,
+            diagnostics: self.diagnostics,
+            undef_causes: self.undef_causes,
+            containment: self.containment,
+            compute_dispatch: self.compute_dispatch,
+            symbolic_selector_ctor: self.symbolic_selector_ctor,
+            scope: ScopeChain::over(reader),
+        }
+    }
+
     /// The value of cell `id` in this context's scope.
     fn read(&self, id: &ValueCellId) -> Value {
         self.scope.read(id)
     }
+
+    /// Whether every operand outside an arm is evaluated, so that one round
+    /// asks for every cell the expression reads: true under a reader that may
+    /// answer "not here yet", false under the old engine's.
+    fn reads_every_operand(&self) -> bool {
+        self.scope.reader().may_answer_not_here_yet()
+    }
+
+    /// A mark to hand [`Self::pending_since`] after evaluating some operands.
+    fn pending_mark(&self) -> PendingMark {
+        PendingMark(self.scope.reader().not_here_yet_count())
+    }
+
+    /// Whether a read made since `mark` was answered "not here yet". Every node
+    /// a pending read is an operand of is pending, so the operands evaluated
+    /// since `mark` are pending exactly when this is true.
+    fn pending_since(&self, mark: PendingMark) -> bool {
+        self.scope.reader().not_here_yet_count() != mark.0
+    }
+}
+
+/// How many reads had been answered "not here yet" when the mark was taken.
+#[derive(Clone, Copy)]
+struct PendingMark(usize);
+
+/// What [`eval_expr_or_pending`] gives.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Evaluated {
+    /// Every read the evaluation made was here: its value.
+    Value(Value),
+    /// A read the evaluation made was answered "not here yet".
+    Pending,
 }
 
 /// Evaluate a compiled expression against an evaluation context.
@@ -1178,6 +1233,30 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         // handles requires a `GeometryKernel`, so the real coercion happens in
         // the kernel-bearing post-process (reify-eval), not here.
         CompiledExprKind::ResolveSelector { selector } => eval_expr(selector, ctx),
+    }
+}
+
+/// Evaluate `expr` under `ctx`'s functions and attachments, reading every
+/// store cell from `reader` (the new engine's store) rather than `ctx`'s.
+///
+/// The evaluation is [`Evaluated::Pending`] when any read it made was answered
+/// "not here yet". The walk reads on past such a read, so one call asks for
+/// every cell the expression reads: every operand, quantifier element and
+/// argument is evaluated, except the arms of an `if` or a `match`, of which
+/// only the one its condition takes is, and none when the condition is
+/// pending. No built-in is run, no function entered and no function applied
+/// with a pending operand.
+pub fn eval_expr_or_pending(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    reader: &dyn PendingReader,
+) -> Evaluated {
+    let round = RoundReader::new(reader);
+    let value = eval_expr(expr, &ctx.reading_from(&round));
+    if round.not_here_yet_count() == 0 {
+        Evaluated::Value(value)
+    } else {
+        Evaluated::Pending
     }
 }
 
