@@ -16,13 +16,10 @@ pub const DISPUTED: &str = "disputed.toml";
 
 const BOOKKEEPING: [&str; 3] = [BUILT, DISPUTED, WAITING];
 
-/// `tests/corpus/` of this crate, found from the runtime
-/// `CARGO_MANIFEST_DIR`: a warm-lane test binary can be reused from another
-/// worktree, and `env!` bakes in the build-time path.
+/// `tests/corpus/` of this crate, in the tree the running test belongs to.
 pub fn corpus_root() -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
-    Path::new(&manifest_dir).join("tests").join("corpus")
+    reify_test_support::workspace_root::workspace_root()
+        .join("crates/reify-eval-instances/tests/corpus")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
