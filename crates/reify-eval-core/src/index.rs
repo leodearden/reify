@@ -93,9 +93,10 @@ pub(crate) struct Supposed {
     pub content: Content,
 }
 
-/// What a view's index holds beyond a snapshot's: the outcome it supposes
-/// at each path.
+/// What a view's index holds beyond a snapshot's: the path of the node
+/// whose run opened it, and the outcome it supposes at each path.
 struct Opened {
+    opener: PathId,
     supposed: BTreeMap<PathId, Supposed>,
 }
 
@@ -128,6 +129,12 @@ impl Index {
     /// The outcome the index's view supposes at `path`, if any.
     pub fn supposed(&self, path: PathId) -> Option<&Supposed> {
         self.opened.as_ref()?.supposed.get(&path)
+    }
+
+    /// The path of the node whose run opened the index's view; none for a
+    /// snapshot.
+    pub fn opener(&self) -> Option<PathId> {
+        self.opened.as_ref().map(|opened| opened.opener)
     }
 
     /// The declaration of the node at `path`, known where its run declared
@@ -166,8 +173,9 @@ impl Indexes {
             });
     }
 
-    /// Opens an empty index for a new view on `snapshot` supposing
-    /// `supposed`: it has the snapshot's inputs and limit settings.
+    /// Opens an empty index for a new view on `snapshot`, which the run of
+    /// the node at `opener` opened, supposing `supposed`: it has the
+    /// snapshot's inputs and limit settings.
     ///
     /// # Panics
     ///
@@ -175,6 +183,7 @@ impl Indexes {
     pub fn open_view(
         &mut self,
         snapshot: SnapshotId,
+        opener: PathId,
         supposed: BTreeMap<PathId, Supposed>,
     ) -> StateId {
         let inputs = self.of(StateId::of(snapshot)).inputs.clone();
@@ -183,7 +192,7 @@ impl Indexes {
             inputs,
             entries: OrdMap::new(),
             declarers: OrdMap::new(),
-            opened: Some(Opened { supposed }),
+            opened: Some(Opened { opener, supposed }),
         };
         self.views += 1;
         let state = StateId {

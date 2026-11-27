@@ -289,6 +289,21 @@ impl Executor {
         self.indexes.of(key.state).entry(key.path).is_some()
     }
 
+    /// The node at `path` in `state`: under a view, the path of the view's
+    /// opener is the opener's own node, running in its snapshot (contract
+    /// 7.7), so that a node under the view that needs it waits on the
+    /// running opener, a ring. Every other path is the state's own node.
+    fn node_at(&self, state: StateId, path: PathId) -> NodeKey {
+        let opener = state.view.and(self.indexes.of(state).opener());
+        if opener == Some(path) {
+            return NodeKey {
+                state: StateId::of(state.snapshot),
+                path,
+            };
+        }
+        NodeKey { state, path }
+    }
+
     /// Sees that `key` will be answered: walks up to the nearest ancestor
     /// that is answered or in progress, each path on the way waiting on its
     /// parent, and works out the topmost path that can be worked out now.
@@ -298,10 +313,7 @@ impl Executor {
         }
         let mut at = key;
         while let Some((parent, _)) = self.paths.parent(at.path) {
-            let parent = NodeKey {
-                state: key.state,
-                path: parent,
-            };
+            let parent = self.node_at(key.state, parent);
             if self.answered(parent) {
                 break;
             }
@@ -459,13 +471,14 @@ impl Executor {
         }
     }
 
-    /// Whether the answer of the reader at `key`, a lookup or a body,
-    /// depends on a substitution by what it has read so far.
+    /// Whether the answer of the node in progress at `key` depends on a
+    /// substitution by what it has read so far: a lookup's or a body's
+    /// flag; a path waiting on its parent has read nothing.
     fn depended_so_far(&self, key: NodeKey) -> bool {
         match (self.lookups.get(&key), self.tasks.get(&key)) {
             (Some(lookup), _) => lookup.depended(),
             (None, Some(task)) => task.depended(),
-            (None, None) => unreachable!("a child is declared by a reader in progress"),
+            (None, None) => false,
         }
     }
 
@@ -620,7 +633,10 @@ impl Executor {
     /// drops the work no live request still waits on; whether it broke any.
     /// Every node that answers leaves the nodes in progress before any
     /// answers, so no answer on a ring resumes a node on it or works out a
-    /// path on it.
+    /// path on it. Withdrawing a view's opener closes the view, whose nodes
+    /// then answer nothing. A ring's nodes in a view depended on its
+    /// substitution if any node on the ring had read an answer that did; in
+    /// a snapshot nothing does.
     fn break_rings(&mut self) -> bool {
         let lookups = &self.lookups;
         let broken = cycle::broken(&self.waits, self.requests.wanted(), |key| {
@@ -632,13 +648,24 @@ impl Executor {
         for key in broken.missed {
             self.miss(key);
         }
-        for key in &broken.answered {
+        let rings: Vec<_> = broken
+            .answered
+            .into_iter()
+            .map(|ring| {
+                let depended = ring.iter().any(|key| self.depended_so_far(*key));
+                (ring, depended)
+            })
+            .collect();
+        for key in rings.iter().flat_map(|(ring, _)| ring) {
             if let Some(task) = self.withdraw(*key) {
                 task.discard();
             }
         }
-        for key in broken.answered {
-            self.work(Work::Answered(key, cycle::entry()));
+        for (ring, depended) in rings {
+            for key in ring {
+                let in_view = key.state.view.is_some();
+                self.work(Work::Answered(key, cycle::entry(depended && in_view)));
+            }
         }
         self.drop_unwanted_work();
         true
@@ -770,7 +797,7 @@ impl Executor {
                 match serve::view_read::open(&opener, substitution, &mut self.paths) {
                     Ok(supposed) => {
                         let snapshot = key.state.snapshot;
-                        let view = self.indexes.open_view(snapshot, supposed);
+                        let view = self.indexes.open_view(snapshot, key.path, supposed);
                         task.opened(ordinal, view);
                         view
                     }
@@ -872,7 +899,7 @@ impl Executor {
         let to_declare = reading.take_to_declare();
         let state = reading.state();
         self.readings.insert(key, reading);
-        let nodes = awaited.into_iter().map(|path| NodeKey { state, path });
+        let nodes = awaited.into_iter().map(|path| self.node_at(state, path));
         self.await_nodes(key, nodes.collect(), to_declare, declaration);
     }
 

@@ -17,9 +17,9 @@ pub(crate) struct Broken {
     /// Every lookup of each ring that holds one. Each misses and its body
     /// runs; nothing else on its ring is answered yet.
     pub missed: Vec<NodeKey>,
-    /// Every node of each ring that holds no lookup: a ring of running
-    /// bodies and of paths waiting on their parent.
-    pub answered: Vec<NodeKey>,
+    /// Each ring that holds no lookup, a ring of running bodies and of
+    /// paths waiting on their parent, every node of which answers.
+    pub answered: Vec<BTreeSet<NodeKey>>,
 }
 
 impl Broken {
@@ -45,7 +45,7 @@ pub(crate) fn broken(
     for ring in rings(waits, from) {
         let lookups: Vec<_> = ring.iter().copied().filter(&is_lookup).collect();
         if lookups.is_empty() {
-            broken.answered.extend(ring);
+            broken.answered.push(ring);
         } else {
             broken.missed.extend(lookups);
         }
@@ -68,13 +68,13 @@ fn rings(waits: &Waits, from: impl IntoIterator<Item = NodeKey>) -> Vec<BTreeSet
     walk.rings
 }
 
-/// The final answer of a node on a ring. No body produced it, so it has
-/// no declaration.
-pub(crate) fn entry() -> Entry {
+/// The final answer of a node on a ring, which `depended` on a
+/// substitution or not. No body produced it, so it has no declaration.
+pub(crate) fn entry(depended: bool) -> Entry {
     Entry::settled(
         Outcome::Failure(Failure::Cycle),
         Content::of_failure(&Failure::Cycle),
-        false,
+        depended,
     )
 }
 
