@@ -313,6 +313,61 @@ fn a_local_function_needs_no_import_for_its_own_call() {
     assert!(plan.modules().is_empty(), "{:?}", dotted_modules(&plan));
 }
 
+// ─── e1b: callees written only in a kept assignment or port guard ──────────
+
+const PREDICATES: (&str, &str) = (
+    "std.fake.predicates",
+    "pub fn is_thick(x: Real) -> Bool { x > 1.0 }\n",
+);
+
+#[test]
+fn a_std_callee_written_only_in_a_braces_assignment_guard_needs_its_module() {
+    let universe = compile_universe(&[PREDICATES]);
+    let source = "structure def Plate { param t : Real = 1.0 }\n\
+                  structure def S {\n\
+                      sub p : Plate { t = 6.0 where is_thick(1.0) }\n\
+                  }\n";
+    let plan = derive(source, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.predicates",
+        &[name_use("is_thick", NameRole::Callee)],
+        source,
+    );
+}
+
+#[test]
+fn a_std_callee_written_only_in_a_keyed_entry_assignment_guard_needs_its_module() {
+    let universe = compile_universe(&[PREDICATES]);
+    let source = "structure def Vent { param w : Real = 1.0 }\n\
+                  structure def S {\n\
+                      sub vents : Keyed<Vent> { \"a\" => { w = 2.0 where is_thick(1.0) } }\n\
+                  }\n";
+    let plan = derive(source, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.predicates",
+        &[name_use("is_thick", NameRole::Callee)],
+        source,
+    );
+}
+
+#[test]
+fn a_std_callee_written_only_in_a_port_guard_needs_its_module() {
+    let universe = compile_universe(&[PREDICATES]);
+    let source = "trait T {}\n\
+                  structure def S {\n\
+                      port p : T where is_thick(1.0)\n\
+                  }\n";
+    let plan = derive(source, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.predicates",
+        &[name_use("is_thick", NameRole::Callee)],
+        source,
+    );
+}
+
 // ─── e2: enum accesses in both lowerings ───────────────────────────────────
 
 #[test]

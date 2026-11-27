@@ -268,6 +268,7 @@ mod tests {
             key: key.to_string(),
             overrides: vec![],
             param_overrides: vec![],
+            param_override_guards: vec![],
             span,
         }
     }
