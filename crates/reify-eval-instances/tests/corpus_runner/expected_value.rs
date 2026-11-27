@@ -199,3 +199,26 @@ impl Cursor<'_> {
         }
     }
 }
+
+#[test]
+fn a_malformed_value_is_refused_naming_its_text() {
+    let refusals = [
+        ("8 mm x", "trailing text"),
+        ("Plate{t 3}", "expected `:`"),
+        ("Plate{t: 3 mm", "expected `,` or `}`"),
+        ("[1, 2", "expected `,` or `]`"),
+        ("3 mm^", "expected a power after `^`"),
+        ("-", "expected digits"),
+        ("1.", "expected digits after `.`"),
+        ("", "expected a value"),
+    ];
+    for (text, what) in refusals {
+        match parse(text) {
+            Ok(value) => panic!("`{text}` must be refused, but parsed as {value:?}"),
+            Err(error) => assert!(
+                error.contains(&format!("`{text}`")) && error.contains(what),
+                "the refusal of `{text}` must name the text and say {what:?}, got: {error}"
+            ),
+        }
+    }
+}
