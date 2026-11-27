@@ -1700,4 +1700,261 @@ mod tests {
         design.insert(children_limit(), bound(3));
         assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 18));
     }
+
+    /// Root scope `r` whose members are `held`, beside the input "problem"
+    /// holding `problem` and the named ints `ints`.
+    fn solve_r(held: Val, problem: Val, ints: &[(&str, i64)]) -> Inputs {
+        let mut design = scope_r(held, ints);
+        design.insert(named("problem"), problem);
+        design
+    }
+
+    /// A solve of the problem at "problem" whose unknowns and constraints
+    /// are the siblings named.
+    fn solve_over(unknowns: &[&str], constraints: &[&str]) -> Decl {
+        let sibling = |name: &&str| declarer([step(name)]);
+        solve(
+            input("problem"),
+            unknowns.iter().map(sibling),
+            constraints.iter().map(sibling),
+        )
+    }
+
+    /// The sibling solve s.
+    fn sibling_s() -> Bind {
+        declarer([step("s")])
+    }
+
+    /// Root scope `r` holding the solve s of the int unknown n, whose
+    /// constraint k is n - 3, over the candidates n = 1, 4 and 7, beside
+    /// the parts `wrong`, part 0 read as a flag, and `past`, part 1.
+    fn first_holding_r() -> Inputs {
+        let held = members([
+            (step("s"), solve_over(&["n"], &["k"])),
+            (step("n"), solved_int(sibling_s(), 0)),
+            (step("k"), cell([declarer([step("n")]), input("minus")])),
+            (step("wrong"), solved_flag(sibling_s(), 0)),
+            (step("past"), solved_int(sibling_s(), 1)),
+        ]);
+        let candidates = [1, 4, 7].map(|n| vec![Part::Int(n)]);
+        solve_r(held, problem(candidates, 1), &[("minus", -3)])
+    }
+
+    const SOLVED_INT: ToyKind = ToyKind::Solved(PartType::Int);
+
+    #[test]
+    fn a_solve_answers_its_first_holding_candidate_and_each_solved_part_reads_it() {
+        let design = first_holding_r();
+        assert_eq!(
+            answer(&design, &at("r", &["s"])),
+            value(ToyKind::Solve, Out::Solution(vec![Part::Int(4)]))
+        );
+        assert_eq!(answer(&design, &at("r", &["n"])), int_of(SOLVED_INT, 4));
+        assert_eq!(answer(&design, &at("r", &["k"])), int_of(ToyKind::Cell, 1));
+        assert_eq!(
+            answer(&design, &at("r", &["wrong"])),
+            failed(
+                Some(ToyKind::Solved(PartType::Flag)),
+                type_name::<bool>(),
+                type_name::<i64>()
+            )
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["past"])),
+            absent(Some(SOLVED_INT))
+        );
+    }
+
+    /// What `trial` answered at `path`, if it answered there.
+    fn in_trial(trial: &Trial, path: &ModelPath) -> Option<Expected> {
+        trial
+            .answers()
+            .find(|(at, _)| *at == path)
+            .map(|(_, expected)| expected.clone())
+    }
+
+    #[test]
+    fn a_trial_sees_its_substitution_and_structure_follows_it() {
+        let m = [step("g"), step("m")];
+        let unknowns = [
+            declarer([step("n")]),
+            declarer([step("f")]),
+            declarer(m.clone()),
+        ];
+        let constraints = [
+            declarer(m.clone()),
+            declarer([step("col"), index(2)]),
+            declarer([step("k")]),
+        ];
+        let held = members([
+            (step("s"), solve(input("problem"), unknowns, constraints)),
+            (step("n"), solved_int(sibling_s(), 0)),
+            (step("f"), solved_flag(sibling_s(), 1)),
+            (step("g"), guard(declarer([step("f")]), "g.m")),
+            (step("col"), collection(declarer([step("n")]), input("el"))),
+            (step("k"), cell([declarer([step("n")]), input("minus")])),
+        ]);
+        let candidates = [(2, false), (3, true)]
+            .map(|(n, f)| vec![Part::Int(n), Part::Flag(f), Part::Int(9)]);
+        let mut design = solve_r(held, problem(candidates.clone(), 3), &[("minus", -3)]);
+        design.insert(named("g.m"), members([(step("m"), cell([input("minus")]))]));
+        design.insert(named("el"), declaration(cell([])));
+        let s = at("r", &["s"]);
+        let mut reference = Reference::new(design);
+        assert_eq!(
+            reference.answer(&s),
+            value(ToyKind::Solve, Out::Solution(candidates[1].clone()))
+        );
+        let [first, second] = reference.trials(&s) else {
+            panic!("the first candidate fails its last constraint, the second holds")
+        };
+        let (g, col) = (at("r", &["g"]), at("r", &["col"]));
+        let (m, element) = (g.child(step("m")), col.child(index(2)));
+        assert_eq!(in_trial(first, &g), absent(Some(ToyKind::Guard)).ok());
+        assert_eq!(in_trial(first, &m), absent(None).ok(), "under an absent guard");
+        let present = in_trial(second, &g).map(|expected| expected.outcome);
+        assert!(
+            matches!(present, Some(Expect::Value(Out::Members(_)))),
+            "{present:?}"
+        );
+        assert_eq!(in_trial(second, &m), int_of(ToyKind::Cell, 9).ok());
+        let count = |trial| match in_trial(trial, &col).map(|expected| expected.outcome) {
+            Some(Expect::Value(Out::Elements { count, .. })) => count,
+            other => panic!("the collection answered {other:?}"),
+        };
+        assert_eq!((count(first), count(second)), (2, 3));
+        assert_eq!(in_trial(first, &element), absent(None).ok());
+        assert_eq!(in_trial(second, &element), int_of(ToyKind::Cell, 0).ok());
+    }
+
+    #[test]
+    fn a_constraint_reading_its_own_solve_makes_the_solve_a_cycle_and_is_blocked_by_it() {
+        let held = members([
+            (step("s"), solve_over(&["n"], &["k"])),
+            (step("n"), solved_int(sibling_s(), 0)),
+            (step("k"), cell([sibling_s()])),
+        ]);
+        let design = solve_r(held, problem([vec![Part::Int(1)]], 1), &[]);
+        for first in ["s", "k"] {
+            let mut reference = Reference::new(design.clone());
+            reference
+                .answer(&at("r", &[first]))
+                .expect("the design is valid");
+            assert_eq!(
+                reference.answer(&at("r", &["s"])),
+                cycle(Some(ToyKind::Solve)),
+                "{first} first"
+            );
+            assert_eq!(
+                reference.answer(&at("r", &["k"])),
+                blocked_at("0"),
+                "{first} first"
+            );
+        }
+    }
+
+    #[test]
+    fn a_solve_none_of_whose_candidates_holds_fails_and_its_parts_are_blocked_by_it() {
+        let no_candidate = Ok(Expected {
+            node: Some(ToyKind::Solve),
+            outcome: Expect::Failure(Failure::OfKind {
+                kind: toy::Solve::ID,
+                code: toy::NO_CANDIDATE_HOLDS,
+            }),
+        });
+        let blocked = Ok(Expected {
+            node: Some(SOLVED_INT),
+            outcome: Expect::Failure(Failure::BlockedBy {
+                at: Ref::binding("solve"),
+            }),
+        });
+        let mut design = first_holding_r();
+        for candidates in [vec![1, 2], vec![]] {
+            let candidates = candidates.into_iter().map(|n| vec![Part::Int(n)]);
+            design.insert(named("problem"), problem(candidates, 1));
+            assert_eq!(answer(&design, &at("r", &["s"])), no_candidate);
+            assert_eq!(answer(&design, &at("r", &["n"])), blocked);
+        }
+    }
+
+    #[test]
+    fn a_substitution_naming_no_place_of_its_own_fails_the_solve_once_a_trial_reads() {
+        let n = || declarer([step("n")]);
+        let k = || declarer([step("k")]);
+        let cases = [
+            (vec![input("x")], "u0"),
+            (vec![n(), n()], "u1"),
+            (vec![n()], "u1"),
+        ];
+        for (unknowns, at_ref) in cases {
+            let held = members([
+                (step("s"), solve(input("problem"), unknowns, [k()])),
+                (step("n"), solved_int(sibling_s(), 0)),
+                (step("k"), cell([n()])),
+            ]);
+            let candidate = vec![Part::Int(1), Part::Int(2)];
+            let mut design = solve_r(held, problem([candidate.clone()], 1), &[("x", 0)]);
+            assert_eq!(
+                answer(&design, &at("r", &["s"])),
+                Ok(Expected {
+                    node: Some(ToyKind::Solve),
+                    outcome: Expect::Failure(Failure::NotSupposable {
+                        at: Ref::binding(at_ref),
+                    }),
+                }),
+                "{at_ref}"
+            );
+            design.insert(named("problem"), problem([candidate.clone()], 0));
+            assert_eq!(
+                answer(&design, &at("r", &["s"])),
+                value(ToyKind::Solve, Out::Solution(candidate)),
+                "with no constraint no trial reads, and no view opens"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trial_that_reaches_another_solve_is_invalid_and_first_invalid_finds_it() {
+        let held = members([
+            (step("s"), solve_over(&["n"], &["k"])),
+            (step("n"), solved_int(sibling_s(), 0)),
+            (step("t"), solve_over(&["m"], &[])),
+            (step("m"), solved_int(declarer([step("t")]), 0)),
+            (step("k"), cell([declarer([step("m")])])),
+        ]);
+        let design = solve_r(held, problem([vec![Part::Int(1)]], 1), &[]);
+        let inside = Invalid::ViewInsideView {
+            path: at("r", &["t"]),
+        };
+        assert_eq!(answer(&design, &at("r", &["s"])), Err(inside.clone()));
+        let evaluate = |path: ModelPath| Case {
+            inputs: design.clone(),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![path],
+                budget: None,
+                then: Then::End,
+            }],
+        };
+        assert_eq!(first_invalid(&evaluate(at("r", &["s"]))), Some(inside));
+        assert_eq!(
+            first_invalid(&evaluate(at("r", &["k"]))),
+            None,
+            "t opens its view in the snapshot"
+        );
+        assert_eq!(answer(&design, &at("r", &["k"])), int_of(ToyKind::Cell, 1));
+    }
+
+    #[test]
+    fn the_paths_resolved_count_each_trial_s_resolutions_beside_the_snapshot_s() {
+        let s = at("r", &["s"]);
+        let mut reference = Reference::new(first_holding_r());
+        reference.answer(&s).expect("the design is valid");
+        let trials = reference.trials(&s);
+        assert_eq!(trials.len(), 2, "n = 1 fails, n = 4 holds");
+        for trial in trials {
+            assert_eq!(trial.paths_resolved(), 3, "r, r/k and the supposed r/n");
+        }
+        assert_eq!(reference.paths_resolved(), 2 + 3 + 3, "r and r/s, then the trials'");
+    }
 }
