@@ -32,6 +32,16 @@ impl Content {
         }
     }
 
+    /// An outcome a view supposes, by the rule for the outcome it is: a
+    /// value has its given content, as a snapshot input's.
+    pub fn of_supposed(supposed: &Outcome<Input>) -> Self {
+        match supposed {
+            Outcome::Value(input) => Self::of_input(input),
+            Outcome::Failure(failure) => Self::of_failure(failure),
+            Outcome::Absent => Self::absent(),
+        }
+    }
+
     pub fn of_failure(failure: &Failure) -> Self {
         let mut encoder = Encoder::new("content.failure");
         failure.encode(&mut encoder);

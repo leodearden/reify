@@ -15,10 +15,17 @@
 //! name a sibling at its own ordinal or a later one, so a design may hold
 //! rings of waits, which answer "cycle". A call's child reads constants,
 //! inputs and its call's first term, and, with cycles on, its call; a
-//! callee is a cell or a call of cells, so no call recurses. A feature
-//! that is off draws
-//! nothing from the rng, so a later leaf's feature leaves this feature
-//! set's stream unchanged.
+//! callee is a cell or a call of cells, so no call recurses.
+//! With solve on, the first level drawn ends, after the blocked pair, in
+//! the case's one solve group, one view deep (`solve_draws`); an
+//! evaluation's demand may gain the solve or a solved part, and an edit
+//! may change a problem. The solve reads the group's other nodes only
+//! through its view, where its unknowns are supposed, so the group forms
+//! no ring of waits: the one exception to the ordinal rule. A feature that
+//! is off draws nothing from the rng, so a later leaf's feature leaves this
+//! feature set's stream unchanged; the solve feature draws only from a
+//! stream of its own and names its inputs apart, so with it on the other
+//! features draw as they do with it off.
 
 use std::collections::BTreeMap;
 use std::iter;
@@ -33,6 +40,7 @@ use super::design::{
     measure, members, named, passed, path, picker, root, scope, shape, site, step, when,
 };
 use super::rng::XorShift64Star;
+use super::solve_draws::{SolveDraws, is_group_step};
 
 /// The seeds the gate runs, each for `GATE_EVENTS` host events.
 pub const GATE_SEEDS: RangeInclusive<u64> = 1..=64;
@@ -68,6 +76,8 @@ pub struct Features {
     pub budgets: bool,
     /// Calls, whose runs declare children.
     pub call: bool,
+    /// Solve groups, one view deep.
+    pub solve: bool,
 }
 
 impl Features {
@@ -83,6 +93,7 @@ impl Features {
             limits: false,
             budgets: false,
             call: false,
+            solve: false,
         }
     }
 
@@ -95,6 +106,7 @@ impl Features {
             limits: true,
             budgets: true,
             call: true,
+            solve: true,
             ..Self::structure()
         }
     }
@@ -115,6 +127,7 @@ pub fn generate(seed: u64, features: Features, events: usize) -> Case {
         call_steps: BTreeMap::new(),
         paths: Vec::new(),
         named: 0,
+        solve: SolveDraws::new(seed, features.cycles, features.call),
     };
     let inputs = generator.design();
     let events = generator.events(&inputs, events);
@@ -161,7 +174,8 @@ impl Level {
     ///
     /// # Panics
     ///
-    /// If `held` holds a member at a step no ordinal of the level gives.
+    /// If `held` holds a member at a step no ordinal of the level gives,
+    /// outside its solve group.
     fn siblings(&self, held: &BTreeMap<Step, Decl>) -> Vec<Sibling> {
         let present: Vec<Sibling> = (0..self.ordinals)
             .filter_map(|ordinal| {
@@ -169,9 +183,10 @@ impl Level {
                 Some((ordinal, decl.kind))
             })
             .collect();
+        let drawn = held.keys().filter(|at| !is_group_step(at));
         assert_eq!(
             present.len(),
-            held.len(),
+            drawn.count(),
             "{} holds a member at a step no ordinal below {} gives",
             self.input,
             self.ordinals
@@ -214,6 +229,8 @@ struct Generator {
     /// Every path the design has declared, and a few it never declares.
     paths: Vec<ModelPath>,
     named: usize,
+    /// The solve feature's draws, from a stream of their own.
+    solve: SolveDraws,
 }
 
 impl Generator {
@@ -295,6 +312,7 @@ impl Generator {
             ToyKind::Collection => self.collection_at(&at, &[], needed),
             ToyKind::Shape | ToyKind::Measure => unreachable!("a root is never on the kernel"),
             ToyKind::Call => unreachable!("no call is drawn here"),
+            ToyKind::Solve | ToyKind::Solved(_) => unreachable!("no solve is drawn here"),
         }
     }
 
@@ -333,6 +351,7 @@ impl Generator {
             ToyKind::Collection => self.collection_at(&at, earlier, needed),
             ToyKind::Call => self.member_call(&at, level, earlier, needed),
             ToyKind::Shape | ToyKind::Measure => unreachable!("the kernel takes a cell's place"),
+            ToyKind::Solve | ToyKind::Solved(_) => unreachable!("no solve is drawn here"),
         }
     }
 
@@ -611,6 +630,10 @@ impl Generator {
         if self.features.divide {
             self.blocked_pair(&mut level, &mut held, needed);
         }
+        if self.features.solve && !self.solve.drawn() {
+            let (at, group) = self.solve.group(&level.at, needed);
+            held.insert(at, group);
+        }
         needed.push((named(&level.input), members(held)));
         level
     }
@@ -758,17 +781,23 @@ impl Generator {
         Some(self.rng.below(12) as u64)
     }
 
+    /// Up to four paths the design declares, and, with solve on, at times
+    /// a solve or a solved part.
     fn demand(&mut self) -> Vec<ModelPath> {
-        (0..1 + self.rng.below(4))
+        let mut paths: Vec<_> = (0..1 + self.rng.below(4))
             .map(|_| self.rng.choose(&self.paths).clone())
-            .collect()
+            .collect();
+        paths.extend(self.solve.demand());
+        paths
     }
 
+    /// One or two changes, and, with solve on, at times a new problem.
     fn edit(&mut self, from: usize, current: &Inputs) -> HostEvent {
         let mut changes = Vec::new();
         for _ in 0..1 + self.rng.below(2) {
             changes.extend(self.change(current));
         }
+        changes.extend(self.solve.edit());
         HostEvent::Edit { from, changes }
     }
 
@@ -808,7 +837,7 @@ impl Generator {
             Change::Remove => {
                 let present: Vec<_> = current
                     .keys()
-                    .filter(|key| matches!(key, Key::Named(_)))
+                    .filter(|key| matches!(key, Key::Named(name) if !self.solve.owns(name)))
                     .collect();
                 match present.is_empty() {
                     true => Vec::new(),
@@ -930,15 +959,17 @@ fn of_kind(siblings: &[Sibling], kind: ToyKind) -> Vec<usize> {
 }
 
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use reify_eval_core::Failure;
 
     use super::super::case::{Case, HostEvent, Then};
-    use super::super::design::{Bind, Decl, Key, ToyKind, Val};
-    use super::super::reference::{Expect, Invalid, Reference, first_invalid};
+    use super::super::design::{Bind, Decl, Key, ModelPath, PartType, ToyKind, Val};
+    use super::super::expected::{Expect, Invalid};
+    use super::super::reference::{Reference, first_invalid};
     use super::{
         BLOCKED_PAIR_ZERO, Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate,
+        is_group_step,
     };
 
     /// Every input value a case sets, initially or by an edit.
@@ -953,16 +984,18 @@ mod tests {
         case.inputs.iter().chain(edited).collect()
     }
 
+    /// The declarations `value` holds directly.
+    fn within(value: &Val) -> Vec<&Decl> {
+        match value {
+            Val::Decl(decl) => vec![decl],
+            Val::Members(members) => members.values().collect(),
+            Val::Calls(sites) => sites.iter().map(|site| &site.callee).collect(),
+            Val::Int(_) | Val::Bool(_) | Val::Bound(_) | Val::Problem(_) => Vec::new(),
+        }
+    }
+
     /// Every declaration a case holds, members' members included.
     fn decls(case: &Case) -> Vec<&Decl> {
-        fn within(value: &Val) -> Vec<&Decl> {
-            match value {
-                Val::Decl(decl) => vec![decl],
-                Val::Members(members) => members.values().collect(),
-                Val::Calls(sites) => sites.iter().map(|site| &site.callee).collect(),
-                Val::Int(_) | Val::Bool(_) | Val::Bound(_) => Vec::new(),
-            }
-        }
         values(case)
             .into_iter()
             .flat_map(|(_, value)| within(value))
@@ -1020,12 +1053,14 @@ mod tests {
             limits: true,
             budgets: true,
             call: true,
+            solve: true,
         };
         assert_eq!(Features::every(), every);
         assert!(!Features::structure().cycles);
         assert!(!Features::structure().limits);
         assert!(!Features::structure().budgets);
         assert!(!Features::structure().call);
+        assert!(!Features::structure().solve);
         for seed in GATE_SEEDS {
             let case = generate(seed, every, GATE_EVENTS);
             assert_eq!(gate_case(seed), case, "seed {seed}");
@@ -1041,6 +1076,7 @@ mod tests {
             ToyKind::Collection => features.collection,
             ToyKind::Shape | ToyKind::Measure => features.kernel,
             ToyKind::Call => features.call,
+            ToyKind::Solve | ToyKind::Solved(_) => features.solve,
         }
     }
 
@@ -1056,6 +1092,7 @@ mod tests {
             limits: false,
             budgets: false,
             call: false,
+            solve: false,
         };
         let every = Features::every();
         let some_off = [
@@ -1073,11 +1110,22 @@ mod tests {
                 call: false,
                 ..every
             },
+            Features {
+                solve: false,
+                ..every
+            },
         ];
         for features in some_off {
             for seed in GATE_SEEDS {
                 let case = generate(seed, features, GATE_EVENTS);
                 assert!(!case.events.is_empty(), "seed {seed}");
+                let problems = values(&case)
+                    .into_iter()
+                    .any(|(_, value)| matches!(value, Val::Problem(_)));
+                assert!(
+                    features.solve || !problems,
+                    "seed {seed}, {features:?}: a problem"
+                );
                 for decl in decls(&case) {
                     assert!(
                         allows(features, decl.kind),
@@ -1091,6 +1139,156 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The names of the inputs the solve groups of `case` reach, through
+    /// their bindings and the values of the inputs those name: the inputs
+    /// the solve feature drew.
+    fn solve_inputs(case: &Case) -> BTreeSet<String> {
+        let mut named: BTreeMap<&str, Vec<&Val>> = BTreeMap::new();
+        for (key, value) in values(case) {
+            if let Key::Named(name) = key {
+                named.entry(name).or_default().push(value);
+            }
+        }
+        let mut unvisited: Vec<&Decl> = values(case)
+            .into_iter()
+            .flat_map(|(_, value)| match value {
+                Val::Members(members) => members
+                    .iter()
+                    .filter(|(at, _)| is_group_step(at))
+                    .map(|(_, group)| group)
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let mut reached = BTreeSet::new();
+        while let Some(decl) = unvisited.pop() {
+            for bind in decl.bindings.values() {
+                match bind {
+                    Bind::Input(name) if reached.insert(name.clone()) => {
+                        let held = named.get(name.as_str()).into_iter().flatten();
+                        unvisited.extend(held.flat_map(|value| within(value)));
+                    }
+                    Bind::Constant(value) => unvisited.extend(within(value)),
+                    _ => {}
+                }
+            }
+        }
+        reached
+    }
+
+    /// `case` with what the solve feature drew taken out: each solve group,
+    /// a member at its own step of a members value; the inputs the groups
+    /// reach, and every change to one; and each demanded path at or below
+    /// a group.
+    fn without_solve(case: &Case) -> Case {
+        let drawn = solve_inputs(case);
+        let kept = |key: &Key| !matches!(key, Key::Named(name) if drawn.contains(name));
+        let strip = |value: &Val| match value {
+            Val::Members(members) => {
+                let outside = members.iter().filter(|(at, _)| !is_group_step(at));
+                let outside = outside.map(|(at, decl)| (at.clone(), decl.clone()));
+                Val::Members(outside.collect())
+            }
+            other => other.clone(),
+        };
+        let outside = |paths: &[ModelPath]| -> Vec<ModelPath> {
+            let outside = |path: &&ModelPath| !path.steps.iter().any(is_group_step);
+            paths.iter().filter(outside).cloned().collect()
+        };
+        let inputs = case
+            .inputs
+            .iter()
+            .filter(|(key, _)| kept(key))
+            .map(|(key, value)| (key.clone(), strip(value)))
+            .collect();
+        let events = case
+            .events
+            .iter()
+            .map(|event| match event {
+                HostEvent::Edit { from, changes } => HostEvent::Edit {
+                    from: *from,
+                    changes: changes
+                        .iter()
+                        .filter(|(key, _)| kept(key))
+                        .map(|(key, value)| (key.clone(), value.as_ref().map(strip)))
+                        .collect(),
+                },
+                HostEvent::Evaluate {
+                    on,
+                    paths,
+                    budget,
+                    then,
+                } => HostEvent::Evaluate {
+                    on: *on,
+                    paths: outside(paths),
+                    budget: *budget,
+                    then: *then,
+                },
+                HostEvent::Drive {
+                    on,
+                    paths,
+                    turns,
+                    then,
+                } => HostEvent::Drive {
+                    on: *on,
+                    paths: outside(paths),
+                    turns: *turns,
+                    then: *then,
+                },
+            })
+            .collect();
+        Case { inputs, events }
+    }
+
+    /// The solve feature draws from a stream of its own and names its
+    /// inputs apart, so a case drawn with it on, its draws taken out, is
+    /// the case drawn with it off: turning it on shifts no other feature's
+    /// draws, which would lose a shape the gate reached.
+    #[test]
+    fn with_solve_on_the_other_features_draw_as_they_do_with_it_off() {
+        let solve_off = Features {
+            solve: false,
+            ..Features::every()
+        };
+        let mut with_a_group = 0;
+        for seed in GATE_SEEDS {
+            let case = generate(seed, Features::every(), GATE_EVENTS);
+            with_a_group += usize::from(!solve_inputs(&case).is_empty());
+            assert_eq!(
+                without_solve(&case),
+                generate(seed, solve_off, GATE_EVENTS),
+                "seed {seed}"
+            );
+        }
+        assert!(with_a_group > 0, "no gate case draws a solve group");
+    }
+
+    #[test]
+    fn every_solve_the_gate_draws_is_one_view_deep() {
+        let mut trials = 0;
+        for (seed, case) in gate_cases() {
+            assert_eq!(first_invalid(&case), None, "seed {seed}");
+            let demanded: BTreeSet<_> = case.demanded().collect();
+            for (snapshot, inputs) in case.snapshots().into_iter().enumerate() {
+                let mut reference = Reference::new(inputs);
+                for path in &demanded {
+                    reference.answer(path).expect("the case is valid");
+                }
+                for trial in reference.every_trial() {
+                    trials += 1;
+                    let solve = trial
+                        .answers()
+                        .find(|(_, answer)| answer.node == Some(ToyKind::Solve));
+                    assert!(
+                        solve.is_none(),
+                        "seed {seed}, snapshot {snapshot}: a trial answered {solve:?}"
+                    );
+                }
+            }
+        }
+        assert!(trials > 0, "no gate case runs a trial");
     }
 
     #[test]
@@ -1270,6 +1468,9 @@ mod tests {
             ToyKind::Shape,
             ToyKind::Measure,
             ToyKind::Call,
+            ToyKind::Solve,
+            ToyKind::Solved(PartType::Int),
+            ToyKind::Solved(PartType::Flag),
         ];
         assert_eq!(kinds, BTreeSet::from(all));
         let counts = [

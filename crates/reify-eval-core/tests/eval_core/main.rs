@@ -31,3 +31,4 @@ mod structure;
 mod t_model;
 mod toy;
 mod two_places;
+mod views;

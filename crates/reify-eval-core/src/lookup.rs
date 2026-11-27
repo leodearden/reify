@@ -9,11 +9,15 @@ use std::sync::Arc;
 
 use crate::declaration::Declaration;
 use crate::declared_children::{ChildSteps, DeclaredChildren};
+use crate::index::Declared;
 use crate::key::Key;
 use crate::record::Answers;
 
 pub(crate) struct Lookup {
-    declaration: Arc<Declaration>,
+    declared: Declared,
+    /// Whether the answer it finds depends on a substitution so far: its
+    /// declaration did, or a request it moved past read an answer that did.
+    depended: bool,
     key: Key,
     /// The children the requests it moved past declared.
     children: DeclaredChildren,
@@ -22,9 +26,11 @@ pub(crate) struct Lookup {
 }
 
 impl Lookup {
-    pub fn new(declaration: Arc<Declaration>, key: Key) -> Self {
+    /// A lookup for a node `declared` so, starting at `key`.
+    pub fn new(declared: Declared, key: Key) -> Self {
         Self {
-            declaration,
+            depended: declared.depended,
+            declared,
             key,
             children: DeclaredChildren::default(),
             queued: false,
@@ -32,7 +38,7 @@ impl Lookup {
     }
 
     pub fn declaration(&self) -> &Arc<Declaration> {
-        &self.declaration
+        &self.declared.declaration
     }
 
     /// The children the requests it moved past declared.
@@ -40,16 +46,23 @@ impl Lookup {
         &self.children
     }
 
-    /// Gives up the lookup, which found nothing to apply, leaving the
-    /// declaration for the body that runs in its place.
-    pub fn miss(self) -> Arc<Declaration> {
-        self.declaration
+    /// Whether the answer it finds depends on a substitution so far.
+    pub fn depended(&self) -> bool {
+        self.depended
     }
 
-    /// Gives up the lookup, which found a result: the node's declaration
-    /// and the steps of the children it declared.
-    pub fn found(self) -> (Arc<Declaration>, ChildSteps) {
-        (self.declaration, self.children.into_steps())
+    /// Gives up the lookup, which found nothing to apply, leaving what the
+    /// node was declared as for the body that runs in its place.
+    pub fn miss(self) -> Declared {
+        self.declared
+    }
+
+    /// Gives up the lookup, which found a result: the node's declaration,
+    /// the steps of the children it declared and whether the result
+    /// depended on a substitution.
+    pub fn found(self) -> (Arc<Declaration>, ChildSteps, bool) {
+        let declaration = self.declared.declaration;
+        (declaration, self.children.into_steps(), self.depended)
     }
 
     pub fn key(&self) -> Key {
@@ -58,6 +71,7 @@ impl Lookup {
 
     /// Moves on past the request stored at its key, given what it read.
     pub fn advance(&mut self, mut answers: Answers) {
+        self.depended |= answers.depended();
         answers.record_children(&mut self.children);
         self.key = self.key.then(answers.wanted(), answers.contents());
     }

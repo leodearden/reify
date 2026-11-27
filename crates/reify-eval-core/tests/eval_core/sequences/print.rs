@@ -6,8 +6,8 @@ use reify_eval_core::{Limit, Link, Space, Step, StepKey};
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{
-    Bind, Decl, Key, ModelPath, Site, ToyKind, Val, call, cell, collection, guard, measure, picker,
-    scope, shape,
+    Bind, Decl, Key, ModelPath, PartType, Site, ToyKind, Val, call, cell, collection, constraint,
+    guard, measure, picker, scope, shape, solve, solved_flag, solved_int, unknown,
 };
 use crate::toy;
 
@@ -157,7 +157,10 @@ fn bind_text(bind: &Bind) -> String {
 }
 
 fn kind_text(kind: ToyKind) -> String {
-    format!("ToyKind::{kind:?}")
+    match kind {
+        ToyKind::Solved(part_type) => format!("ToyKind::Solved(PartType::{part_type:?})"),
+        kind => format!("ToyKind::{kind:?}"),
+    }
 }
 
 /// A declaration as the constructor that makes it, where one does, else
@@ -224,11 +227,43 @@ fn decl_text(decl: &Decl) -> String {
     {
         return format!("measure({})", bind_text(&of));
     }
+    if let Some(text) = solve_text(decl) {
+        return text;
+    }
     let bindings = decl
         .bindings
         .iter()
         .map(|(name, bind)| format!("({name:?}, {})", bind_text(bind)));
     format!("decl({}, [{}])", kind_text(decl.kind), list(bindings))
+}
+
+/// A declaration of a solve or a solved part as the constructor that
+/// makes it, where one does.
+fn solve_text(decl: &Decl) -> Option<String> {
+    let bound = |name: &str| decl.bindings.get(name).cloned();
+    if let Some(problem) = bound("problem") {
+        let unknowns: Vec<_> = (0..).map_while(|at| bound(&unknown(at))).collect();
+        let constraints: Vec<_> = (0..).map_while(|at| bound(&constraint(at))).collect();
+        let made = solve(problem.clone(), unknowns.clone(), constraints.clone());
+        return (*decl == made).then(|| {
+            let (unknowns, constraints) = (unknowns.iter(), constraints.iter());
+            format!(
+                "solve({}, [{}], [{}])",
+                bind_text(&problem),
+                list(unknowns.map(bind_text)),
+                list(constraints.map(bind_text))
+            )
+        });
+    }
+    let (of, Some(Bind::Constant(Val::Int(part)))) = (bound("solve")?, bound("part")) else {
+        return None;
+    };
+    let (made, name) = match decl.kind {
+        ToyKind::Solved(PartType::Int) => (solved_int(of.clone(), part), "solved_int"),
+        ToyKind::Solved(PartType::Flag) => (solved_flag(of.clone(), part), "solved_flag"),
+        _ => return None,
+    };
+    (*decl == made).then(|| format!("{name}({}, {part})", bind_text(&of)))
 }
 
 fn val_text(value: &Val) -> String {
@@ -244,6 +279,13 @@ fn val_text(value: &Val) -> String {
         Val::Decl(decl) => format!("declaration({})", decl_text(decl)),
         Val::Bound(bound) => format!("bound({bound})"),
         Val::Calls(sites) => format!("calls_value([{}])", list(sites.iter().map(site_text))),
+        Val::Problem(problem) => {
+            let candidates = problem.candidates.iter().map(|candidate| {
+                let parts = candidate.iter().map(|part| format!("Part::{part:?}"));
+                format!("vec![{}]", list(parts))
+            });
+            format!("problem([{}], {})", list(candidates), problem.constraints)
+        }
     }
 }
 
@@ -359,7 +401,28 @@ mod tests {
                             Step::new(OTHER, StepKey::Name("m6".into())),
                             shape(input("i")),
                         ),
+                        (
+                            step("m7"),
+                            solve(
+                                input("problem"),
+                                [declarer([step("m8")]), declarer([step("m9")])],
+                                [declarer([step("m0")])],
+                            ),
+                        ),
+                        (step("m8"), solved_int(declarer([step("m7")]), 0)),
+                        (step("m9"), solved_flag(declarer([step("m7")]), 1)),
                     ]),
+                ),
+                (
+                    named("problem"),
+                    problem([vec![Part::Int(-1), Part::Flag(true)], vec![]], 2),
+                ),
+                (
+                    root("solved"),
+                    declaration(decl(
+                        ToyKind::Solved(PartType::Flag),
+                        [("solve", input("f"))],
+                    )),
                 ),
                 (named("f"), flag(true)),
                 (named("i"), int(-3)),
@@ -435,11 +498,13 @@ fn printed_case() {
             (root("k"), declaration(when(call([input("i"), constant(int(2))], input("calls")), input("f")))),
             (root("odd"), declaration(decl(ToyKind::Collection, [("count", input("n"))]))),
             (root("r"), declaration(scope("s"))),
+            (root("solved"), declaration(decl(ToyKind::Solved(PartType::Flag), [("solve", input("f"))]))),
             (named("calls"), calls_value([site(&[1, 7], true, -1, cell([input("x")])), Site { sites: vec![2], each: false, offset: 0, argument: String::from("given"), callee: cell([]) }])),
             (named("e"), declaration(cell([input("x")]))),
             (named("f"), flag(true)),
             (named("i"), int(-3)),
-            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e"))), (step("m2"), picker(input("i"), declarer([step("m1")]))), (step("m3"), divided(cell([input("i")]), declarer([step("m0")]))), (step("m4"), shape(input("i"))), (step("m5"), measure(declarer([step("m4")]))), (reify_eval_core::Step::new(reify_eval_core::Space::Named("toy.other"), reify_eval_core::StepKey::Name("m6".into())), shape(input("i")))])),
+            (named("problem"), problem([vec![Part::Int(-1), Part::Flag(true)], vec![]], 2)),
+            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e"))), (step("m2"), picker(input("i"), declarer([step("m1")]))), (step("m3"), divided(cell([input("i")]), declarer([step("m0")]))), (step("m4"), shape(input("i"))), (step("m5"), measure(declarer([step("m4")]))), (step("m7"), solve(input("problem"), [declarer([step("m8")]), declarer([step("m9")])], [declarer([step("m0")])])), (step("m8"), solved_int(declarer([step("m7")]), 0)), (step("m9"), solved_flag(declarer([step("m7")]), 1)), (reify_eval_core::Step::new(reify_eval_core::Space::Named("toy.other"), reify_eval_core::StepKey::Name("m6".into())), shape(input("i")))])),
         ]),
         events: vec![
             HostEvent::Edit { from: 0, changes: vec![(named("i"), Some(int(4))), (named("f"), None)] },

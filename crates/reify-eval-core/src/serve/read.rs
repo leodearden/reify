@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::content::Content;
 use crate::declaration::Declaration;
 use crate::declared_children::{Conflict, DeclaredChildren};
-use crate::index::Index;
+use crate::index::{Index, StateId};
 use crate::outcome::Outcome;
 use crate::path_table::{PathId, PathTable};
 use crate::record::Reading;
@@ -18,16 +18,18 @@ use crate::serve::child;
 use crate::wanted::Wanted;
 
 /// The reading of `wanted`, asked by the node at `reader` declared
-/// `declaration`, whose run has declared `by_run`.
+/// `declaration`, whose run has declared `by_run`, in the state `state`
+/// whose index is `index`.
 pub(crate) fn serve(
     reader: PathId,
+    state: StateId,
     declaration: &Declaration,
     wanted: Arc<[Wanted]>,
     by_run: &DeclaredChildren,
     paths: &mut PathTable,
     index: &Index,
 ) -> Result<Reading, Conflict> {
-    let mut reading = Reading::new(Arc::clone(&wanted));
+    let mut reading = Reading::new(Arc::clone(&wanted), state);
     for item in wanted.iter() {
         match item {
             Wanted::Ref(r) => serve_ref(reader, declaration, r, paths, index, &mut reading),
@@ -47,22 +49,29 @@ fn serve_ref(
     index: &Index,
     reading: &mut Reading,
 ) {
-    match target(reader, declaration, r, paths, index) {
+    settle(target(reader, declaration, r, paths, index), reading, index);
+}
+
+/// Settles what `place` holds in `index` where it is known: an input, a
+/// constant and nothing never depend on a substitution. A node not yet
+/// answered there is awaited.
+pub(crate) fn settle(place: Target, reading: &mut Reading, index: &Index) {
+    match place {
         Target::Absent => absent(reading),
         Target::Input(key) => match index.input(&key) {
-            Some(input) => reading.settled(input.outcome(), Content::of_input(input)),
+            Some(input) => reading.settled(input.outcome(), Content::of_input(input), false),
             None => absent(reading),
         },
         Target::Constant(constant) => {
-            reading.settled(constant.outcome(), Content::of_input(&constant));
+            reading.settled(constant.outcome(), Content::of_input(&constant), false);
         }
         Target::Node(node) => match index.entry(node) {
-            Some(entry) => reading.settled(entry.outcome.clone(), entry.content),
+            Some(entry) => reading.settled(entry.outcome.clone(), entry.content, entry.depended),
             None => reading.awaits(node),
         },
     }
 }
 
 fn absent(reading: &mut Reading) {
-    reading.settled(Outcome::Absent, Content::absent());
+    reading.settled(Outcome::Absent, Content::absent(), false);
 }

@@ -5,23 +5,25 @@ use std::collections::BTreeSet;
 use std::thread::ThreadId;
 
 use reify_eval_core::{
-    Answer, Budget, Builder, Core, Cx, Declaration, Erased, Held, Input, InputKey, Kind, KindId,
-    Outcome, Path, Produced, Ref, Snapshot, Step, Value,
+    Answer, Binding, Budget, Builder, Core, Cx, Declaration, Erased, Held, Input, InputKey, Kind,
+    KindId, Outcome, Path, Produced, Ref, Snapshot, Step, Value,
 };
 
 use crate::toy::{
-    self, BoxHandle, Call, Cell, Collection, Guard, Measure, Scope, Shape, ToyKernel, Watch,
+    self, BoxHandle, Call, Cell, Collection, Guard, Measure, Part, Scope, Shape, Solve, Solved,
+    ToyKernel, Watch,
 };
 
 /// One kind's case: the subject's declaration, the members beside it it
-/// reads, the snapshot inputs it needs, and how its kind compares two of
-/// its answers.
+/// reads, the snapshot inputs it needs, how its kind compares two of its
+/// answers, and whether its body opens a view.
 pub struct Entry {
     pub kind: KindId,
     pub subject: Declaration,
     pub siblings: Vec<(&'static str, Declaration)>,
     pub inputs: Vec<(InputKey, Input)>,
     pub same: fn(Answer<Erased>, Answer<Erased>) -> bool,
+    pub opens_view: bool,
 }
 
 /// Two answers compared by `T`'s own equality on its values.
@@ -38,6 +40,7 @@ fn table() -> Vec<Entry> {
             siblings: vec![("x", toy::cell(&["v"]))],
             inputs: vec![toy::named("v", 3_i64)],
             same: same_as::<i64>,
+            opens_view: false,
         },
         Entry {
             kind: Scope::ID,
@@ -48,6 +51,7 @@ fn table() -> Vec<Entry> {
                 toy::members([("m", toy::cell(&["v"]))]),
             )],
             same: same_as::<toy::Members>,
+            opens_view: false,
         },
         Entry {
             kind: Guard::ID,
@@ -58,6 +62,7 @@ fn table() -> Vec<Entry> {
                 toy::named("inner", toy::members([("m", toy::cell(&["v"]))])),
             ],
             same: same_as::<toy::Members>,
+            opens_view: false,
         },
         Entry {
             kind: Collection::ID,
@@ -68,6 +73,7 @@ fn table() -> Vec<Entry> {
                 toy::named("element", toy::cell(&["v"])),
             ],
             same: same_as::<toy::Elements>,
+            opens_view: false,
         },
         shape_entry(),
         Entry {
@@ -76,6 +82,7 @@ fn table() -> Vec<Entry> {
             siblings: vec![("s", toy::shape("side"))],
             inputs: vec![toy::named("side", 2_i64)],
             same: same_as::<i64>,
+            opens_view: false,
         },
         Entry {
             kind: Call::ID,
@@ -89,8 +96,12 @@ fn table() -> Vec<Entry> {
                 ),
             ],
             same: same_as::<i64>,
+            opens_view: false,
         },
     ]
+    .into_iter()
+    .chain(solve_entries())
+    .collect()
 }
 
 fn shape_entry() -> Entry {
@@ -100,7 +111,74 @@ fn shape_entry() -> Entry {
         siblings: Vec::new(),
         inputs: vec![toy::named("side", 2_i64)],
         same: same_as::<toy::BoxShape>,
+        opens_view: false,
     }
+}
+
+/// A solve whose unknown "u" is the solved int of the solve beside it,
+/// "s", and whose constraint "c" holds where u is 2 or more.
+fn solve_siblings(solve_at: &[&str]) -> Vec<(&'static str, Declaration)> {
+    let at_least_two = toy::cell_over([
+        toy::sibling(&["u"]),
+        Binding::Constant(toy::input_of(-2_i64)),
+    ]);
+    vec![
+        ("u", toy::solved_int(toy::sibling(solve_at), 0)),
+        ("c", at_least_two),
+    ]
+}
+
+/// The problem of the solve entries: u is 1 or 2.
+fn ints_problem() -> (InputKey, Input) {
+    let candidates = [1, 2].map(|value| vec![Part::Int(value)]);
+    toy::named("problem", toy::problem(candidates, 1))
+}
+
+fn sibling_solve() -> Declaration {
+    toy::solve(
+        toy::input("problem"),
+        [toy::sibling(&["u"])],
+        [toy::sibling(&["c"])],
+    )
+}
+
+fn solve_entries() -> [Entry; 3] {
+    let mut with_solve = solve_siblings(&["s"]);
+    with_solve.push(("s", sibling_solve()));
+    let flags = [vec![Part::Flag(true)]];
+    [
+        Entry {
+            kind: Solve::ID,
+            subject: sibling_solve(),
+            siblings: solve_siblings(&["subject"]),
+            inputs: vec![ints_problem()],
+            same: same_as::<toy::Solution>,
+            opens_view: true,
+        },
+        Entry {
+            kind: Solved::<i64>::ID,
+            subject: toy::solved_int(toy::sibling(&["s"]), 0),
+            siblings: with_solve.clone(),
+            inputs: vec![ints_problem()],
+            same: same_as::<i64>,
+            opens_view: false,
+        },
+        Entry {
+            kind: Solved::<bool>::ID,
+            subject: toy::solved_flag(toy::sibling(&["s"]), 0),
+            siblings: vec![
+                ("u", toy::cell(&["v"])),
+                ("c", toy::cell(&["v"])),
+                ("s", sibling_solve()),
+            ],
+            inputs: vec![
+                toy::named("v", 3_i64),
+                toy::named("problem", toy::problem(flags, 1)),
+            ],
+            same: same_as::<bool>,
+            opens_view: false,
+        },
+    ]
 }
 
 /// Which half of the two-places test failed for `kind`.
@@ -109,7 +187,9 @@ pub enum Mismatch {
     /// The two places, in two cores, answered otherwise by the kind's own
     /// equality.
     Differs { kind: KindId },
-    /// In one core, the second place ran the subject's body again.
+    /// In one core, the second place ran the subject's body again, or, for
+    /// a subject that opens a view, other than once more: leaf ι stores no
+    /// result of a run that opened a view (κ, #10562, stores it).
     SecondPlaceRan { kind: KindId },
 }
 
@@ -167,7 +247,8 @@ fn run_alone(core: &mut Core, snapshot: &Snapshot, at: &Path) -> Answer<Erased> 
 /// `kinds`, the toy kernel and `Place`: core 1 answers place A; core 2
 /// first does unrelated work on the toy kernel, then answers place B; the
 /// two answers are compared by the kind's own equality. And in core 1,
-/// place B after place A costs no body run of the subject's kind.
+/// place B after place A costs no body run of the subject's kind, or
+/// exactly one for a subject that opens a view.
 fn check(entry: &Entry, kinds: fn() -> Builder) -> Result<(), Mismatch> {
     let make = || {
         let builder = kinds().kind::<Place>().expect("Place is not a toy kind");
@@ -183,7 +264,8 @@ fn check(entry: &Entry, kinds: fn() -> Builder) -> Result<(), Mismatch> {
     let at_a = run_alone(&mut first, &snapshot, &a);
     let runs = first.counters().body_runs(entry.kind);
     run_alone(&mut first, &snapshot, &b);
-    let second_place_ran = first.counters().body_runs(entry.kind) != runs;
+    let second_runs = first.counters().body_runs(entry.kind) - runs;
+    let second_place_ran = second_runs != u64::from(entry.opens_view);
 
     let mut second = make();
     let snapshot = second.snapshot(places(entry));
@@ -277,6 +359,7 @@ fn two_places_check_catches_resource_minted_id_in_result() {
         siblings: Vec::new(),
         inputs: vec![toy::named("side", 2_i64)],
         same: same_as::<LeakyBox>,
+        opens_view: false,
     };
     assert_eq!(
         check(&leaky, with_leaky_shape),

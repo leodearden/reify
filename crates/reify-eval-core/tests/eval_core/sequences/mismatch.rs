@@ -6,7 +6,7 @@ use std::fmt;
 use reify_eval_core::{Path, RequestError};
 
 use super::design::ModelPath;
-use super::reference::Invalid;
+use super::expected::Invalid;
 use super::seen::Seen;
 
 /// What a check found wrong. `event` is the index of the host event after

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use reify_eval_core::{Answer, Declaration, Erased, Failure, Outcome, OutsideFailure, Step, Value};
 
 use super::design::core_members;
-use super::reference::{Expect, Out};
+use super::expected::{Expect, Out};
 use crate::toy;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +28,8 @@ pub enum Seen {
     Shape {
         volume: i64,
     },
+    /// The candidate a solve found.
+    Solution(Vec<toy::Part>),
     /// A value of a type no toy kind produces, by its type's name.
     Other(&'static str),
 }
@@ -56,6 +58,10 @@ impl Seen {
             Expect::Value(Out::Decl(decl)) => Seen::Declaration(decl.to_core()),
             Expect::Value(Out::Shape { volume }) => Seen::Shape { volume: *volume },
             Expect::Value(Out::Calls(_)) => Seen::Other(type_name::<toy::Calls>()),
+            Expect::Value(Out::Problem(_)) => Seen::Other(type_name::<toy::Problem>()),
+            Expect::Value(Out::Solution(parts)) => {
+                Seen::Solution(parts.iter().map(|part| part.to_core()).collect())
+            }
         }
     }
 
@@ -78,6 +84,8 @@ impl Seen {
             Seen::Shape {
                 volume: shape.volume,
             }
+        } else if let Some(solution) = any.downcast_ref::<toy::Solution>() {
+            Seen::Solution(solution.0.clone())
         } else {
             Seen::Other(<Erased as Value>::type_name(value))
         }

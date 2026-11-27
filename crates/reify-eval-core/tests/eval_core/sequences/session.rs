@@ -18,10 +18,11 @@ use reify_eval_core::{
 use super::case::{Case, HostEvent, Then};
 use super::charge::surely_charged;
 use super::design::{Inputs, Key, ModelPath, ModelRef, ToyKind, Val, to_core};
+use super::expected::{Expect, Expected, Out};
 use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
 use super::mismatch::Mismatch;
 use super::reach::{Reach, Shape};
-use super::reference::{Expect, Expected, Out, Reference};
+use super::reference::{Reference, Trial};
 use super::seen::Seen;
 use crate::toy;
 
@@ -78,6 +79,43 @@ fn below_call(
     }
     if when_reads(true) {
         reached.push(Shape::ChildOnTakenBranch);
+    }
+    reached
+}
+
+/// The shapes the trials of the solve at `solve` reached: each kind of
+/// structure a trial answered, a guard path present in one trial and
+/// absent in another, and a collection path whose count differs between
+/// two.
+fn trial_shapes(reference: &Reference, solve: &ModelPath) -> BTreeSet<Shape> {
+    let mut reached = BTreeSet::new();
+    let mut guards: BTreeMap<&ModelPath, BTreeSet<bool>> = BTreeMap::new();
+    let mut counts: BTreeMap<&ModelPath, BTreeSet<u64>> = BTreeMap::new();
+    for (path, expected) in reference.trials(solve).iter().flat_map(Trial::answers) {
+        let shape = match expected.node {
+            Some(ToyKind::Cell) => Shape::TrialReachedCell,
+            Some(ToyKind::Guard) => Shape::TrialReachedGuard,
+            Some(ToyKind::Collection) => Shape::TrialReachedCollection,
+            Some(ToyKind::Call) => Shape::TrialReachedCall,
+            _ => continue,
+        };
+        reached.insert(shape);
+        match (expected.node, &expected.outcome) {
+            (Some(ToyKind::Guard), Expect::Value(_) | Expect::Absent) => {
+                let present = expected.outcome != Expect::Absent;
+                guards.entry(path).or_default().insert(present);
+            }
+            (Some(ToyKind::Collection), Expect::Value(Out::Elements { count, .. })) => {
+                counts.entry(path).or_default().insert(*count);
+            }
+            _ => {}
+        }
+    }
+    if guards.values().any(|presence| presence.len() > 1) {
+        reached.insert(Shape::TrialChangedGuard);
+    }
+    if counts.values().any(|count| count.len() > 1) {
+        reached.insert(Shape::TrialChangedCount);
     }
     reached
 }
@@ -565,11 +603,18 @@ impl Session {
             (Some(ToyKind::Shape), Expect::Value(_)) => reached.push(Shape::BoxValue),
             (Some(ToyKind::Measure), Expect::Value(_)) => reached.push(Shape::MeasureValue),
             (Some(ToyKind::Call), Expect::Value(_)) => reached.push(Shape::CallValue),
+            (Some(ToyKind::Solve), Expect::Value(_)) => reached.push(Shape::SolveValue),
+            (Some(ToyKind::Solved(_)), Expect::Value(_)) => reached.push(Shape::SolvedPart),
             (_, Expect::Failure(Failure::WrongType { .. })) => reached.push(Shape::WrongType),
             (Some(ToyKind::Cell), Expect::Failure(Failure::OfKind { kind, code }))
                 if *kind == toy::Cell::ID && *code == toy::DIVISION_BY_ZERO =>
             {
                 reached.push(Shape::DivisionByZero)
+            }
+            (Some(ToyKind::Solve), Expect::Failure(Failure::OfKind { kind, code }))
+                if *kind == toy::Solve::ID && *code == toy::NO_CANDIDATE_HOLDS =>
+            {
+                reached.push(Shape::SolveFoundNoCandidate)
             }
             (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { at })) => {
                 reached.push(Shape::BlockedBy);
@@ -610,6 +655,9 @@ impl Session {
             if above.node == Some(ToyKind::Call) {
                 reached.extend(below_call(reference, &parent, path, &expected.outcome));
             }
+        }
+        if expected.node == Some(ToyKind::Solve) {
+            reached.extend(trial_shapes(reference, path));
         }
         for shape in reached {
             self.reach.reached(shape);
@@ -652,9 +700,9 @@ mod tests {
 
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::*;
+    use super::super::expected::Invalid;
     use super::super::mismatch::Mismatch;
     use super::super::reach::Shape;
-    use super::super::reference::Invalid;
     use super::super::seen::Seen;
     use super::{check, toy_core};
     use crate::toy;
@@ -753,6 +801,135 @@ mod tests {
         let case = driven_then_edited(Then::End);
         let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
         assert!(reach.count(Shape::DriveZeroEnded) > 0, "{reach:?}");
+    }
+
+    /// Root scope "r" holding the solve s of the int unknown n and the
+    /// flag unknown f, whose constraints are the member m of the guard g
+    /// on f, the element [2] of the collection col counting n, the call p
+    /// over n and the cell k, n - 3, which fails the first candidate's
+    /// trial; beside the solve `none` of a problem with no candidate.
+    fn solve_design() -> Inputs {
+        let s = || declarer([step("s")]);
+        let unknowns = [declarer([step("n")]), declarer([step("f")])];
+        let constraints = [
+            declarer([step("g"), step("m")]),
+            declarer([step("col"), index(2)]),
+            declarer([step("p")]),
+            declarer([step("k")]),
+        ];
+        let held = members([
+            (step("s"), solve(input("problem"), unknowns, constraints)),
+            (step("n"), solved_int(s(), 0)),
+            (step("f"), solved_flag(s(), 1)),
+            (step("g"), guard(declarer([step("f")]), "g.m")),
+            (step("col"), collection(declarer([step("n")]), input("el"))),
+            (step("p"), call([declarer([step("n")])], input("calls"))),
+            (step("k"), cell([declarer([step("n")]), input("minus")])),
+            (step("none"), solve(input("empty"), [], [])),
+        ]);
+        let candidates = [(2, false), (3, true)].map(|(n, f)| vec![Part::Int(n), Part::Flag(f)]);
+        inputs([
+            (root("r"), declaration(scope("r.m"))),
+            (named("r.m"), held),
+            (named("g.m"), members([(step("m"), cell([input("one")]))])),
+            (named("el"), declaration(cell([]))),
+            (
+                named("calls"),
+                calls_value([site(&[1], false, 0, cell([]))]),
+            ),
+            (named("minus"), int(-3)),
+            (named("one"), int(1)),
+            (named("problem"), problem(candidates, 4)),
+            (named("empty"), problem([], 0)),
+        ])
+    }
+
+    fn evaluate(paths: Vec<ModelPath>, budget: Option<u64>) -> HostEvent {
+        HostEvent::Evaluate {
+            on: 0,
+            paths,
+            budget,
+            then: Then::End,
+        }
+    }
+
+    #[test]
+    fn a_solve_over_a_cell_a_guard_a_collection_and_a_call_is_checked_and_each_trial_shape_counted()
+    {
+        let paths = vec![r(&["s"]), r(&["n"]), r(&["f"]), r(&["none"])];
+        let case = Case {
+            inputs: solve_design(),
+            events: vec![evaluate(paths, None)],
+        };
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        let shapes = [
+            Shape::SolveValue,
+            Shape::SolveFoundNoCandidate,
+            Shape::SolvedPart,
+            Shape::TrialReachedCell,
+            Shape::TrialReachedGuard,
+            Shape::TrialReachedCollection,
+            Shape::TrialReachedCall,
+            Shape::TrialChangedGuard,
+            Shape::TrialChangedCount,
+        ];
+        for shape in shapes {
+            assert!(reach.count(shape) > 0, "{shape:?}: {reach:?}");
+        }
+    }
+
+    /// Root scope "r" holding the solve s of the int unknown n over the
+    /// candidates n = 1 and n = 4, whose one constraint is the cell k:
+    /// `k`.
+    fn one_unknown_solve(k: Decl) -> Inputs {
+        let held = members([
+            (
+                step("s"),
+                solve(
+                    input("problem"),
+                    [declarer([step("n")])],
+                    [declarer([step("k")])],
+                ),
+            ),
+            (step("n"), solved_int(declarer([step("s")]), 0)),
+            (step("k"), k),
+        ]);
+        inputs([
+            (root("r"), declaration(scope("r.m"))),
+            (named("r.m"), held),
+            (named("minus"), int(-3)),
+            (
+                named("problem"),
+                problem([1, 4].map(|n| vec![Part::Int(n)]), 1),
+            ),
+        ])
+    }
+
+    #[test]
+    fn a_solve_whose_trials_reach_their_own_solve_is_checked() {
+        let case = Case {
+            inputs: one_unknown_solve(cell([declarer([step("s")])])),
+            events: vec![evaluate(vec![r(&["s"]), r(&["k"]), r(&["n"])], None)],
+        };
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert!(reach.count(Shape::Cycle) > 0, "{reach:?}");
+        assert!(reach.count(Shape::BlockedBy) > 0, "{reach:?}");
+    }
+
+    /// The snapshot resolves r and r/s, and each of the two trials r, r/k
+    /// and the supposed r/n: eight paths, which a budget of seven cannot
+    /// hold and one of eight does.
+    #[test]
+    fn a_budgeted_request_for_a_solve_is_judged_with_the_trials_resolutions() {
+        let k = cell([declarer([step("n")]), input("minus")]);
+        for (budget, shape) in [(7, Shape::EndedByBudget), (8, Shape::AnsweredWithinBudget)] {
+            let case = Case {
+                inputs: one_unknown_solve(k.clone()),
+                events: vec![evaluate(vec![r(&["s"])], Some(budget))],
+            };
+            let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+            assert_eq!(reach.count(shape), 1, "budget {budget}: {reach:?}");
+        }
     }
 
     #[test]

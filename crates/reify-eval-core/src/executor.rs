@@ -23,7 +23,7 @@ use crate::demand::Demand;
 use crate::event::{Event, RequestError, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::finish;
-use crate::index::{self, Entry, Indexes, NodeKey};
+use crate::index::{self, Declared, Entry, Indexes, NodeKey, StateId};
 use crate::input::{Input, InputKey};
 use crate::job::Report;
 use crate::key::Key;
@@ -42,10 +42,13 @@ use crate::resolve::declaration_of;
 use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
+use crate::serve::view_read::Opener;
 use crate::snapshot::{Snapshot, SnapshotId, SnapshotTokens};
 use crate::store::{Store, Stored, StoredResult};
+use crate::substitution::Substitution;
 use crate::task::Task;
 use crate::waits::Waits;
+use crate::wanted::Wanted;
 
 /// What is left after a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +66,14 @@ enum Work {
     Resolve(NodeKey),
 }
 
+impl Work {
+    fn key(&self) -> NodeKey {
+        match self {
+            Work::Answered(key, _) | Work::Resolve(key) => *key,
+        }
+    }
+}
+
 pub(crate) struct Executor {
     core: CoreId,
     kinds: Kinds,
@@ -73,7 +84,9 @@ pub(crate) struct Executor {
     /// The nodes following the store for a result filed for them.
     lookups: BTreeMap<NodeKey, Lookup>,
     tasks: BTreeMap<NodeKey, Task>,
-    /// The paths waiting on their parent's answer.
+    /// The paths waiting to be worked out: each on its parent's answer,
+    /// or, at a view's opener's own path under that view, on the opener's
+    /// own node (contract 7.7).
     resolving: BTreeSet<NodeKey>,
     waits: Waits,
     /// The read each body or lookup waiting on its reads has outstanding,
@@ -229,9 +242,9 @@ impl Executor {
             .prune(|snapshot| snapshots.is_held(snapshot) || requests.any_on(snapshot));
         if let Some(key) = self
             .nodes_in_progress()
-            .find(|key| dropped.contains(&key.snapshot))
+            .find(|key| dropped.contains(&key.state.snapshot))
         {
-            index::lost(key.snapshot);
+            index::lost(key.state);
         }
     }
 
@@ -243,10 +256,10 @@ impl Executor {
             return;
         }
         let key = NodeKey {
-            snapshot,
+            state: StateId::of(snapshot),
             path: self.paths.intern(path),
         };
-        if let Some(entry) = self.indexes.of(snapshot).entry(key.path) {
+        if let Some(entry) = self.indexes.of(key.state).entry(key.path) {
             let answer = Answer::Final(entry.outcome.clone());
             return self.tell(request, key, answer);
         }
@@ -275,7 +288,7 @@ impl Executor {
     }
 
     fn answered(&self, key: NodeKey) -> bool {
-        self.indexes.of(key.snapshot).entry(key.path).is_some()
+        self.indexes.of(key.state).entry(key.path).is_some()
     }
 
     /// Sees that `key` will be answered: walks up to the nearest ancestor
@@ -288,7 +301,7 @@ impl Executor {
         let mut at = key;
         while let Some((parent, _)) = self.paths.parent(at.path) {
             let parent = NodeKey {
-                snapshot: key.snapshot,
+                state: key.state,
                 path: parent,
             };
             if self.answered(parent) {
@@ -304,13 +317,17 @@ impl Executor {
         self.work(Work::Resolve(at));
     }
 
-    /// Works through what `first` sets off, in order.
+    /// Works through what `first` sets off, in order. Work on a view that
+    /// has closed, as its opener's run ended or dropped it, is dropped.
     fn work(&mut self, first: Work) {
         let mut queue = VecDeque::from([first]);
         while let Some(work) = queue.pop_front() {
+            if !self.indexes.is_open(work.key().state) {
+                continue;
+            }
             match work {
                 Work::Answered(key, entry) => {
-                    let limits = self.indexes.of(key.snapshot).limits();
+                    let limits = self.indexes.of(key.state).limits();
                     let entry = limit_check::children(entry, limits, &self.kinds);
                     let answer = Answer::Final(entry.outcome.clone());
                     let answered = finish::answered(
@@ -344,25 +361,31 @@ impl Executor {
 
     /// Works out what the path at `key` is: a root from its snapshot input,
     /// read with the typed read a body uses (decision D11); any other path
-    /// from its parent's final answer.
+    /// from its parent's final answer, on whose dependence on a
+    /// substitution its declaration depends.
     fn resolve(&mut self, key: NodeKey) -> Option<Work> {
-        let index = self.indexes.of(key.snapshot);
+        let index = self.indexes.of(key.state);
         let declared = match self.paths.parent(key.path) {
             None => {
                 let root = self
                     .paths
                     .as_root(key.path)
                     .expect("a path with no parent is a root");
-                index
-                    .input(&InputKey::Root(root.clone()))
-                    .map_or(Outcome::Absent, Input::outcome)
-                    .downcast::<Declaration>()
+                let input = index.input(&InputKey::Root(root.clone()));
+                let declared = input.map_or(Outcome::Absent, Input::outcome);
+                Declared {
+                    declaration: declared.downcast::<Declaration>(),
+                    depended: false,
+                }
             }
             Some((parent, step)) => {
                 let entry = index
                     .entry(parent)
                     .expect("a path is worked out once its parent is answered");
-                declaration_of(step, entry, &self.kinds)
+                Declared {
+                    declaration: declaration_of(step, entry, &self.kinds),
+                    depended: entry.depended,
+                }
             }
         };
         self.work_out(key, declared)
@@ -370,38 +393,81 @@ impl Executor {
 
     /// Works out the path at `key`, which resolved to `declared`, or which
     /// a body declared so (contract 7.1). A declaration of a node too deep
-    /// for the snapshot's depth setting answers that failure; any other
+    /// for the snapshot's depth setting answers that failure; one at its
+    /// view's opener's own path is the opener's, which awaits it; one at a
+    /// path its view supposes answers the supposed outcome; any other
     /// declaration starts a lookup; any other outcome is the path's answer.
     /// A path no live request needs once its resolution is charged is not
     /// worked out.
-    fn work_out(&mut self, key: NodeKey, declared: Outcome<Declaration>) -> Option<Work> {
+    fn work_out(&mut self, key: NodeKey, declared: Declared<Outcome<Declaration>>) -> Option<Work> {
         if !self.charge_resolution(key) {
             return None;
         }
         self.counters.count_path_resolved();
-        let declared = match declared {
+        let Declared {
+            declaration,
+            depended,
+        } = declared;
+        let declaration = match declaration {
             Outcome::Value(_) => {
                 let depth = self.paths.depth(key.path);
-                let limits = self.indexes.of(key.snapshot).limits();
-                limit_check::depth(depth, limits).map_or(declared, Outcome::Failure)
+                let limits = self.indexes.of(key.state).limits();
+                limit_check::depth(depth, limits).map_or(declaration, Outcome::Failure)
             }
             other => other,
         };
-        let (content, outcome) = match declared {
+        let (content, outcome) = match declaration {
+            Outcome::Value(_) if self.is_opener_under_its_view(key) => {
+                self.await_opener(key);
+                return None;
+            }
             Outcome::Value(declaration) => {
-                self.look_up(key, declaration);
+                if let Some(supposed) = self.indexes.of(key.state).supposed(key.path) {
+                    return Some(Work::Answered(key, Entry::supposed(supposed, declaration)));
+                }
+                let declared = Declared {
+                    declaration,
+                    depended,
+                };
+                self.look_up(key, declared);
                 return None;
             }
             Outcome::Failure(failure) => (Content::of_failure(&failure), Outcome::Failure(failure)),
             Outcome::Absent => (Content::absent(), Outcome::Absent),
         };
-        Some(Work::Answered(key, Entry::settled(outcome, content)))
+        Some(Work::Answered(
+            key,
+            Entry::settled(outcome, content, depended),
+        ))
+    }
+
+    /// Whether `key` is the path of its view's opener, under that view.
+    fn is_opener_under_its_view(&self, key: NodeKey) -> bool {
+        key.state.view.is_some() && self.indexes.of(key.state).opener() == Some(key.path)
+    }
+
+    /// Makes the node at `key`, its view's opener's own path, which the
+    /// view's structure declares a node, wait on the opener's own node,
+    /// which is running in the snapshot: so a node under the view that
+    /// needs it waits on the running opener, a ring (contract 7.7). What
+    /// is above it under the view has been worked out there, so where the
+    /// view gives it no node, it answers that instead (contract 6,
+    /// structure follows). It waits, as a path waiting to be worked out,
+    /// until the view closes.
+    fn await_opener(&mut self, key: NodeKey) {
+        let opener = NodeKey {
+            state: StateId::of(key.state.snapshot),
+            path: key.path,
+        };
+        self.resolving.insert(key);
+        self.waits.add(key, opener);
     }
 
     /// Works out the child at `path`, which the reader at `reader`, its
-    /// parent, declared `declaration` and awaits. The reader's own
-    /// declaration, `declarer`, is filed first, so that the child's passed
-    /// bindings can be read through it while the reader runs. A path
+    /// parent, declared `declaration` and awaits; the declaration depends
+    /// on a substitution if what the reader read so far did. The reader's
+    /// own declaration, `declarer`, is filed first, so that the child's
+    /// passed bindings can be read through it while the reader runs. A path
     /// already answered, or already a lookup or a body, is left as it is; a
     /// path waiting on its parent is taken over, its wait on the parent
     /// ended, since the parent's run is what declares it.
@@ -413,9 +479,9 @@ impl Executor {
         declaration: Arc<Declaration>,
     ) {
         self.indexes
-            .file_declarer(reader.snapshot, reader.path, declarer);
+            .file_declarer(reader.state, reader.path, declarer);
         let key = NodeKey {
-            snapshot: reader.snapshot,
+            state: reader.state,
             path,
         };
         if self.answered(key) || self.is_reader(key) {
@@ -424,8 +490,23 @@ impl Executor {
         if self.resolving.remove(&key) {
             self.waits.forget(key);
         }
-        if let Some(work) = self.work_out(key, Outcome::Value(declaration)) {
+        let declared = Declared {
+            declaration: Outcome::Value(declaration),
+            depended: self.depended_so_far(reader),
+        };
+        if let Some(work) = self.work_out(key, declared) {
             self.work(work);
+        }
+    }
+
+    /// Whether the answer of the node in progress at `key` depends on a
+    /// substitution by what it has read so far: a lookup's or a body's
+    /// flag; a path waiting on its parent has read nothing.
+    fn depended_so_far(&self, key: NodeKey) -> bool {
+        match (self.lookups.get(&key), self.tasks.get(&key)) {
+            (Some(lookup), _) => lookup.depended(),
+            (None, Some(task)) => task.depended(),
+            (None, None) => false,
         }
     }
 
@@ -437,7 +518,7 @@ impl Executor {
     /// the requests walks every node waiting on `key`, so under a bounded
     /// budget a chain of n waiting bodies costs on the order of n² steps.
     fn charge_resolution(&mut self, key: NodeKey) -> bool {
-        if !self.requests.any_bounded_on(key.snapshot) {
+        if !self.requests.any_bounded_on(key.state.snapshot) {
             return true;
         }
         let needing: BTreeSet<RequestId> = self
@@ -463,11 +544,49 @@ impl Executor {
     }
 
     /// Removes the lookup or body at `key`, with the read it waits on, if
-    /// any, returning the body.
+    /// any, returning the body. The views the body's run opened and still
+    /// holds close.
     fn remove_reader(&mut self, key: NodeKey) -> Option<Task> {
         self.readings.remove(&key);
         self.lookups.remove(&key);
-        self.tasks.remove(&key)
+        let task = self.tasks.remove(&key)?;
+        for view in task.views() {
+            self.close(view);
+        }
+        Some(task)
+    }
+
+    /// Closes `view`, whose opener's run has ended or dropped its handle:
+    /// every node in progress on it is withdrawn, each body abandoned, and
+    /// its index dropped.
+    fn close(&mut self, view: StateId) {
+        for key in self.nodes_on(view) {
+            if let Some(task) = self.withdraw(key) {
+                task.abandon();
+            }
+        }
+        self.indexes.close(view);
+    }
+
+    /// Every node in progress on `view`. Keys order by state first, so
+    /// each collection's keys of the view are found by ranging out both
+    /// ways from the view's key at its opener's path, at the cost of what
+    /// the view holds.
+    fn nodes_on(&self, view: StateId) -> Vec<NodeKey> {
+        let opener = self.indexes.of(view).opener();
+        let pivot = NodeKey {
+            state: view,
+            path: opener.expect("a view's index names its opener"),
+        };
+        let resolving = around(
+            self.resolving.range(pivot..),
+            self.resolving.range(..pivot).rev(),
+            view,
+        );
+        keys_around(&self.lookups, pivot)
+            .chain(keys_around(&self.tasks, pivot))
+            .chain(resolving)
+            .collect()
     }
 
     /// Takes the node at `key` out of the nodes in progress: the lookup or
@@ -480,16 +599,18 @@ impl Executor {
         self.remove_reader(key)
     }
 
-    /// Queues a lookup for the node at `key`, which starts at its recipe's
-    /// key; a kind the core was not built with fails outside the inputs.
-    fn look_up(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
-        let kind_id = declaration.kind();
+    /// Queues a lookup for the node at `key`, `declared` so, which starts
+    /// at its recipe's key; a kind the core was not built with fails
+    /// outside the inputs.
+    fn look_up(&mut self, key: NodeKey, declared: Declared) {
+        let kind_id = declared.declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
             return self.end_outside(key, unknown);
         };
         let start = Key::of_recipe(kind.recipe());
-        self.lookups.insert(key, Lookup::new(declaration, start));
+        let lookup = Lookup::new(declared, start);
+        self.lookups.insert(key, lookup);
         self.queue(key);
     }
 
@@ -499,23 +620,24 @@ impl Executor {
     fn miss(&mut self, key: NodeKey) {
         self.readings.remove(&key);
         self.waits.forget(key);
-        let declaration = self
+        let declared = self
             .lookups
             .remove(&key)
             .expect("a lookup that misses is in progress")
             .miss();
-        self.start(key, declaration);
+        self.start(key, declared);
     }
 
-    /// Starts the body of the node at `key`, whose lookup found nothing.
-    fn start(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
-        let kind_id = declaration.kind();
+    /// Starts the body of the node at `key`, `declared` so, whose lookup
+    /// found nothing.
+    fn start(&mut self, key: NodeKey, declared: Declared) {
+        let kind_id = declared.declaration.kind();
         let kind = self
             .kinds
             .get(kind_id)
             .expect("a lookup is made only for a kind the core was built with");
         self.counters.count_body_run(kind_id);
-        self.tasks.insert(key, Task::start(kind, declaration));
+        self.tasks.insert(key, Task::start(kind, declared));
         self.queue(key);
     }
 
@@ -556,7 +678,10 @@ impl Executor {
     /// drops the work no live request still waits on; whether it broke any.
     /// Every node that answers leaves the nodes in progress before any
     /// answers, so no answer on a ring resumes a node on it or works out a
-    /// path on it.
+    /// path on it. Withdrawing a view's opener closes the view, whose nodes
+    /// then answer nothing. A ring's nodes in a view depended on its
+    /// substitution if any node on the ring had read an answer that did; in
+    /// a snapshot nothing does.
     fn break_rings(&mut self) -> bool {
         let lookups = &self.lookups;
         let broken = cycle::broken(&self.waits, self.requests.wanted(), |key| {
@@ -568,13 +693,24 @@ impl Executor {
         for key in broken.missed {
             self.miss(key);
         }
-        for key in &broken.answered {
+        let rings: Vec<_> = broken
+            .answered
+            .into_iter()
+            .map(|ring| {
+                let depended = ring.iter().any(|key| self.depended_so_far(*key));
+                (ring, depended)
+            })
+            .collect();
+        for key in rings.iter().flat_map(|(ring, _)| ring) {
             if let Some(task) = self.withdraw(*key) {
                 task.discard();
             }
         }
-        for key in broken.answered {
-            self.work(Work::Answered(key, cycle::entry()));
+        for (ring, depended) in rings {
+            for key in ring {
+                let in_view = key.state.view.is_some();
+                self.work(Work::Answered(key, cycle::entry(depended && in_view)));
+            }
         }
         self.drop_unwanted_work();
         true
@@ -602,7 +738,10 @@ impl Executor {
     }
 
     /// Steps the lookup at `key` if it is queued, or polls the body there
-    /// if it is owed a poll.
+    /// if it is owed a poll and serves what it asks. A body that opened a
+    /// view reads only through its views from then on (O9): a read of a
+    /// ref or a child ends its run with that failure, while a section,
+    /// which reads nothing, is served.
     fn advance(&mut self, key: NodeKey) {
         if self.lookups.contains_key(&key) {
             return self.step_lookup(key);
@@ -622,13 +761,24 @@ impl Executor {
                 return self.end_outside(key, OutsideFailure::BodyPanicked { message });
             }
         };
+        for view in task.take_dropped_views() {
+            self.close(view);
+        }
+        let task = self
+            .tasks
+            .get_mut(&key)
+            .expect("closing a body's views leaves the body");
         match posted {
+            Posted::Ask(Ask::Read(_)) if task.has_opened_view() => {
+                self.finish(key, Outcome::Failure(Failure::ReadOutsideView));
+            }
             Posted::Ask(Ask::Read(wanted)) => {
-                let index = self.indexes.of(key.snapshot);
+                let index = self.indexes.of(key.state);
                 let declaration = task.declaration();
                 let children = task.children();
                 let served = serve::read::serve(
                     key.path,
+                    key.state,
                     declaration,
                     wanted.into(),
                     children,
@@ -650,6 +800,11 @@ impl Executor {
                 let declaration = Arc::clone(declaration);
                 self.await_reading(key, reading, awaited, &declaration);
             }
+            Posted::Ask(Ask::ViewRead {
+                ordinal,
+                substitution,
+                wanted,
+            }) => self.read_through_view(key, ordinal, &substitution, wanted),
             Posted::Ask(Ask::Exclusive(ask)) => {
                 let cancel = task.cancel_flag();
                 match self.in_flight.start(&key, ask, cancel, &mut self.resources) {
@@ -665,6 +820,58 @@ impl Executor {
             }
             Posted::Nothing => self.end_outside(key, OutsideFailure::WaitedOutsideCore),
         }
+    }
+
+    /// Serves the read of `wanted` that the body at `key` made through its
+    /// run's view `ordinal`, which supposes `substitution`, opening the view
+    /// on its first read. A substitution that names no place of its own is
+    /// the body's answer, and a view opened by a body under a view fails
+    /// outside the inputs until views nest (leaf λ, #10563).
+    fn read_through_view(
+        &mut self,
+        key: NodeKey,
+        ordinal: u32,
+        substitution: &Substitution,
+        wanted: Arc<[Wanted]>,
+    ) {
+        if key.state.view.is_some() {
+            return self.end_outside(key, OutsideFailure::ViewInsideView);
+        }
+        let task = self.tasks.get_mut(&key).expect("a body that asked is held");
+        let view = match task.view(ordinal) {
+            Some(view) => view,
+            None => {
+                let opener = Opener {
+                    path: key.path,
+                    declaration: task.declaration(),
+                    index: self.indexes.of(key.state),
+                };
+                match serve::view_read::open(&opener, substitution, &mut self.paths) {
+                    Ok(supposed) => {
+                        let snapshot = key.state.snapshot;
+                        let view = self.indexes.open_view(snapshot, key.path, supposed);
+                        task.opened(ordinal, view);
+                        view
+                    }
+                    Err(failure) => return self.finish(key, Outcome::Failure(failure)),
+                }
+            }
+        };
+        let opener = Opener {
+            path: key.path,
+            declaration: task.declaration(),
+            index: self.indexes.of(key.state),
+        };
+        let (paths, view_index) = (&mut self.paths, self.indexes.of(view));
+        let reading =
+            serve::view_read::serve(&opener, substitution, wanted, paths, view, view_index);
+        let awaited = reading.awaited();
+        if awaited.is_empty() {
+            task.answer_read(reading.reply(self.indexes.of(view)));
+            return self.queue(key);
+        }
+        let declaration = Arc::clone(task.declaration());
+        self.await_reading(key, reading, awaited, &declaration);
     }
 
     /// Follows the store for the lookup at `key` if it is queued: first
@@ -685,7 +892,7 @@ impl Executor {
         if !lookup.take_queued() {
             return;
         }
-        let index = self.indexes.of(key.snapshot);
+        let index = self.indexes.of(key.state);
         if let Some(reading) = self.readings.remove(&key) {
             lookup.advance(reading.reply(index));
         }
@@ -696,12 +903,14 @@ impl Executor {
                 Some(Stored::Result(result)) => {
                     let (outcome, content) = (result.outcome.clone(), result.content);
                     let found = self.lookups.remove(&key);
-                    let (declaration, children) = found.expect("a lookup stepped is held").found();
+                    let (declaration, children, depended) =
+                        found.expect("a lookup stepped is held").found();
                     let entry = Entry {
                         outcome,
                         declaration: Some(declaration),
                         content,
                         children_declared: children,
+                        depended,
                     };
                     return self.work(Work::Answered(key, entry));
                 }
@@ -709,6 +918,7 @@ impl Executor {
             };
             let served = serve::read::serve(
                 key.path,
+                key.state,
                 lookup.declaration(),
                 wanted,
                 lookup.children(),
@@ -728,8 +938,9 @@ impl Executor {
     }
 
     /// Keeps the reading of the reader at `key`, declared `declaration`,
-    /// until each node in `awaited` is answered, and makes the reader wait
-    /// on them, declaring the children the reading lists.
+    /// until each node in `awaited`, of the reading's state, is answered,
+    /// and makes the reader wait on them, declaring the children the
+    /// reading lists.
     fn await_reading(
         &mut self,
         key: NodeKey,
@@ -738,28 +949,25 @@ impl Executor {
         declaration: &Arc<Declaration>,
     ) {
         let to_declare = reading.take_to_declare();
+        let state = reading.state();
         self.readings.insert(key, reading);
-        self.await_nodes(key, awaited, to_declare, declaration);
+        let nodes = awaited.into_iter().map(|path| NodeKey { state, path });
+        self.await_nodes(key, nodes.collect(), to_declare, declaration);
     }
 
-    /// Makes the reader at `key`, declared `declaration`, wait on each node
-    /// in `awaited` before any of them is worked out, so that none can
-    /// answer the reading early; then declares each child in `to_declare`,
-    /// and sees that each other node will be answered. Stops once the
-    /// reader is dropped: a node that fails outside the inputs as it is
-    /// worked out drops it at once.
+    /// Makes the reader at `key`, declared `declaration`, wait on each of
+    /// `nodes` before any of them is worked out, so that none can answer
+    /// the reading early; then declares each child in `to_declare`, and
+    /// sees that each other node will be answered. Stops once the reader is
+    /// dropped: a node that fails outside the inputs as it is worked out
+    /// drops it at once.
     fn await_nodes(
         &mut self,
         key: NodeKey,
-        awaited: BTreeSet<PathId>,
+        nodes: Vec<NodeKey>,
         to_declare: Vec<(PathId, Arc<Declaration>)>,
         declaration: &Arc<Declaration>,
     ) {
-        let at = |path| NodeKey {
-            snapshot: key.snapshot,
-            path,
-        };
-        let nodes: Vec<_> = awaited.into_iter().map(at).collect();
         for node in &nodes {
             self.waits.add(key, *node);
         }
@@ -788,7 +996,8 @@ impl Executor {
             return;
         };
         if let Some(reading) = self.readings.remove(&key) {
-            task.answer_read(reading.reply(self.indexes.of(key.snapshot)));
+            let index = self.indexes.of(reading.state());
+            task.answer_read(reading.reply(index));
             self.queue(key);
         }
     }
@@ -798,9 +1007,7 @@ impl Executor {
         let Some(task) = self.remove_reader(key) else {
             return;
         };
-        let (declaration, chain, children) = task.finish();
-        let store = &mut self.store;
-        let entry = finish::filed(declaration, chain, children, outcome, &self.kinds, store);
+        let entry = finish::filed(task.finish(), outcome, &self.kinds, &mut self.store);
         self.work(Work::Answered(key, entry));
     }
 
@@ -831,7 +1038,7 @@ impl Executor {
     fn tell(&mut self, request: RequestId, key: NodeKey, answer: Answer<Erased>) {
         self.events.push(Event::Answered {
             request,
-            snapshot: key.snapshot,
+            snapshot: key.state.snapshot,
             path: self.paths.path(key.path),
             answer,
         });
@@ -897,7 +1104,7 @@ impl Executor {
                     let note = Arc::clone(&note);
                     self.events.push(Event::Progress {
                         request,
-                        snapshot: key.snapshot,
+                        snapshot: key.state.snapshot,
                         path: path.clone(),
                         note,
                     });
@@ -907,6 +1114,27 @@ impl Executor {
             Report::Released => self.resources.acknowledge_release(),
         }
     }
+}
+
+/// The keys of `map` of `pivot`'s state, found by ranging out both ways
+/// from `pivot`.
+fn keys_around<V>(map: &BTreeMap<NodeKey, V>, pivot: NodeKey) -> impl Iterator<Item = NodeKey> {
+    let up = map.range(pivot..).map(|(key, _)| key);
+    let down = map.range(..pivot).rev().map(|(key, _)| key);
+    around(up, down, pivot.state)
+}
+
+/// The keys of `state` among `up`, the keys from one of `state`'s upward,
+/// and `down`, the keys below it downward.
+fn around<'a>(
+    up: impl Iterator<Item = &'a NodeKey>,
+    down: impl Iterator<Item = &'a NodeKey>,
+    state: StateId,
+) -> impl Iterator<Item = NodeKey> {
+    let on_state = move |key: &&NodeKey| key.state == state;
+    up.take_while(on_state)
+        .chain(down.take_while(on_state))
+        .copied()
 }
 
 impl Drop for Executor {

@@ -5,6 +5,7 @@
 use std::any::{Any, type_name};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -14,7 +15,7 @@ use reify_eval_core::{
     Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, Description, DuplicateKind,
     Erased, Event, Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Link, Outcome,
     OutsideFailure, Path, Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot,
-    Space, Step, StepKey, Turn, Value, Wanted,
+    Space, Step, StepKey, Substitution, Turn, Value, Wanted,
 };
 
 /// The content a test gives the core for one of its values: a hash of
@@ -606,6 +607,273 @@ pub fn with_structure() -> Builder {
         .expect("toy kind ids are distinct")
 }
 
+/// One part of a candidate a toy solve tries: an int or a flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    Int(i64),
+    Flag(bool),
+}
+
+impl Part {
+    /// The part as an outcome a view supposes, with its content: that of
+    /// the value a solved node reads it as.
+    pub fn input(self) -> Input {
+        match self {
+            Part::Int(value) => input_of(value),
+            Part::Flag(value) => input_of(value),
+        }
+    }
+
+    /// The name of the Rust type a solved node reads it as.
+    pub fn value_type_name(self) -> &'static str {
+        match self {
+            Part::Int(_) => type_name::<i64>(),
+            Part::Flag(_) => type_name::<bool>(),
+        }
+    }
+
+    fn bytes(self) -> Vec<u8> {
+        match self {
+            Part::Int(value) => [&b"i"[..], &value.to_le_bytes()].concat(),
+            Part::Flag(value) => vec![b'f', u8::from(value)],
+        }
+    }
+}
+
+/// A test's own encoding of a list of parts: its length, then each part.
+fn parts_bytes(parts: &[Part]) -> Vec<u8> {
+    let mut bytes = parts.len().to_le_bytes().to_vec();
+    for part in parts {
+        bytes.extend(part.bytes());
+    }
+    bytes
+}
+
+/// What a toy solve solves: the candidates it tries, in order, each a part
+/// per unknown, and how many constraints it reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Problem {
+    pub candidates: Vec<Vec<Part>>,
+    pub constraints: u64,
+}
+
+impl Contented for Problem {
+    fn content(&self) -> Hash128 {
+        let mut bytes = self.constraints.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&self.candidates.len().to_le_bytes());
+        for candidate in &self.candidates {
+            bytes.extend(parts_bytes(candidate));
+        }
+        Hash128::of_bytes(&bytes)
+    }
+}
+
+/// A problem whose candidates are `candidates`, with `constraints`
+/// constraints.
+pub fn problem(candidates: impl IntoIterator<Item = Vec<Part>>, constraints: u64) -> Problem {
+    Problem {
+        candidates: candidates.into_iter().collect(),
+        constraints,
+    }
+}
+
+/// The candidate a toy solve found: a part per unknown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Solution(pub Vec<Part>);
+
+impl Contented for Solution {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(&parts_bytes(&self.0))
+    }
+}
+
+/// The code of the toy solve's failure when no candidate holds.
+pub const NO_CANDIDATE_HOLDS: &str = "no candidate holds";
+
+/// Reads the problem at "problem": absent or a failure is its answer. Then
+/// tries each candidate in order: it opens a view that supposes the
+/// unknowns "u0", "u1", … to be the candidate's parts, one each, and reads
+/// the constraints "c0", "c1", … through it as i64, one at a time, up to
+/// the problem's number, stopping at the first that does not hold. A
+/// constraint holds if it reads absent or a value of zero or more. It
+/// answers the first candidate whose constraints all hold, or else its own
+/// failure `NO_CANDIDATE_HOLDS`.
+pub struct Solve;
+
+impl Kind for Solve {
+    type Out = Solution;
+    const ID: KindId = KindId("toy.solve");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<Solution> {
+        let problem = match cx.read::<Problem>(&Ref::binding("problem")).await {
+            Outcome::Value(problem) => problem,
+            Outcome::Absent => return Produced::Outcome(Outcome::Absent),
+            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+        };
+        for candidate in &problem.candidates {
+            if holds(cx, candidate, problem.constraints).await {
+                return Produced::Outcome(Outcome::of(Solution(candidate.clone())));
+            }
+        }
+        Produced::Outcome(Outcome::Failure(Failure::OfKind {
+            kind: Self::ID,
+            code: NO_CANDIDATE_HOLDS,
+        }))
+    }
+
+    fn content(out: &Solution) -> Option<Hash128> {
+        Some(out.content())
+    }
+}
+
+/// Whether each of a solve's `constraints` holds under a view supposing
+/// its unknowns to be `candidate`'s parts: the trial a toy solve runs.
+pub async fn holds(cx: &Cx, candidate: &[Part], constraints: u64) -> bool {
+    let unknowns = candidate.iter().enumerate().map(|(index, part)| {
+        let unknown = Ref::binding(format!("u{index}"));
+        (unknown, Outcome::of(part.input()))
+    });
+    let view = cx.suppose(Substitution::of(unknowns));
+    for index in 0..constraints {
+        let constraint = Ref::binding(format!("c{index}"));
+        let held = match view.read::<i64>(&constraint).await.outcome {
+            Outcome::Value(value) => *value >= 0,
+            Outcome::Absent => true,
+            Outcome::Failure(_) => false,
+        };
+        if !held {
+            return false;
+        }
+    }
+    true
+}
+
+/// A toy solve of the problem `problem` names, whose unknowns "u0", "u1",
+/// … are what `unknowns` name and whose constraints "c0", "c1", … are what
+/// `constraints` name, in order.
+pub fn solve(
+    problem: Binding,
+    unknowns: impl IntoIterator<Item = Binding>,
+    constraints: impl IntoIterator<Item = Binding>,
+) -> Declaration {
+    let solve = Declaration::new(Solve::ID).bind("problem", problem);
+    let solve = (0..)
+        .zip(unknowns)
+        .fold(solve, |solve, (index, unknown): (u32, _)| {
+            solve.bind(format!("u{index}"), unknown)
+        });
+    (0..)
+        .zip(constraints)
+        .fold(solve, |solve, (index, constraint): (u32, _)| {
+            solve.bind(format!("c{index}"), constraint)
+        })
+}
+
+/// A type a part of a solution can be read as, with the id of the solved
+/// kind that reads it so.
+pub trait SolvedPart: Value + Contented + Sized {
+    const SOLVED: KindId;
+
+    /// The part as this type, if it is of it.
+    fn of(part: Part) -> Option<Self>;
+}
+
+impl SolvedPart for i64 {
+    const SOLVED: KindId = KindId("toy.solved.int");
+
+    fn of(part: Part) -> Option<i64> {
+        match part {
+            Part::Int(value) => Some(value),
+            Part::Flag(_) => None,
+        }
+    }
+}
+
+impl SolvedPart for bool {
+    const SOLVED: KindId = KindId("toy.solved.flag");
+
+    fn of(part: Part) -> Option<bool> {
+        match part {
+            Part::Flag(value) => Some(value),
+            Part::Int(_) => None,
+        }
+    }
+}
+
+/// Reads the solution at "solve": absent is its answer, and a failure
+/// makes it blocked by the solve. Then reads the i64 at "part" and answers
+/// that part of the solution as `T`: past the end, it is absent, and a
+/// part of the other type is a wrong type naming both.
+pub struct Solved<T>(PhantomData<fn() -> T>);
+
+impl<T: SolvedPart> Kind for Solved<T> {
+    type Out = T;
+    const ID: KindId = T::SOLVED;
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<T> {
+        let solve = Ref::binding("solve");
+        let solution = match cx.read::<Solution>(&solve).await {
+            Outcome::Value(solution) => solution,
+            Outcome::Absent => return Produced::Outcome(Outcome::Absent),
+            Outcome::Failure(_) => {
+                return Produced::Outcome(Outcome::Failure(Failure::BlockedBy { at: solve }));
+            }
+        };
+        let index = match cx.read::<i64>(&Ref::binding("part")).await {
+            Outcome::Value(index) => *index,
+            Outcome::Absent => return Produced::Outcome(Outcome::Absent),
+            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+        };
+        let part = usize::try_from(index)
+            .ok()
+            .and_then(|at| solution.0.get(at));
+        Produced::Outcome(match part {
+            None => Outcome::Absent,
+            Some(part) => T::of(*part).map_or_else(
+                || {
+                    Outcome::Failure(Failure::WrongType {
+                        expected: type_name::<T>(),
+                        found: part.value_type_name(),
+                    })
+                },
+                Outcome::of,
+            ),
+        })
+    }
+
+    fn content(out: &T) -> Option<Hash128> {
+        Some(out.content())
+    }
+}
+
+fn solved<T: SolvedPart>(solve: Binding, part: i64) -> Declaration {
+    Declaration::new(Solved::<T>::ID)
+        .bind("solve", solve)
+        .bind("part", Binding::Constant(input_of(part)))
+}
+
+/// Part `part` of the solution `solve` names, read as an int.
+pub fn solved_int(solve: Binding, part: i64) -> Declaration {
+    solved::<i64>(solve, part)
+}
+
+/// Part `part` of the solution `solve` names, read as a flag.
+pub fn solved_flag(solve: Binding, part: i64) -> Declaration {
+    solved::<bool>(solve, part)
+}
+
+/// A builder with every toy kind of structure, the toy solve and both
+/// solved kinds.
+pub fn with_solve() -> Builder {
+    with_structure()
+        .kind::<Solve>()
+        .and_then(|builder| builder.kind::<Solved<i64>>())
+        .and_then(|builder| builder.kind::<Solved<bool>>())
+        .expect("toy kind ids are distinct")
+}
+
 /// A box the toy kernel made, by the number it handed out.
 #[derive(Debug, PartialEq)]
 pub struct BoxHandle(pub u32);
@@ -707,7 +975,7 @@ pub type Register = fn(Builder) -> Result<Builder, DuplicateKind>;
 /// Every PRD toy kind built so far (PRD 5.4), with its registration: the
 /// one list `with_every_kind` registers and the two-places table must
 /// cover. A kind added here needs a two-places entry.
-pub const TOY_KINDS: [(KindId, Register); 7] = [
+pub const TOY_KINDS: [(KindId, Register); 10] = [
     (Cell::ID, Builder::kind::<Cell>),
     (Scope::ID, Builder::kind::<Scope>),
     (Guard::ID, Builder::kind::<Guard>),
@@ -715,6 +983,9 @@ pub const TOY_KINDS: [(KindId, Register); 7] = [
     (Shape::ID, Builder::kind::<Shape>),
     (Measure::ID, Builder::kind::<Measure>),
     (Call::ID, Builder::kind::<Call>),
+    (Solve::ID, Builder::kind::<Solve>),
+    (Solved::<i64>::ID, Builder::kind::<Solved<i64>>),
+    (Solved::<bool>::ID, Builder::kind::<Solved<bool>>),
 ];
 
 pub fn with_every_kind() -> Builder {

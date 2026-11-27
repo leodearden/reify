@@ -19,6 +19,10 @@
 //! call, or waits on it through a step its run does not declare, or where
 //! nothing reads a place below it and no demanded path is below it: then
 //! whatever reached the call reads its value.
+//!
+//! A trial of a solve is charged to the request the solve's resolution
+//! is, by the same rule, its demand being the places the solve read
+//! through its view: a call inside a trial may run on there too.
 
 use std::collections::BTreeSet;
 use std::iter::successors;
@@ -26,11 +30,18 @@ use std::iter::successors;
 use super::design::ModelPath;
 use super::reference::{Reached, Reference};
 
-/// How many of the paths `reference` resolved answering `demanded` every
-/// order of a correct core's work charges to the request.
+/// How many of the paths `reference` and its trials resolved answering
+/// `demanded` every order of a correct core's work charges to the request.
 pub fn surely_charged(reference: &Reference, demanded: &[ModelPath]) -> usize {
+    reference.paths_resolved() - uncharged(reference, demanded)
+}
+
+/// How many of the paths `reference` and its trials resolved answering
+/// `demanded` some order of a correct core's work charges to no request:
+/// those a call reaches first once it runs on with nothing waiting on it.
+fn uncharged(reference: &Reference, demanded: &[ModelPath]) -> usize {
     let demand = Demand::of(reference, demanded);
-    let mut uncharged = BTreeSet::new();
+    let mut reached_running_on = BTreeSet::new();
     for (call, reached) in reference.reaches() {
         let Some(after) = demand.runs_on_from(call, reached) else {
             continue;
@@ -39,13 +50,17 @@ pub fn surely_charged(reference: &Reference, demanded: &[ModelPath]) -> usize {
             .iter()
             .take_while(|reached| matches!(reached, Reached::Read(_)));
         let settled = settled_before(reference, call, before);
-        uncharged.extend(reach_from(reference, &reached[after..], &settled));
+        reached_running_on.extend(reach_from(reference, &reached[after..], &settled));
     }
-    let uncounted = uncharged
+    let here = reached_running_on
         .iter()
         .filter(|path| reference.resolved(path) && !demand.chains.contains(*path))
         .count();
-    reference.paths_resolved() - uncounted
+    let in_trials: usize = reference
+        .every_trial()
+        .map(|trial| uncharged(trial.reference(), trial.demand()))
+        .sum();
+    here + in_trials
 }
 
 /// A demand's paths, each with the paths above it, which it waits through
@@ -230,6 +245,43 @@ mod tests {
     #[test]
     fn a_cell_reading_a_child_of_a_call_that_runs_on_is_not_charged_with_the_later_child() {
         assert_eq!(charged(&[at([step("m3")])]), (6, 5));
+    }
+
+    /// Root scope "r": the solve "s" of the int unknown "n", whose one
+    /// constraint is the first child of the call "c" over n, which has two
+    /// sites of one child each.
+    fn solve_over_a_call_s_child() -> Inputs {
+        let sites = calls_value([
+            site(&[1], false, 0, cell([])),
+            site(&[2], false, 0, cell([])),
+        ]);
+        let first_child = declarer([step("c"), call_step(&[1], None)]);
+        let held = members([
+            (
+                step("s"),
+                solve(input("problem"), [declarer([step("n")])], [first_child]),
+            ),
+            (step("n"), solved_int(declarer([step("s")]), 0)),
+            (step("c"), call([declarer([step("n")])], input("k"))),
+        ]);
+        inputs([
+            (root("r"), declaration(scope("r.m"))),
+            (named("r.m"), held),
+            (named("k"), sites),
+            (named("problem"), problem([vec![Part::Int(1)]], 1)),
+        ])
+    }
+
+    #[test]
+    fn a_call_in_a_trial_that_runs_on_is_not_charged_with_its_later_child() {
+        let s = at([step("s")]);
+        let mut reference = Reference::new(solve_over_a_call_s_child());
+        reference.answer(&s).expect("the design is valid");
+        assert_eq!(
+            (reference.paths_resolved(), surely_charged(&reference, &[s])),
+            (7, 6),
+            "r and s; in the trial r, c, n, the child read and not the second child"
+        );
     }
 
     #[test]

@@ -23,6 +23,15 @@ pub enum ToyKind {
     Shape,
     Measure,
     Call,
+    Solve,
+    Solved(PartType),
+}
+
+/// The type a solved node reads its part of a solution as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PartType {
+    Int,
+    Flag,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,6 +79,23 @@ pub enum Val {
     Bound(u64),
     /// A call's sites, in the order it declares their children.
     Calls(Vec<Site>),
+    /// What a solve solves.
+    Problem(Problem),
+}
+
+/// One part of a candidate a solve tries, as `toy::Part` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Part {
+    Int(i64),
+    Flag(bool),
+}
+
+/// What a solve solves, as `toy::Problem` is: the candidates it tries, in
+/// order, each a part per unknown, and how many constraints it reads.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Problem {
+    pub candidates: Vec<Vec<Part>>,
+    pub constraints: u64,
 }
 
 /// One site of a call, as `toy::CallSite` is: the chain of call sites it
@@ -157,6 +183,9 @@ impl ToyKind {
             ToyKind::Shape => toy::Shape::ID,
             ToyKind::Measure => toy::Measure::ID,
             ToyKind::Call => toy::Call::ID,
+            ToyKind::Solve => toy::Solve::ID,
+            ToyKind::Solved(PartType::Int) => toy::Solved::<i64>::ID,
+            ToyKind::Solved(PartType::Flag) => toy::Solved::<bool>::ID,
         }
     }
 }
@@ -189,7 +218,27 @@ impl Val {
             Val::Calls(sites) => {
                 toy::input_of(toy::Calls(sites.iter().map(Site::to_core).collect()))
             }
+            Val::Problem(problem) => toy::input_of(problem.to_core()),
         }
+    }
+}
+
+impl Part {
+    pub fn to_core(self) -> toy::Part {
+        match self {
+            Part::Int(value) => toy::Part::Int(value),
+            Part::Flag(value) => toy::Part::Flag(value),
+        }
+    }
+}
+
+impl Problem {
+    pub fn to_core(&self) -> toy::Problem {
+        let candidates = self
+            .candidates
+            .iter()
+            .map(|candidate| candidate.iter().map(|part| part.to_core()).collect());
+        toy::problem(candidates, self.constraints)
     }
 }
 
@@ -337,6 +386,62 @@ pub fn site(sites: &[u64], each: bool, offset: i64, callee: Decl) -> Site {
         argument: String::from("0"),
         callee,
     }
+}
+
+/// The binding of a solve's unknown `index`.
+pub fn unknown(index: usize) -> String {
+    format!("u{index}")
+}
+
+/// The binding of a solve's constraint `index`.
+pub fn constraint(index: u64) -> String {
+    format!("c{index}")
+}
+
+/// A solve of the problem `problem` names, whose unknowns are what
+/// `unknowns` name and whose constraints are what `constraints` name, in
+/// order.
+pub fn solve(
+    problem: Bind,
+    unknowns: impl IntoIterator<Item = Bind>,
+    constraints: impl IntoIterator<Item = Bind>,
+) -> Decl {
+    let mut solve = decl(ToyKind::Solve, [("problem", problem)]);
+    let unknowns = unknowns
+        .into_iter()
+        .enumerate()
+        .map(|(index, bind)| (unknown(index), bind));
+    let constraints = (0..)
+        .zip(constraints)
+        .map(|(index, bind)| (constraint(index), bind));
+    solve.bindings.extend(unknowns.chain(constraints));
+    solve
+}
+
+fn solved(part_type: PartType, solve: Bind, part: i64) -> Decl {
+    decl(
+        ToyKind::Solved(part_type),
+        [("solve", solve), ("part", constant(int(part)))],
+    )
+}
+
+/// Part `part` of the solution `solve` names, read as an int.
+pub fn solved_int(solve: Bind, part: i64) -> Decl {
+    solved(PartType::Int, solve, part)
+}
+
+/// Part `part` of the solution `solve` names, read as a flag.
+pub fn solved_flag(solve: Bind, part: i64) -> Decl {
+    solved(PartType::Flag, solve, part)
+}
+
+/// A problem whose candidates are `candidates`, with `constraints`
+/// constraints.
+pub fn problem(candidates: impl IntoIterator<Item = Vec<Part>>, constraints: u64) -> Val {
+    Val::Problem(Problem {
+        candidates: candidates.into_iter().collect(),
+        constraints,
+    })
 }
 
 /// A binding to the constant `value`.

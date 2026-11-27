@@ -3,7 +3,7 @@
 //! candidate still names only snapshots made before each event.
 
 use super::case::{Case, HostEvent, Then};
-use super::design::{Bind, Decl, ModelPath, ModelRef, ToyKind, Val, decl};
+use super::design::{Bind, Decl, ModelPath, ModelRef, Part, ToyKind, Val, decl};
 
 /// The cases one step smaller than `case`, largest reductions first: an
 /// event dropped, a demanded path dropped or shortened, a Drive made an
@@ -177,6 +177,18 @@ fn value_size(value: &Val) -> u64 {
                 1 + site.sites.len() as u64 + site.offset.unsigned_abs() + decl_size(&site.callee)
             })
             .sum(),
+        Val::Problem(problem) => {
+            let part_size = |part: &Part| match part {
+                Part::Int(value) => 1 + value.unsigned_abs(),
+                Part::Flag(value) => 1 + u64::from(*value),
+            };
+            let candidates: u64 = problem
+                .candidates
+                .iter()
+                .map(|candidate| 1 + candidate.iter().map(part_size).sum::<u64>())
+                .sum();
+            candidates + problem.constraints
+        }
     }
 }
 
@@ -271,7 +283,8 @@ fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
 
 /// The values one step smaller than `value`: an int or a bound toward
 /// zero, true made false, a member or a call's site dropped, or a member's
-/// declaration made smaller, a declaration made smaller.
+/// declaration made smaller, a declaration made smaller, a problem's
+/// candidate dropped or one constraint fewer.
 fn smaller_values(value: &Val) -> Vec<Val> {
     match value {
         Val::Int(value) => {
@@ -317,6 +330,19 @@ fn smaller_values(value: &Val) -> Vec<Val> {
                 Val::Calls(fewer)
             })
             .collect(),
+        Val::Problem(problem) => {
+            let dropped = (0..problem.candidates.len()).map(|dropped| {
+                let mut fewer = problem.clone();
+                fewer.candidates.remove(dropped);
+                fewer
+            });
+            let constrained = problem.constraints.checked_sub(1).map(|constraints| {
+                let mut fewer = problem.clone();
+                fewer.constraints = constraints;
+                fewer
+            });
+            dropped.chain(constrained).map(Val::Problem).collect()
+        }
     }
 }
 
@@ -363,7 +389,9 @@ fn smaller_decls(of: &Decl) -> Vec<Decl> {
 
 mod tests {
     use super::super::case::{Case, HostEvent, Then};
-    use super::super::design::{Inputs, ModelPath, ToyKind, int, named, path};
+    use super::super::design::{
+        Inputs, ModelPath, Part, ToyKind, inputs, int, named, path, problem,
+    };
     use super::super::generator::gate_cases;
     use super::super::reference::{Reference, first_invalid};
     use super::super::shrink::shrink;
@@ -398,6 +426,24 @@ mod tests {
         };
         assert!(candidates(&case).contains(&without_second_edit));
         assert!(without_second_edit.names_made_snapshots());
+    }
+
+    #[test]
+    fn a_problem_shrinks_by_a_candidate_or_a_constraint() {
+        let with = |problem| Case {
+            inputs: inputs([(named("problem"), problem)]),
+            events: Vec::new(),
+        };
+        let part = |n| vec![Part::Int(n)];
+        let smaller = candidates(&with(problem([part(1), part(2)], 2)));
+        let fewer = [
+            problem([part(2)], 2),
+            problem([part(1)], 2),
+            problem([part(1), part(2)], 1),
+        ];
+        for problem in fewer {
+            assert!(smaller.contains(&with(problem.clone())), "{problem:?}");
+        }
     }
 
     #[test]

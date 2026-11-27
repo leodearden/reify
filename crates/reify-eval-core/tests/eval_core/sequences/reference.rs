@@ -14,59 +14,48 @@
 //! frame, as the core takes a waiting path over, and a ring the child then
 //! closes through a frame outside the resolution is finished from the
 //! child's own frame once its call has read the child's "cycle".
+//!
+//! A solve tries each candidate in a trial of its own (contract 6): a
+//! reference over the same inputs whose memo is its own, as the core's
+//! view has an index of its own, in which a node at a place the solve's
+//! unknowns name answers the candidate's part and every other path is
+//! worked out afresh. The solve resolves each constraint relative to
+//! itself and reads it there. The solve's own path is in progress outside
+//! the trial, so a trial that reads it halts as a ring that the solve's
+//! own frame answers "cycle" (contract 7.7). A solve met inside a trial
+//! would open a view inside a view, which the core does not evaluate until
+//! views nest, so the case is invalid.
 
 use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use reify_eval_core::{Declaration, Failure, Kind, Limit, Space, Step, StepKey};
+use reify_eval_core::{Failure, Kind, Limit, Space, Step, StepKey};
 
 use super::case::Case;
-use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, Site, ToyKind, Val, call_step};
+use super::design::{
+    Bind, Decl, Inputs, Key, ModelPath, ModelRef, Part, PartType, Site, ToyKind, Val, call_step,
+    constraint, unknown,
+};
+use super::expected::{
+    Expect, Expected, Invalid, Out, Typed, out_of, part_out, typed_bool, typed_calls, typed_decl,
+    typed_int, typed_members, typed_problem, typed_shape, typed_solution,
+};
 use crate::toy;
-
-/// What a path answers: the kind of the node declared there, if any, and
-/// its outcome.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Expected {
-    pub node: Option<ToyKind>,
-    pub outcome: Expect,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expect {
-    Value(Out),
-    Failure(Failure),
-    Absent,
-}
-
-/// A value an answer or a snapshot input holds, in the model's form.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Out {
-    Int(i64),
-    Bool(bool),
-    Members(BTreeMap<Step, Decl>),
-    Elements { count: u64, element: Decl },
-    Decl(Decl),
-    Shape { volume: i64 },
-    Calls(Vec<Site>),
-}
-
-/// Why a path has no answer in this snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Invalid {
-    /// What the node at `path` works out is past i64.
-    Overflow { path: ModelPath },
-}
 
 /// Why working out a path stopped short of its answer: the case is
 /// invalid, or the recursion re-entered `entered`, which is in progress, so
 /// every path worked out from there up to the latest is on one ring. With
 /// one ref per read in every generated kind, each node waits on one other,
 /// and these are the paths whose waits the core closes into a ring at rest.
+/// In a trial, the recursion may instead have reached the node of the
+/// solve that opened it, which is in progress outside the trial: every
+/// path of the trial worked out from there up is on a ring through that
+/// solve, and the trial hands the solve's own frame that ring.
 enum Halt {
     Invalid(Invalid),
     Ring { entered: ModelPath },
+    Reopened,
 }
 
 impl From<Invalid> for Halt {
@@ -81,13 +70,15 @@ impl Halt {
     /// # Panics
     ///
     /// On a ring: the path it re-entered was entered within the same call,
-    /// whose own frame answers it.
+    /// whose own frame answers it, and a trial, whose halt at its opener is
+    /// a ring of the opener's, is called by no public call.
     fn invalid(self) -> Invalid {
         match self {
             Halt::Invalid(invalid) => invalid,
             Halt::Ring { entered } => {
                 unreachable!("the ring entered at {entered:?} is answered by that path's frame")
             }
+            Halt::Reopened => unreachable!("a trial's halt at its opener is the opener's ring"),
         }
     }
 }
@@ -128,16 +119,66 @@ impl Reached {
     }
 }
 
-/// A read typed as the Rust type the core reads it as.
-enum Typed<T> {
-    Value(T),
-    Absent,
-    Failure(Failure),
+/// What a ref names: an outcome settled without a node (nothing, an input
+/// or a constant), or a place.
+enum Target {
+    Settled(Expect),
+    Path(ModelPath),
 }
 
-/// The answers of one snapshot.
+/// What a trial supposes: the outcome at each place its view substitutes,
+/// and the path of the solve that opened the view.
+struct Supposition {
+    opener: ModelPath,
+    supposed: BTreeMap<ModelPath, Expect>,
+}
+
+/// How trying one candidate of a solve ended.
+enum Tried {
+    /// Every constraint held.
+    Held,
+    /// A constraint did not hold.
+    Failed,
+    /// The substitution named no place of its own: the solve's failure.
+    Ended(Failure),
+}
+
+/// One view a solve opened: the reference that answered the reads made
+/// through it, and the places those reads named, in order.
+pub struct Trial {
+    reference: Reference,
+    demand: Vec<ModelPath>,
+}
+
+impl Trial {
+    pub fn reference(&self) -> &Reference {
+        &self.reference
+    }
+
+    /// The places the solve's reads through the view named, in order: what
+    /// the trial was demanded.
+    pub fn demand(&self) -> &[ModelPath] {
+        &self.demand
+    }
+
+    /// Each path the trial answered, with its answer.
+    pub fn answers(&self) -> impl Iterator<Item = (&ModelPath, &Expected)> {
+        self.reference
+            .answers
+            .iter()
+            .filter_map(|(path, answer)| Some((path, answer.as_deref().ok()?)))
+    }
+
+    /// How many distinct paths the trial worked out the declaration of.
+    pub fn paths_resolved(&self) -> usize {
+        self.reference.paths_resolved()
+    }
+}
+
+/// The answers of one snapshot, or of one trial under it.
 pub struct Reference {
-    inputs: Inputs,
+    /// The snapshot's inputs, shared with each trial under it.
+    inputs: Rc<Inputs>,
     /// The snapshot's depth setting.
     depth: Option<u64>,
     /// The snapshot's children-per-node setting.
@@ -159,10 +200,18 @@ pub struct Reference {
     /// What each node's work reached, in order.
     reached: BTreeMap<ModelPath, Vec<Reached>>,
     work_outs: usize,
+    /// What this reference supposes, if it is a trial.
+    supposition: Option<Supposition>,
+    /// The trials each solve ran, in order.
+    trials: BTreeMap<ModelPath, Vec<Trial>>,
 }
 
 impl Reference {
     pub fn new(inputs: Inputs) -> Self {
+        Self::supposing(Rc::new(inputs), None)
+    }
+
+    fn supposing(inputs: Rc<Inputs>, supposition: Option<Supposition>) -> Self {
         Self {
             depth: setting(&inputs, Limit::Depth),
             children: setting(&inputs, Limit::ChildrenPerNode),
@@ -175,6 +224,8 @@ impl Reference {
             run_children: BTreeMap::new(),
             reached: BTreeMap::new(),
             work_outs: 0,
+            supposition,
+            trials: BTreeMap::new(),
         }
     }
 
@@ -187,8 +238,11 @@ impl Reference {
     /// The answer at `path`, shared with the memo. A path re-entered while
     /// it is in progress halts the recursion; each path the halt passes
     /// back through is on the ring and answers "cycle", and the re-entered
-    /// path's own frame returns that answer to its reader. A child its call
-    /// took over with a ring still to finish passes the halt on from here.
+    /// path's own frame returns that answer to its reader. In a trial, the
+    /// solve that opened it is in progress outside it: a halt there passes
+    /// back through every frame of the trial, each but the solve's own path
+    /// answering "cycle". A child its call took over with a ring still to
+    /// finish passes the halt on from here.
     fn shared(&mut self, path: &ModelPath) -> Result<Rc<Expected>, Halt> {
         if let Some(known) = self.answers.get(path) {
             return Ok(Rc::clone(known.as_ref().map_err(Invalid::clone)?));
@@ -213,12 +267,24 @@ impl Reference {
                     Err(Halt::Ring { entered })
                 };
             }
+            Err(Halt::Reopened) => return Err(self.reopened(path)),
         };
         self.answers.insert(path.clone(), answer.clone());
         if let Some(entered) = self.deferred.remove(path) {
             return Err(Halt::Ring { entered });
         }
         answer.map_err(Halt::from)
+    }
+
+    /// Passes on, from the frame of `path`, a trial's halt at the solve
+    /// that opened it: `path` is on that solve's ring, and answers "cycle"
+    /// unless it is the solve's own path, which is the solve's node outside
+    /// the trial.
+    fn reopened(&mut self, path: &ModelPath) -> Halt {
+        if !self.opened_by(path) {
+            self.on_ring(path);
+        }
+        Halt::Reopened
     }
 
     /// Answers `path` "cycle", as a node on a ring.
@@ -229,6 +295,29 @@ impl Reference {
         });
         self.answers.insert(path.clone(), Ok(Rc::clone(&on_ring)));
         on_ring
+    }
+
+    /// Whether this reference is a trial of the solve at `path`.
+    fn opened_by(&self, path: &ModelPath) -> bool {
+        self.supposition
+            .as_ref()
+            .is_some_and(|supposition| supposition.opener == *path)
+    }
+
+    /// The outcome this reference supposes at `path`, if it is a trial
+    /// whose view substitutes there.
+    fn supposed(&self, path: &ModelPath) -> Option<&Expect> {
+        self.supposition.as_ref()?.supposed.get(path)
+    }
+
+    /// The trials the solve at `opener` ran, in order.
+    pub fn trials(&self, opener: &ModelPath) -> &[Trial] {
+        self.trials.get(opener).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every trial any solve ran.
+    pub fn every_trial(&self) -> impl Iterator<Item = &Trial> {
+        self.trials.values().flatten()
     }
 
     /// The kind of the node declared at `path`, if its declaration has
@@ -245,12 +334,14 @@ impl Reference {
         self.work_outs
     }
 
-    /// How many distinct paths the reference has worked out the
-    /// declaration of: the paths the core resolves for the same reads. A
-    /// path waiting on a ring halts before it is worked out, as the core
-    /// answers it "cycle" without resolving it.
+    /// How many distinct paths the reference and each of its trials have
+    /// worked out the declaration of: the paths the core resolves for the
+    /// same reads, in the snapshot and in each view. A path waiting on a
+    /// ring halts before it is worked out, as the core answers it "cycle"
+    /// without resolving it.
     pub fn paths_resolved(&self) -> usize {
-        self.declared.len()
+        let trials: usize = self.every_trial().map(Trial::paths_resolved).sum();
+        self.declared.len() + trials
     }
 
     /// Whether a call's run declared a child at `path`, as answering it
@@ -318,7 +409,11 @@ impl Reference {
         self.run(path, &declared)
     }
 
-    /// What the node `declared` at `path` works out to.
+    /// What the node `declared` at `path` works out to: in a trial whose
+    /// view substitutes there, the outcome supposed. In a trial, a node at
+    /// the path of the solve that opened it is that solve, in progress
+    /// outside the trial; only once the trial's structure declares a node
+    /// there, so that where it declares none, the trial answers that.
     fn run(&mut self, path: &ModelPath, declared: &Declared) -> Result<Expected, Halt> {
         let decl = match declared {
             Declared::Node(decl) => Rc::clone(decl),
@@ -329,6 +424,15 @@ impl Reference {
                 });
             }
         };
+        if self.opened_by(path) {
+            return Err(Halt::Reopened);
+        }
+        if let Some(supposed) = self.supposed(path) {
+            return Ok(Expected {
+                node: Some(decl.kind),
+                outcome: self.within_children(path, decl.kind, supposed.clone()),
+            });
+        }
         let outcome = match decl.kind {
             ToyKind::Cell => self.cell(path, &decl)?,
             ToyKind::Scope => self.members(path, &decl)?,
@@ -337,6 +441,8 @@ impl Reference {
             ToyKind::Shape => self.shape(path, &decl)?,
             ToyKind::Measure => self.measure(path, &decl)?,
             ToyKind::Call => self.call(path, &decl)?,
+            ToyKind::Solve => self.solve(path, &decl)?,
+            ToyKind::Solved(part_type) => self.solved(path, &decl, part_type)?,
         };
         Ok(Expected {
             node: Some(decl.kind),
@@ -421,30 +527,45 @@ impl Reference {
             .map_or(Expect::Absent, |value| Expect::Value(out_of(value)))
     }
 
-    /// What the node at `reader`, declared `decl`, reads at `r`: an unset
+    /// What the node at `reader`, declared `decl`, reads at `r`.
+    fn read(&mut self, reader: &ModelPath, decl: &Rc<Decl>, r: &ModelRef) -> Result<Expect, Halt> {
+        match self.target(reader, decl, r)? {
+            Target::Settled(outcome) => Ok(outcome),
+            Target::Path(target) => {
+                self.reach(reader, Reached::Read(target.clone()));
+                Ok(self.shared(&target)?.outcome.clone())
+            }
+        }
+    }
+
+    /// What the node at `reader`, declared `decl`, names at `r`: an unset
     /// binding names nothing; an input or a constant names its value, and
     /// nothing with steps below it; a binding relative to the declarer names
     /// nothing on a root; a passed binding is the declarer's own binding,
     /// the steps still to take carried along (contract 2.1).
-    fn read(&mut self, reader: &ModelPath, decl: &Rc<Decl>, r: &ModelRef) -> Result<Expect, Halt> {
+    fn target(
+        &mut self,
+        reader: &ModelPath,
+        decl: &Rc<Decl>,
+        r: &ModelRef,
+    ) -> Result<Target, Halt> {
         let (mut node, mut decl) = (reader.clone(), Rc::clone(decl));
         let (mut name, mut steps) = (r.binding.clone(), r.steps.clone());
         loop {
             let declarer = node.parent().map(|(declarer, _)| declarer);
             match (decl.bindings.get(&name).cloned(), declarer) {
                 (Some(Bind::Input(input)), _) if steps.is_empty() => {
-                    return Ok(self.input(&Key::Named(input)));
+                    return Ok(Target::Settled(self.input(&Key::Named(input))));
                 }
                 (Some(Bind::Constant(value)), _) if steps.is_empty() => {
-                    return Ok(Expect::Value(out_of(&value)));
+                    return Ok(Target::Settled(Expect::Value(out_of(&value))));
                 }
                 (Some(Bind::Declarer(place)), Some(declarer)) => {
                     let target = place
                         .iter()
                         .chain(&steps)
                         .fold(declarer, |at, step| at.child(step.clone()));
-                    self.reach(reader, Reached::Read(target.clone()));
-                    return Ok(self.shared(&target)?.outcome.clone());
+                    return Ok(Target::Path(target));
                 }
                 (Some(Bind::Passed(passed)), Some(declarer)) => {
                     let Declared::Node(declarer_decl) = self.declaration(&declarer)? else {
@@ -455,7 +576,7 @@ impl Reference {
                     decl = declarer_decl;
                     node = declarer;
                 }
-                _ => return Ok(Expect::Absent),
+                _ => return Ok(Target::Settled(Expect::Absent)),
             }
         }
     }
@@ -466,11 +587,7 @@ impl Reference {
         decl: &Rc<Decl>,
         name: &str,
     ) -> Result<Expect, Halt> {
-        let r = ModelRef {
-            binding: name.to_owned(),
-            steps: Vec::new(),
-        };
-        self.read(at, decl, &r)
+        self.read(at, decl, &bare(name))
     }
 
     /// The i64s at "0", "1", … until one reads absent; then, if "pick"
@@ -695,6 +812,169 @@ impl Reference {
         Ok(Expect::Value(Out::Int(total)))
     }
 
+    /// The problem at "problem": absent or a failure is its answer. Then
+    /// each candidate in order, tried in a trial of its own; the first
+    /// whose constraints all hold is its answer, and if none holds, its own
+    /// failure. A solve inside a trial is invalid.
+    fn solve(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Halt> {
+        if self.supposition.is_some() {
+            return Err(Invalid::ViewInsideView { path: at.clone() }.into());
+        }
+        let problem = match typed_problem(self.read_binding(at, decl, "problem")?) {
+            Typed::Value(problem) => problem,
+            Typed::Absent => return Ok(Expect::Absent),
+            Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
+        };
+        for candidate in &problem.candidates {
+            match self.try_candidate(at, decl, candidate, problem.constraints)? {
+                Tried::Held => return Ok(Expect::Value(Out::Solution(candidate.clone()))),
+                Tried::Failed => {}
+                Tried::Ended(failure) => return Ok(Expect::Failure(failure)),
+            }
+        }
+        Ok(Expect::Failure(Failure::OfKind {
+            kind: toy::Solve::ID,
+            code: toy::NO_CANDIDATE_HOLDS,
+        }))
+    }
+
+    /// Tries `candidate` as the solve at `at` does: its `constraints` are
+    /// read one at a time in a trial supposing its unknowns to be the
+    /// candidate's parts, which opens on the first read, and the trial
+    /// stops at the first that does not hold. A constraint holds if it
+    /// reads absent or an i64 of zero or more.
+    fn try_candidate(
+        &mut self,
+        at: &ModelPath,
+        decl: &Rc<Decl>,
+        candidate: &[Part],
+        constraints: u64,
+    ) -> Result<Tried, Halt> {
+        if constraints == 0 {
+            return Ok(Tried::Held);
+        }
+        let supposed = match self.substitution(at, decl, candidate)? {
+            Ok(supposed) => supposed,
+            Err(failure) => return Ok(Tried::Ended(failure)),
+        };
+        let supposition = Supposition {
+            opener: at.clone(),
+            supposed,
+        };
+        let mut trial = Trial {
+            reference: Reference::supposing(Rc::clone(&self.inputs), Some(supposition)),
+            demand: Vec::new(),
+        };
+        let held = self.constraints_hold(at, decl, &mut trial, constraints);
+        self.trials.entry(at.clone()).or_default().push(trial);
+        Ok(if held? { Tried::Held } else { Tried::Failed })
+    }
+
+    /// The outcome a trial of the solve at `at` supposes at each place its
+    /// unknowns name: `candidate`'s parts, one each. An unknown naming no
+    /// node's place, or a place an earlier one names, is the solve's
+    /// failure (contract 6: what a view substitutes has exactly one path).
+    fn substitution(
+        &mut self,
+        at: &ModelPath,
+        decl: &Rc<Decl>,
+        candidate: &[Part],
+    ) -> Result<Result<BTreeMap<ModelPath, Expect>, Failure>, Halt> {
+        let mut supposed = BTreeMap::new();
+        for (index, part) in candidate.iter().enumerate() {
+            let r = bare(&unknown(index));
+            let not_supposable = Failure::NotSupposable { at: r.to_core() };
+            let Target::Path(place) = self.target(at, decl, &r)? else {
+                return Ok(Err(not_supposable));
+            };
+            if supposed.contains_key(&place) {
+                return Ok(Err(not_supposable));
+            }
+            supposed.insert(place, Expect::Value(part_out(*part)));
+        }
+        Ok(Ok(supposed))
+    }
+
+    /// Whether each of the `constraints` of the solve at `at` holds, each
+    /// resolved here and read in `trial`, stopping at the first that does
+    /// not. A read that reached the solve's own node under the trial is a
+    /// ring entered at the solve.
+    fn constraints_hold(
+        &mut self,
+        at: &ModelPath,
+        decl: &Rc<Decl>,
+        trial: &mut Trial,
+        constraints: u64,
+    ) -> Result<bool, Halt> {
+        for index in 0..constraints {
+            let read = match self.target(at, decl, &bare(&constraint(index)))? {
+                Target::Settled(outcome) => outcome,
+                Target::Path(path) => {
+                    trial.demand.push(path.clone());
+                    let read = trial.reference.shared(&path).map_err(|halt| match halt {
+                        Halt::Reopened => Halt::Ring {
+                            entered: at.clone(),
+                        },
+                        other => other,
+                    });
+                    read?.outcome.clone()
+                }
+            };
+            let held = match typed_int(read) {
+                Typed::Value(value) => value >= 0,
+                Typed::Absent => true,
+                Typed::Failure(_) => false,
+            };
+            if !held {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The solution at "solve": absent is its answer, and a failure makes
+    /// it blocked by the solve. Then its part at the i64 "part" as
+    /// `part_type`: past the end it is absent, and a part of the other type
+    /// is a wrong type naming both.
+    fn solved(
+        &mut self,
+        at: &ModelPath,
+        decl: &Rc<Decl>,
+        part_type: PartType,
+    ) -> Result<Expect, Halt> {
+        let solve = bare("solve");
+        let parts = match typed_solution(self.read(at, decl, &solve)?) {
+            Typed::Value(parts) => parts,
+            Typed::Absent => return Ok(Expect::Absent),
+            Typed::Failure(_) => {
+                return Ok(Expect::Failure(Failure::BlockedBy {
+                    at: solve.to_core(),
+                }));
+            }
+        };
+        let index = match typed_int(self.read_binding(at, decl, "part")?) {
+            Typed::Value(index) => index,
+            Typed::Absent => return Ok(Expect::Absent),
+            Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
+        };
+        let Some(part) = usize::try_from(index).ok().and_then(|at| parts.get(at)) else {
+            return Ok(Expect::Absent);
+        };
+        let expected = match part_type {
+            PartType::Int => type_name::<i64>(),
+            PartType::Flag => type_name::<bool>(),
+        };
+        Ok(match (part_type, part_out(*part)) {
+            (PartType::Int, value @ Out::Int(_)) | (PartType::Flag, value @ Out::Bool(_)) => {
+                Expect::Value(value)
+            }
+            (_, found) => Expect::Failure(Failure::WrongType {
+                expected,
+                found: found.type_name(),
+            }),
+        })
+    }
+
     /// Enters the child a run declared `decl` at `path` in the memo of
     /// declarations, as a path resolved: a node, or the depth failure of a
     /// node too deep.
@@ -739,12 +1019,14 @@ impl Reference {
         let answer = match worked {
             Ok(answer) => Ok(Rc::new(answer)),
             Err(Halt::Invalid(invalid)) => Err(invalid),
+            Err(Halt::Reopened) => return Err(self.reopened(path)),
             Err(Halt::Ring { entered }) => {
                 let on_ring = self.on_ring(path);
                 if entered == *path {
                     return Ok(on_ring);
                 }
-                if self.in_progress[&entered] < began {
+                let outside = self.in_progress.get(&entered);
+                if outside.is_none_or(|&height| height < began) {
                     self.deferred.insert(path.clone(), entered);
                     return Ok(on_ring);
                 }
@@ -753,6 +1035,14 @@ impl Reference {
         };
         self.answers.insert(path.clone(), answer.clone());
         answer.map_err(Halt::from)
+    }
+}
+
+/// A ref to the binding `name`, with no steps below it.
+fn bare(name: &str) -> ModelRef {
+    ModelRef {
+        binding: name.to_owned(),
+        steps: Vec::new(),
     }
 }
 
@@ -803,19 +1093,6 @@ fn add(sum: i64, value: i64, at: &ModelPath) -> Result<i64, Invalid> {
         .ok_or_else(|| Invalid::Overflow { path: at.clone() })
 }
 
-fn out_of(value: &Val) -> Out {
-    match value {
-        Val::Int(value) => Out::Int(*value),
-        Val::Bool(value) => Out::Bool(*value),
-        Val::Members(members) => Out::Members(members.clone()),
-        Val::Decl(decl) => Out::Decl(decl.clone()),
-        Val::Calls(sites) => Out::Calls(sites.clone()),
-        Val::Bound(_) => {
-            unreachable!("a limit setting is under a limit key, which no binding reads")
-        }
-    }
-}
-
 /// The snapshot's setting of `limit`, if any.
 ///
 /// # Panics
@@ -826,80 +1103,6 @@ fn setting(inputs: &Inputs, limit: Limit) -> Option<u64> {
         Val::Bound(bound) => Some(*bound),
         other => panic!("the limit setting {limit:?} must be a bound, and is {other:?}"),
     }
-}
-
-impl Out {
-    /// The name of the Rust type the core holds this value as.
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            Out::Int(_) => type_name::<i64>(),
-            Out::Bool(_) => type_name::<bool>(),
-            Out::Members(_) => type_name::<toy::Members>(),
-            Out::Elements { .. } => type_name::<toy::Elements>(),
-            Out::Decl(_) => type_name::<Declaration>(),
-            Out::Shape { .. } => type_name::<toy::BoxShape>(),
-            Out::Calls(_) => type_name::<toy::Calls>(),
-        }
-    }
-}
-
-/// `read` typed as `expected`: `take` gives the value of that type, and a
-/// value of another type is a failure naming both.
-fn typed<T>(read: Expect, expected: &'static str, take: impl FnOnce(Out) -> Option<T>) -> Typed<T> {
-    match read {
-        Expect::Value(out) => {
-            let found = out.type_name();
-            take(out).map_or(
-                Typed::Failure(Failure::WrongType { expected, found }),
-                Typed::Value,
-            )
-        }
-        Expect::Absent => Typed::Absent,
-        Expect::Failure(failure) => Typed::Failure(failure),
-    }
-}
-
-fn typed_int(read: Expect) -> Typed<i64> {
-    typed(read, type_name::<i64>(), |out| match out {
-        Out::Int(value) => Some(value),
-        _ => None,
-    })
-}
-
-fn typed_bool(read: Expect) -> Typed<bool> {
-    typed(read, type_name::<bool>(), |out| match out {
-        Out::Bool(value) => Some(value),
-        _ => None,
-    })
-}
-
-fn typed_members(read: Expect) -> Typed<BTreeMap<Step, Decl>> {
-    typed(read, type_name::<toy::Members>(), |out| match out {
-        Out::Members(members) => Some(members),
-        _ => None,
-    })
-}
-
-/// A box read as the toy kernel's box: its volume.
-fn typed_shape(read: Expect) -> Typed<i64> {
-    typed(read, type_name::<toy::BoxShape>(), |out| match out {
-        Out::Shape { volume } => Some(volume),
-        _ => None,
-    })
-}
-
-fn typed_calls(read: Expect) -> Typed<Vec<Site>> {
-    typed(read, type_name::<toy::Calls>(), |out| match out {
-        Out::Calls(sites) => Some(sites),
-        _ => None,
-    })
-}
-
-fn typed_decl(read: Expect) -> Typed<Decl> {
-    typed(read, type_name::<Declaration>(), |out| match out {
-        Out::Decl(decl) => Some(decl),
-        _ => None,
-    })
 }
 
 mod tests {
@@ -1824,5 +2027,341 @@ mod tests {
         }
         design.insert(children_limit(), bound(3));
         assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 18));
+    }
+
+    /// Root scope `r` whose members are `held`, beside the input "problem"
+    /// holding `problem` and the named ints `ints`.
+    fn solve_r(held: Val, problem: Val, ints: &[(&str, i64)]) -> Inputs {
+        let mut design = scope_r(held, ints);
+        design.insert(named("problem"), problem);
+        design
+    }
+
+    /// A solve of the problem at "problem" whose unknowns and constraints
+    /// are the siblings named.
+    fn solve_over(unknowns: &[&str], constraints: &[&str]) -> Decl {
+        let sibling = |name: &&str| declarer([step(name)]);
+        solve(
+            input("problem"),
+            unknowns.iter().map(sibling),
+            constraints.iter().map(sibling),
+        )
+    }
+
+    /// The sibling solve s.
+    fn sibling_s() -> Bind {
+        declarer([step("s")])
+    }
+
+    /// Root scope `r` holding the solve s of the int unknown n, whose
+    /// constraint k is n - 3, over the candidates n = 1, 4 and 7, beside
+    /// the parts `wrong`, part 0 read as a flag, and `past`, part 1.
+    fn first_holding_r() -> Inputs {
+        let held = members([
+            (step("s"), solve_over(&["n"], &["k"])),
+            (step("n"), solved_int(sibling_s(), 0)),
+            (step("k"), cell([declarer([step("n")]), input("minus")])),
+            (step("wrong"), solved_flag(sibling_s(), 0)),
+            (step("past"), solved_int(sibling_s(), 1)),
+        ]);
+        let candidates = [1, 4, 7].map(|n| vec![Part::Int(n)]);
+        solve_r(held, problem(candidates, 1), &[("minus", -3)])
+    }
+
+    const SOLVED_INT: ToyKind = ToyKind::Solved(PartType::Int);
+
+    #[test]
+    fn a_solve_answers_its_first_holding_candidate_and_each_solved_part_reads_it() {
+        let design = first_holding_r();
+        assert_eq!(
+            answer(&design, &at("r", &["s"])),
+            value(ToyKind::Solve, Out::Solution(vec![Part::Int(4)]))
+        );
+        assert_eq!(answer(&design, &at("r", &["n"])), int_of(SOLVED_INT, 4));
+        assert_eq!(answer(&design, &at("r", &["k"])), int_of(ToyKind::Cell, 1));
+        assert_eq!(
+            answer(&design, &at("r", &["wrong"])),
+            failed(
+                Some(ToyKind::Solved(PartType::Flag)),
+                type_name::<bool>(),
+                type_name::<i64>()
+            )
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["past"])),
+            absent(Some(SOLVED_INT))
+        );
+    }
+
+    /// What `trial` answered at `path`, if it answered there.
+    fn in_trial(trial: &Trial, path: &ModelPath) -> Option<Expected> {
+        trial
+            .answers()
+            .find(|(at, _)| *at == path)
+            .map(|(_, expected)| expected.clone())
+    }
+
+    #[test]
+    fn a_trial_sees_its_substitution_and_structure_follows_it() {
+        let m = [step("g"), step("m")];
+        let unknowns = [
+            declarer([step("n")]),
+            declarer([step("f")]),
+            declarer(m.clone()),
+        ];
+        let constraints = [
+            declarer(m.clone()),
+            declarer([step("col"), index(2)]),
+            declarer([step("k")]),
+        ];
+        let held = members([
+            (step("s"), solve(input("problem"), unknowns, constraints)),
+            (step("n"), solved_int(sibling_s(), 0)),
+            (step("f"), solved_flag(sibling_s(), 1)),
+            (step("g"), guard(declarer([step("f")]), "g.m")),
+            (step("col"), collection(declarer([step("n")]), input("el"))),
+            (step("k"), cell([declarer([step("n")]), input("minus")])),
+        ]);
+        let candidates =
+            [(2, false), (3, true)].map(|(n, f)| vec![Part::Int(n), Part::Flag(f), Part::Int(9)]);
+        let mut design = solve_r(held, problem(candidates.clone(), 3), &[("minus", -3)]);
+        design.insert(named("g.m"), members([(step("m"), cell([input("minus")]))]));
+        design.insert(named("el"), declaration(cell([])));
+        let s = at("r", &["s"]);
+        let mut reference = Reference::new(design);
+        assert_eq!(
+            reference.answer(&s),
+            value(ToyKind::Solve, Out::Solution(candidates[1].clone()))
+        );
+        let [first, second] = reference.trials(&s) else {
+            panic!("the first candidate fails its last constraint, the second holds")
+        };
+        let (g, col) = (at("r", &["g"]), at("r", &["col"]));
+        let (m, element) = (g.child(step("m")), col.child(index(2)));
+        assert_eq!(in_trial(first, &g), absent(Some(ToyKind::Guard)).ok());
+        assert_eq!(
+            in_trial(first, &m),
+            absent(None).ok(),
+            "under an absent guard"
+        );
+        let present = in_trial(second, &g).map(|expected| expected.outcome);
+        assert!(
+            matches!(present, Some(Expect::Value(Out::Members(_)))),
+            "{present:?}"
+        );
+        assert_eq!(in_trial(second, &m), int_of(ToyKind::Cell, 9).ok());
+        let count = |trial| match in_trial(trial, &col).map(|expected| expected.outcome) {
+            Some(Expect::Value(Out::Elements { count, .. })) => count,
+            other => panic!("the collection answered {other:?}"),
+        };
+        assert_eq!((count(first), count(second)), (2, 3));
+        assert_eq!(in_trial(first, &element), absent(None).ok());
+        assert_eq!(in_trial(second, &element), int_of(ToyKind::Cell, 0).ok());
+    }
+
+    #[test]
+    fn a_constraint_reading_its_own_solve_makes_the_solve_a_cycle_and_is_blocked_by_it() {
+        let held = members([
+            (step("s"), solve_over(&["n"], &["k"])),
+            (step("n"), solved_int(sibling_s(), 0)),
+            (step("k"), cell([sibling_s()])),
+        ]);
+        let design = solve_r(held, problem([vec![Part::Int(1)]], 1), &[]);
+        for first in ["s", "k"] {
+            let mut reference = Reference::new(design.clone());
+            reference
+                .answer(&at("r", &[first]))
+                .expect("the design is valid");
+            assert_eq!(
+                reference.answer(&at("r", &["s"])),
+                cycle(Some(ToyKind::Solve)),
+                "{first} first"
+            );
+            assert_eq!(
+                reference.answer(&at("r", &["k"])),
+                blocked_at("0"),
+                "{first} first"
+            );
+        }
+    }
+
+    #[test]
+    fn a_solve_s_own_path_in_a_trial_follows_the_structure_its_unknowns_give() {
+        let mut gate = guard(declarer([step("f")]), "g.m");
+        gate.bindings
+            .insert(String::from("c"), declarer([step("c")]));
+        let held = members([
+            (step("t"), solve(input("pt"), [], [])),
+            (step("f"), solved_flag(declarer([step("t")]), 0)),
+            (step("g"), gate),
+            (step("c"), cell([declarer([step("g"), step("s")])])),
+        ]);
+        let s = solve(
+            input("problem"),
+            [passed("condition", [])],
+            [passed("c", [])],
+        );
+        let mut design = solve_r(held, problem([vec![Part::Flag(false)]], 1), &[]);
+        design.insert(named("pt"), problem([vec![Part::Flag(true)]], 0));
+        design.insert(named("g.m"), members([(step("s"), s)]));
+        let s = at("r", &["g", "s"]);
+        let mut reference = Reference::new(design);
+        assert_eq!(
+            reference.answer(&s),
+            value(ToyKind::Solve, Out::Solution(vec![Part::Flag(false)])),
+            "f, which g reads, is the solve's unknown"
+        );
+        let [trial] = reference.trials(&s) else {
+            panic!("one candidate, one trial")
+        };
+        let g = at("r", &["g"]);
+        assert_eq!(in_trial(trial, &g), absent(Some(ToyKind::Guard)).ok());
+        assert_eq!(
+            in_trial(trial, &s),
+            absent(None).ok(),
+            "the solve's own path is under the trial's absent guard"
+        );
+    }
+
+    /// A solve's one constraint reads its call, or its own path below the
+    /// call, so that its trial resolves the path only once the call's run
+    /// declares it, or first, the call taking it over.
+    #[test]
+    fn a_call_in_a_trial_declaring_the_trial_s_solve_again_reaches_the_solve() {
+        let site_step = call_step(&[1], None);
+        for (constraint, reads) in [
+            (declarer([]), "the call"),
+            (declarer([site_step.clone()]), "itself"),
+        ] {
+            let solve = solve(input("problem"), [passed("0", [])], [constraint]);
+            let held = members([
+                (step("x"), cell([input("x0")])),
+                (step("call"), call([declarer([step("x")])], input("calls"))),
+            ]);
+            let mut design = solve_r(held, problem([vec![Part::Int(2)]], 1), &[("x0", 1)]);
+            design.insert(named("calls"), calls_value([site(&[1], false, 0, solve)]));
+            let s = at("r", &["call"]).child(site_step.clone());
+            let mut reference = Reference::new(design);
+            assert_eq!(
+                reference.answer(&s),
+                cycle(Some(ToyKind::Solve)),
+                "reading {reads}"
+            );
+            assert!(
+                reference
+                    .every_trial()
+                    .all(|trial| in_trial(trial, &s).is_none()),
+                "reading {reads}: the solve's own path in its trial is the solve, outside it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_solve_none_of_whose_candidates_holds_fails_and_its_parts_are_blocked_by_it() {
+        let no_candidate = Ok(Expected {
+            node: Some(ToyKind::Solve),
+            outcome: Expect::Failure(Failure::OfKind {
+                kind: toy::Solve::ID,
+                code: toy::NO_CANDIDATE_HOLDS,
+            }),
+        });
+        let blocked = Ok(Expected {
+            node: Some(SOLVED_INT),
+            outcome: Expect::Failure(Failure::BlockedBy {
+                at: Ref::binding("solve"),
+            }),
+        });
+        let mut design = first_holding_r();
+        for candidates in [vec![1, 2], vec![]] {
+            let candidates = candidates.into_iter().map(|n| vec![Part::Int(n)]);
+            design.insert(named("problem"), problem(candidates, 1));
+            assert_eq!(answer(&design, &at("r", &["s"])), no_candidate);
+            assert_eq!(answer(&design, &at("r", &["n"])), blocked);
+        }
+    }
+
+    #[test]
+    fn a_substitution_naming_no_place_of_its_own_fails_the_solve_once_a_trial_reads() {
+        let n = || declarer([step("n")]);
+        let k = || declarer([step("k")]);
+        let cases = [
+            (vec![input("x")], "u0"),
+            (vec![n(), n()], "u1"),
+            (vec![n()], "u1"),
+        ];
+        for (unknowns, at_ref) in cases {
+            let held = members([
+                (step("s"), solve(input("problem"), unknowns, [k()])),
+                (step("n"), solved_int(sibling_s(), 0)),
+                (step("k"), cell([n()])),
+            ]);
+            let candidate = vec![Part::Int(1), Part::Int(2)];
+            let mut design = solve_r(held, problem([candidate.clone()], 1), &[("x", 0)]);
+            assert_eq!(
+                answer(&design, &at("r", &["s"])),
+                Ok(Expected {
+                    node: Some(ToyKind::Solve),
+                    outcome: Expect::Failure(Failure::NotSupposable {
+                        at: Ref::binding(at_ref),
+                    }),
+                }),
+                "{at_ref}"
+            );
+            design.insert(named("problem"), problem([candidate.clone()], 0));
+            assert_eq!(
+                answer(&design, &at("r", &["s"])),
+                value(ToyKind::Solve, Out::Solution(candidate)),
+                "with no constraint no trial reads, and no view opens"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trial_that_reaches_another_solve_is_invalid_and_first_invalid_finds_it() {
+        let held = members([
+            (step("s"), solve_over(&["n"], &["k"])),
+            (step("n"), solved_int(sibling_s(), 0)),
+            (step("t"), solve_over(&["m"], &[])),
+            (step("m"), solved_int(declarer([step("t")]), 0)),
+            (step("k"), cell([declarer([step("m")])])),
+        ]);
+        let design = solve_r(held, problem([vec![Part::Int(1)]], 1), &[]);
+        let inside = Invalid::ViewInsideView {
+            path: at("r", &["t"]),
+        };
+        assert_eq!(answer(&design, &at("r", &["s"])), Err(inside.clone()));
+        let evaluate = |path: ModelPath| Case {
+            inputs: design.clone(),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![path],
+                budget: None,
+                then: Then::End,
+            }],
+        };
+        assert_eq!(first_invalid(&evaluate(at("r", &["s"]))), Some(inside));
+        assert_eq!(
+            first_invalid(&evaluate(at("r", &["k"]))),
+            None,
+            "t opens its view in the snapshot"
+        );
+        assert_eq!(answer(&design, &at("r", &["k"])), int_of(ToyKind::Cell, 1));
+    }
+
+    #[test]
+    fn the_paths_resolved_count_each_trial_s_resolutions_beside_the_snapshot_s() {
+        let s = at("r", &["s"]);
+        let mut reference = Reference::new(first_holding_r());
+        reference.answer(&s).expect("the design is valid");
+        let trials = reference.trials(&s);
+        assert_eq!(trials.len(), 2, "n = 1 fails, n = 4 holds");
+        for trial in trials {
+            assert_eq!(trial.paths_resolved(), 3, "r, r/k and the supposed r/n");
+        }
+        assert_eq!(
+            reference.paths_resolved(),
+            2 + 3 + 3,
+            "r and r/s, then the trials'"
+        );
     }
 }
