@@ -1980,23 +1980,24 @@ pub structure Assembly {
 
 **Cross-sub geometry composition (boolean idiom).** Geometry-typed members on
 a non-collection sub — whether declared as `param body : Solid = box(...)` or
-as `let body = box(...)` on the child — are accessible from the parent via
-`self.<sub>.<member>` dot notation. The access lowers to a stable reference to
+as `pub let body = box(...)` on the child — are accessible from the parent via
+`self.<sub>.<member>` dot notation. A `let` that is not `pub` is private and
+cannot be read from the parent (§7.4). The access lowers to a stable reference to
 the child's realization handle, so transforms and boolean ops in the parent
 compose directly over the child's body.  Use this idiom when a child body must
 be cut into or unioned with a parent solid:
 
 ```reify
 pub structure Inner {
-    let body = box(10mm, 20mm, 30mm)
+    pub let body = box(10mm, 20mm, 30mm)
 }
 pub structure Outer {
     sub inner = Inner()
     let placed = translate(self.inner.body, 10mm, 0mm, 0mm)
 }
 
-pub structure A { let body = box(10mm, 10mm, 10mm) }
-pub structure B { let body = cylinder(5mm, 10mm) }
+pub structure A { pub let body = box(10mm, 10mm, 10mm) }
+pub structure B { pub let body = cylinder(5mm, 10mm) }
 pub structure C {
     sub a = A()
     sub b = B()
