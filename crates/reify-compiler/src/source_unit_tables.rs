@@ -46,16 +46,24 @@ pub enum StructuralQuery {
 }
 
 impl StructuralQuery {
-    pub const NAMES: [&'static str; 3] = ["children", "members", "descendants"];
-
     const ALL: [StructuralQuery; 3] = [
         StructuralQuery::Children,
         StructuralQuery::Members,
         StructuralQuery::Descendants,
     ];
 
-    pub fn name(self) -> &'static str {
-        Self::NAMES[self as usize]
+    pub const NAMES: [&'static str; 3] = [
+        StructuralQuery::Children.name(),
+        StructuralQuery::Members.name(),
+        StructuralQuery::Descendants.name(),
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            StructuralQuery::Children => "children",
+            StructuralQuery::Members => "members",
+            StructuralQuery::Descendants => "descendants",
+        }
     }
 
     pub fn from_member(member: &str) -> Option<Self> {
