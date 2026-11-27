@@ -8,6 +8,7 @@
 //! disagree by design on what compiles.
 
 mod definition_list;
+mod definition_scope;
 mod member_kind;
 mod member_table;
 mod module_context;

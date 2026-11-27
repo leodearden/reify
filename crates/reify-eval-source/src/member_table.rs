@@ -1,12 +1,15 @@
 //! A definition's member table: every member it declares or inherits, in
 //! order, each with its kind and declared type.
 
-use reify_ast::{MemberDecl, SubDecl, TypeExprKind};
-use reify_compiler::TopologyTemplate;
+use reify_ast::{Expr, MemberDecl, SubDecl, TypeExprKind};
+use reify_compiler::{
+    CompilationScope, SourceUnitNames, SourceUnitSpec, TopologyTemplate, compile_source_unit,
+};
 use reify_core::{
     DefinitionName, Diagnostic, DiagnosticCode, DiagnosticLabel, PathName, SourceSpan, Type,
 };
 
+use crate::definition_scope::definition_scope;
 use crate::member_kind::{self, MemberKind};
 use crate::module_context::ModuleContext;
 
@@ -87,9 +90,11 @@ pub(crate) fn lower_definition(
     module: &ModuleContext<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> MemberTable {
+    let scope = definition_scope(template, module.templates());
     let mut lowering = Lowering {
         definition,
         template,
+        scope: &scope,
         module,
         diagnostics,
     };
@@ -100,6 +105,8 @@ pub(crate) fn lower_definition(
 struct Lowering<'l, 'm> {
     definition: &'l DefinitionName,
     template: &'l TopologyTemplate,
+    /// The scope the definition's expressions compile in.
+    scope: &'l CompilationScope<'l>,
     module: &'l ModuleContext<'m>,
     diagnostics: &'l mut Vec<Diagnostic>,
 }
@@ -115,7 +122,6 @@ impl Lowering<'_, '_> {
     }
 
     fn member(&mut self, decl: &MemberDecl, origin: &MemberOrigin) -> Member {
-        let kind = member_kind::form_kind(decl);
         let (name, guard, declared_type, branches) = match decl {
             MemberDecl::Param(param) => (
                 Some(param.name.as_str()),
@@ -126,7 +132,7 @@ impl Lowering<'_, '_> {
             MemberDecl::Let(binding) => {
                 let declared_type = match binding.type_expr {
                     Some(_) => self.cell_type(&binding.name, binding.span),
-                    None => DeclaredType::None,
+                    None => DeclaredType::Value(self.expression_type(&binding.value)),
                 };
                 (
                     Some(binding.name.as_str()),
@@ -222,6 +228,17 @@ impl Lowering<'_, '_> {
             | MemberDecl::ForallConstraint(_)
             | MemberDecl::Relate(_) => (None, None, DeclaredType::None, Vec::new()),
         };
+        let kind = match decl {
+            MemberDecl::Param(_) | MemberDecl::Let(_) => {
+                let table_type = match &declared_type {
+                    DeclaredType::Value(ty) => Some(ty),
+                    _ => None,
+                };
+                let existing_type = name.and_then(|n| template_cell_type(self.template, n));
+                member_kind::cell_kind(table_type.into_iter().chain(existing_type))
+            }
+            _ => member_kind::form_kind(decl),
+        };
         Member {
             name: name.map(identifier),
             kind,
@@ -246,6 +263,25 @@ impl Lowering<'_, '_> {
                 DeclaredType::Value(Type::Error)
             }
         }
+    }
+
+    /// The type the source-unit mode gives `expr` on the definition's scope.
+    /// The unit itself is not kept here; its diagnostics are.
+    fn expression_type(&mut self, expr: &Expr) -> Type {
+        let spec = SourceUnitSpec {
+            names: SourceUnitNames::Own,
+            expected_type: None,
+        };
+        compile_source_unit(
+            expr,
+            self.scope,
+            &spec,
+            self.module.enums(),
+            self.module.functions(),
+            self.diagnostics,
+        )
+        .expr
+        .result_type
     }
 
     /// The definition the sub `name` instantiates, written `element`.

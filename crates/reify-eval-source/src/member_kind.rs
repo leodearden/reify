@@ -1,6 +1,7 @@
 //! What kind of member each written form is.
 
 use reify_ast::MemberDecl;
+use reify_core::Type;
 
 /// The kind of a member: what the evaluator's table of member kinds maps to a
 /// recipe. It carries no data.
@@ -41,7 +42,7 @@ pub enum MemberKind {
 }
 
 /// The kind of the member `decl` writes. A `param` or `let` is a [`Cell`]
-/// here; whether its value is geometry is decided from its types.
+/// here; whether its value is geometry is [`cell_kind`]'s to decide.
 ///
 /// [`Cell`]: MemberKind::Cell
 pub(crate) fn form_kind(decl: &MemberDecl) -> MemberKind {
@@ -69,5 +70,30 @@ pub(crate) fn form_kind(decl: &MemberDecl) -> MemberKind {
         MemberDecl::ForallConstraint(_) => MemberKind::ForallConstraint,
         MemberDecl::Relate(_) => MemberKind::Relate,
         MemberDecl::Sketch(_) => MemberKind::Sketch,
+    }
+}
+
+/// The kind of a `param` or `let` given its types: the type its table entry
+/// carries and the type the existing compile gave it. It holds geometry when
+/// either does, since the expression compiler types a geometry builtin's call
+/// as a dimensionless placeholder and only the existing compile's
+/// classification of the member says it is geometry.
+pub(crate) fn cell_kind<'t>(types: impl IntoIterator<Item = &'t Type>) -> MemberKind {
+    if types.into_iter().any(is_geometry_type) {
+        MemberKind::GeometryMember
+    } else {
+        MemberKind::Cell
+    }
+}
+
+/// Whether a value of type `ty` is geometry, or a collection or option of it:
+/// something only a kernel produces.
+fn is_geometry_type(ty: &Type) -> bool {
+    match ty {
+        Type::Geometry | Type::Feature | Type::Selector(_) | Type::AnySelector => true,
+        Type::List(element) | Type::Set(element) | Type::Keyed(element) | Type::Option(element) => {
+            is_geometry_type(element)
+        }
+        _ => false,
     }
 }
