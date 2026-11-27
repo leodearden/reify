@@ -734,6 +734,53 @@ fn member_reads_that_may_be_absent_are_references() {
     );
     assert_eq!(tree.result_type, Type::Error);
     assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+
+    // The same members read in the declaring definition's own scope, where
+    // `head` names the arms' cluster.
+    let bolt = definition_scope(&module, &registry, "Bolt");
+    let either_head = Type::Union(vec![
+        Type::StructureRef("HexHead".into()),
+        Type::StructureRef("RoundHead".into()),
+    ]);
+    for (text, path, expected) in [
+        ("self.head.hex_only", &["head", "hex_only"][..], &real),
+        ("head.round_only", &["head", "round_only"], &real),
+        ("head.size", &["head", "size"], &real_or_int),
+        ("self.head", &["head"], &either_head),
+    ] {
+        let (unit, diagnostics) = compile_unit(text, &bolt, &module);
+        assert!(
+            errors_of(&diagnostics).is_empty(),
+            "Bolt, {text}: {diagnostics:?}"
+        );
+        let (reference, ty) = sole_reference(&unit);
+        assert_eq!(shape(reference), own_value(members(path)), "Bolt, {text}");
+        assert_eq!(ty, expected, "Bolt, {text}");
+    }
+    let (_, diagnostics) = compile_unit("head.nosuch", &bolt, &module);
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::StructureMemberNotFound),
+        "Bolt, head.nosuch: {diagnostics:?}"
+    );
+    // The existing compile, on Bolt's scope (outcomes measured when these
+    // cases were written).
+    for (text, message) in [
+        (
+            "self.head.hex_only",
+            "field 'hex_only' is not present in match-arm types: RoundHead",
+        ),
+        (
+            "self.head.size",
+            "field 'size' has divergent types across match-arm types: HexHead: Real, RoundHead: Int",
+        ),
+    ] {
+        let (tree, diagnostics) = compile_existing(text, &bolt, &module);
+        assert_eq!(tree.result_type, Type::Error, "Bolt, {text}");
+        assert!(
+            errors_of(&diagnostics).iter().any(|d| d.message == message),
+            "Bolt, {text}: {diagnostics:?}"
+        );
+    }
 }
 
 const CTOR_SOURCE: &str = "
