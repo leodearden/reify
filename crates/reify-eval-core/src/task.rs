@@ -56,6 +56,11 @@ impl Task {
         &self.declaration
     }
 
+    /// The children its answered reads declared, by step.
+    pub fn children(&self) -> &BTreeMap<Step, Arc<Declaration>> {
+        &self.children
+    }
+
     /// The flag a section this body starts reads as `cancelled`.
     pub fn cancel_flag(&self) -> Cancel {
         self.cancel.clone()

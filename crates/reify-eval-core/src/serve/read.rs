@@ -1,7 +1,9 @@
 //! A read ask: each item served in order. A ref's target is settled at
 //! once with its content where its answer is known, otherwise it awaits
-//! the node it names; a child item goes to the child server.
+//! the node it names; a child item goes to the child server, which may
+//! find the request in conflict with what the run declared.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::content::Content;
@@ -12,26 +14,32 @@ use crate::path_table::{PathId, PathTable};
 use crate::record::Reading;
 use crate::reference::Ref;
 use crate::resolve::{Target, target};
-use crate::serve::child;
+use crate::serve::child::{self, Conflict, Declared};
+use crate::step::Step;
 use crate::wanted::Wanted;
 
+/// The reading of `wanted`, asked by the node at `reader` declared
+/// `declaration`, whose run has declared `children`.
 pub(crate) fn serve(
     reader: PathId,
     declaration: &Declaration,
     wanted: Arc<[Wanted]>,
+    children: &BTreeMap<Step, Arc<Declaration>>,
     paths: &mut PathTable,
     index: &Index,
-) -> Reading {
+) -> Result<Reading, Conflict> {
     let mut reading = Reading::new(Arc::clone(&wanted));
+    let mut declared = Declared::new(children);
     for item in wanted.iter() {
         match item {
             Wanted::Ref(r) => serve_ref(reader, declaration, r, paths, index, &mut reading),
-            Wanted::Child(step, declared) => {
-                child::serve(reader, step, declared, paths, index, &mut reading);
+            Wanted::Child(step, child) => {
+                let item = (step, child);
+                child::serve(reader, item, &mut declared, paths, index, &mut reading)?;
             }
         }
     }
-    reading
+    Ok(reading)
 }
 
 fn serve_ref(

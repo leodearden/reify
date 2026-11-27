@@ -40,6 +40,7 @@ use crate::requests::{Request, Requests};
 use crate::resolve::declaration_of;
 use crate::resource::Resources;
 use crate::serve;
+use crate::serve::child::Conflict;
 use crate::serve::section::{Delivery, InFlight};
 use crate::snapshot::{Snapshot, SnapshotId, SnapshotTokens};
 use crate::store::{Store, Stored, StoredResult};
@@ -612,13 +613,22 @@ impl Executor {
             Posted::Ask(Ask::Read(wanted)) => {
                 let index = self.indexes.of(key.snapshot);
                 let declaration = task.declaration();
-                let mut reading = serve::read::serve(
+                let children = task.children();
+                let served = serve::read::serve(
                     key.path,
                     declaration,
                     wanted.into(),
+                    children,
                     &mut self.paths,
                     index,
                 );
+                let mut reading = match served {
+                    Ok(reading) => reading,
+                    Err(Conflict { step }) => {
+                        let conflict = Failure::ConflictingChild { step };
+                        return self.finish(key, Outcome::Failure(conflict));
+                    }
+                };
                 let awaited = reading.awaited();
                 if awaited.is_empty() {
                     task.answer_read(reading.reply(index));
@@ -686,13 +696,14 @@ impl Executor {
                 }
                 None => return self.miss(key),
             };
-            let reading = serve::read::serve(
-                key.path,
-                lookup.declaration(),
-                wanted,
-                &mut self.paths,
-                index,
-            );
+            let declaration = lookup.declaration();
+            let none = BTreeMap::new();
+            let paths = &mut self.paths;
+            let Ok(reading) =
+                serve::read::serve(key.path, declaration, wanted, &none, paths, index)
+            else {
+                return self.miss(key);
+            };
             let awaited = reading.awaited();
             if !awaited.is_empty() {
                 self.readings.insert(key, reading);

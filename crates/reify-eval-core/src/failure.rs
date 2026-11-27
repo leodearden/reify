@@ -8,6 +8,7 @@ use crate::description::Description;
 use crate::hash::Encoder;
 use crate::kind_id::KindId;
 use crate::reference::Ref;
+use crate::step::Step;
 
 /// A failure that follows from the inputs. None names a path (contract
 /// 5.4), so equal failures at two places have one content.
@@ -52,6 +53,9 @@ pub enum Failure {
     /// keeps the value as its body produced it, so its children answer it
     /// too and another snapshot's setting may accept the value.
     TooManyChildren { limit: u64 },
+    /// A run declared two different declarations at `step` below its own
+    /// place (contract 7.1). It names no path.
+    ConflictingChild { step: Step },
 }
 
 impl Failure {
@@ -86,6 +90,10 @@ impl Failure {
             }
             Failure::TooManyChildren { limit } => {
                 encoder.tag("failure.too_many_children").number(*limit);
+            }
+            Failure::ConflictingChild { step } => {
+                encoder.tag("failure.conflicting_child");
+                step.encode(encoder);
             }
         }
     }
