@@ -3,6 +3,7 @@
 //! interpreter, the cases and the session that runs one on a core.
 
 mod case;
+mod charge;
 mod design;
 mod faulty;
 mod fresh;

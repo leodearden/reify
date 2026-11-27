@@ -112,6 +112,22 @@ enum Declared {
     Settled(Expect),
 }
 
+/// A place a node's work reached: one a read named, or a child its run
+/// declared and read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reached {
+    Read(ModelPath),
+    Child(ModelPath),
+}
+
+impl Reached {
+    pub fn path(&self) -> &ModelPath {
+        match self {
+            Reached::Read(path) | Reached::Child(path) => path,
+        }
+    }
+}
+
 /// A read typed as the Rust type the core reads it as.
 enum Typed<T> {
     Value(T),
@@ -140,6 +156,8 @@ pub struct Reference {
     /// The distinct steps each call's run declared a child at, in the
     /// order it first declared them.
     run_children: BTreeMap<ModelPath, Vec<Step>>,
+    /// What each node's work reached, in order.
+    reached: BTreeMap<ModelPath, Vec<Reached>>,
     work_outs: usize,
 }
 
@@ -155,6 +173,7 @@ impl Reference {
             resolving: BTreeMap::new(),
             deferred: BTreeMap::new(),
             run_children: BTreeMap::new(),
+            reached: BTreeMap::new(),
             work_outs: 0,
         }
     }
@@ -245,6 +264,22 @@ impl Reference {
     /// at, in the order it first declared them; none if no run did.
     pub fn steps_declared_by(&self, call: &ModelPath) -> &[Step] {
         self.run_children.get(call).map_or(&[], Vec::as_slice)
+    }
+
+    /// Each node whose work reached a place, with what it reached in order.
+    pub fn reaches(&self) -> impl Iterator<Item = (&ModelPath, &[Reached])> {
+        self.reached
+            .iter()
+            .map(|(node, reached)| (node, reached.as_slice()))
+    }
+
+    /// What the work of the node at `node` reached, in order.
+    pub fn reached_by(&self, node: &ModelPath) -> &[Reached] {
+        self.reached.get(node).map_or(&[], Vec::as_slice)
+    }
+
+    fn reach(&mut self, node: &ModelPath, reached: Reached) {
+        self.reached.entry(node.clone()).or_default().push(reached);
     }
 
     /// Whether the reference has worked out the declaration of `path`,
@@ -408,6 +443,7 @@ impl Reference {
                         .iter()
                         .chain(&steps)
                         .fold(declarer, |at, step| at.child(step.clone()));
+                    self.reach(reader, Reached::Read(target.clone()));
                     return Ok(self.shared(&target)?.outcome.clone());
                 }
                 (Some(Bind::Passed(passed)), Some(declarer)) => {
@@ -645,6 +681,7 @@ impl Reference {
                         self.declare_child(&child, callee);
                     }
                 }
+                self.reach(at, Reached::Child(child.clone()));
                 match typed_int(self.child_answer(&child)?.outcome.clone()) {
                     Typed::Value(value) => total = add(total, value, at)?,
                     Typed::Absent => {}

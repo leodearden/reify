@@ -16,6 +16,7 @@ use reify_eval_core::{
 };
 
 use super::case::{Case, HostEvent, Then};
+use super::charge::surely_charged;
 use super::design::{Inputs, Key, ModelPath, ModelRef, ToyKind, Val, to_core};
 use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
 use super::mismatch::Mismatch;
@@ -40,42 +41,6 @@ fn blocking_read(reference: &mut Reference, cell: &ModelPath, at: &Ref) -> Optio
     }
     let read = reads.into_iter().find(|read| read.to_core() == *at)?;
     reference.read_at(cell, &read).ok()
-}
-
-/// Whether a call above `path`, or at it, declared by its run the path
-/// down to `path` and then another child: once that path is answered the
-/// call runs on for no request that waits on `path`.
-fn runs_on_after(reference: &Reference, path: &ModelPath) -> bool {
-    let mut at = path.clone();
-    while let Some((call, step)) = at.parent() {
-        let steps = reference.steps_declared_by(&call);
-        if let Some(position) = steps.iter().position(|declared| declared == step)
-            && position + 1 < steps.len()
-        {
-            return true;
-        }
-        at = call;
-    }
-    false
-}
-
-/// How many of `demanded` and the paths above them `reference` resolved:
-/// a request waits on each of them from its start.
-fn demanded_and_above<'a>(
-    reference: &Reference,
-    demanded: impl IntoIterator<Item = &'a ModelPath>,
-) -> usize {
-    let mut above = BTreeSet::new();
-    for path in demanded {
-        let mut at = Some(path.clone());
-        while let Some(path) = at {
-            at = path.parent().map(|(parent, _)| parent);
-            if reference.resolved(&path) {
-                above.insert(path);
-            }
-        }
-    }
-    above.len()
 }
 
 /// The ref to the binding `binding` itself.
@@ -452,12 +417,10 @@ impl Session {
     /// more paths resolved than its budget allows, and, for the first
     /// request on its snapshot, whose resolutions no other request shares,
     /// always then. What the demand needs is what a fresh reference
-    /// resolves answering it. A call whose run declares a child the demand
-    /// waits on and then declares more runs on for no request once that
-    /// child is answered, so what it resolves then may be charged to none:
-    /// such a demand needs at least its paths and their ancestors resolved,
-    /// and which of the rest are charged depends on the order of the core's
-    /// work.
+    /// resolves answering it. A call may run on once nothing waits on it,
+    /// so what it reaches then may be charged to no request: the demand
+    /// needs at least what is surely charged, and which of the rest are
+    /// charged depends on the order of the core's work.
     fn within_budget(&mut self, at: usize, request: RequestId) -> Result<(), Mismatch> {
         let opened = &self.requests[&request];
         let Some(budget) = opened.budget else {
@@ -474,14 +437,8 @@ impl Session {
         }
         let count = |count: usize| u64::try_from(count).expect("a count fits u64");
         let needed = count(fresh.paths_resolved());
-        let runs_on = opened
-            .demanded
-            .values()
-            .any(|path| runs_on_after(&fresh, path));
-        let least = match runs_on {
-            true => count(demanded_and_above(&fresh, opened.demanded.values())),
-            false => needed,
-        };
+        let demanded: Vec<ModelPath> = opened.demanded.values().cloned().collect();
+        let least = count(surely_charged(&fresh, &demanded));
         let allowed = match (opened.first_on_snapshot, ended) {
             (_, true) => budget < needed,
             (true, false) => budget >= least,
@@ -951,6 +908,38 @@ mod tests {
         let case = child_demanded_before_its_call_runs_on(3);
         let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
         assert_eq!(reach.count(Shape::AnsweredWithinBudget), 1, "{reach:?}");
+    }
+
+    /// `child_demanded_before_its_call_runs_on`'s design with a member
+    /// cell "m1" reading the call's first child: demanding the cell, with
+    /// `budget`.
+    fn cell_reading_a_child_before_its_call_runs_on(budget: u64) -> Case {
+        let mut case = child_demanded_before_its_call_runs_on(budget);
+        let reader = cell([declarer([step("m0"), call_step(&[2, 7], Some(0))])]);
+        let Some(Val::Members(members)) = case.inputs.get_mut(&named("s7")) else {
+            unreachable!("the design's root scope holds its members at s7")
+        };
+        members.insert(step("m1"), reader);
+        let HostEvent::Evaluate { paths, .. } = &mut case.events[0] else {
+            unreachable!("the case evaluates once")
+        };
+        *paths = vec![path("r1", [step("m1")])];
+        case
+    }
+
+    /// The cell is answered once r1, the cell, the call and its first
+    /// child are resolved; the call then declares its second child for no
+    /// request, so a budget of four is enough though answering the cell
+    /// and the call needs five (found while tightening the budget check).
+    #[test]
+    fn a_cell_reading_a_child_answered_before_its_call_runs_on_is_answered_within_the_paths_before_it()
+     {
+        let case = cell_reading_a_child_before_its_call_runs_on(4);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::AnsweredWithinBudget), 1, "{reach:?}");
+        let case = cell_reading_a_child_before_its_call_runs_on(3);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::EndedByBudget), 1, "{reach:?}");
     }
 
     #[test]
