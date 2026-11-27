@@ -27,6 +27,9 @@ pub(crate) fn serve(
                 Some(input) => reading.settled(input.outcome(), Content::of_input(input)),
                 None => absent(&mut reading),
             },
+            Target::Constant(constant) => {
+                reading.settled(constant.outcome(), Content::of_input(&constant));
+            }
             Target::Node(node) => match index.entry(node) {
                 Some(entry) => reading.settled(entry.outcome.clone(), entry.content),
                 None => reading.awaits(node),

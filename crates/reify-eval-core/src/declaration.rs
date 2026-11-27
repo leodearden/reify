@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::hash::{Encoder, Hash128};
-use crate::input::InputKey;
+use crate::input::{Input, InputKey};
 use crate::kind_id::KindId;
 use crate::reference::Ref;
 use crate::step::Step;
@@ -24,6 +24,9 @@ pub enum Binding {
     /// What the ref names when read by the bound node's declarer: one of
     /// the declarer's own bindings, then steps down (contract 2.1).
     Passed(Ref),
+    /// A value with its content, held in the declaration itself (contract
+    /// 2.1). It declares no children, so steps below it name nothing.
+    Constant(Input),
 }
 
 impl Declaration {
@@ -80,6 +83,11 @@ impl Binding {
             Binding::Passed(passed) => {
                 encoder.tag("binding.passed");
                 passed.encode(encoder);
+            }
+            Binding::Constant(constant) => {
+                encoder
+                    .tag("binding.constant")
+                    .hash(constant.tagged_content());
             }
         }
     }

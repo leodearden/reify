@@ -1,10 +1,13 @@
 //! A snapshot input (contract 3.1): a value under a key. A root's input is
 //! its declaration (decision D11); every other input is named by the host.
+//! A constant a declaration binds (contract 2.1) is a value of the same
+//! form, held in the declaration itself.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use crate::hash::{Encoder, Hash128};
-use crate::outcome::{Erased, Outcome, Value};
+use crate::outcome::{Erased, Outcome, Value, tagged_content};
 use crate::path::Root;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -64,10 +67,10 @@ impl InputKey {
     }
 }
 
-/// A snapshot input's value, with the content its host gives it (PRD D4):
-/// a hash of everything a reader can see of the value, as a kind's
-/// `content` is. The core tags it with the value's type, so two inputs of
-/// one type with equal content are the same input.
+/// A snapshot input's value, or a constant's, with the content its host
+/// gives it (PRD D4): a hash of everything a reader can see of the value,
+/// as a kind's `content` is. The core tags it with the value's type, so two
+/// inputs of one type with equal content are the same input.
 #[derive(Debug, Clone)]
 pub struct Input {
     value: Arc<Erased>,
@@ -86,12 +89,19 @@ impl Input {
         Outcome::Value(Arc::clone(&self.value))
     }
 
-    /// The content the host gave, untagged.
-    pub(crate) fn leaf_content(&self) -> Hash128 {
-        self.content
-    }
-
-    pub(crate) fn value(&self) -> &Erased {
-        &*self.value
+    /// The content the host gave, tagged with the value's type.
+    pub(crate) fn tagged_content(&self) -> Hash128 {
+        tagged_content(&*self.value, self.content)
     }
 }
+
+/// Two inputs are equal where their content is: of one type, with equal
+/// host-given content.
+impl PartialEq for Input {
+    fn eq(&self, other: &Self) -> bool {
+        let (value, other_value): (&dyn Any, &dyn Any) = (&*self.value, &*other.value);
+        value.type_id() == other_value.type_id() && self.content == other.content
+    }
+}
+
+impl Eq for Input {}
