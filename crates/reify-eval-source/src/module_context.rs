@@ -4,9 +4,9 @@
 
 use std::collections::HashMap;
 
-use reify_ast::ParsedModule;
+use reify_ast::{Declaration, ParsedModule, TraitDecl};
 use reify_compiler::name_env::{self, Origin};
-use reify_compiler::{CompiledModule, EntityKind, TopologyTemplate};
+use reify_compiler::{CompiledModule, CompiledTrait, EntityKind, TopologyTemplate};
 use reify_core::{DefinitionName, ModuleName, ModulePath, PathName};
 use reify_ir::{CompiledFunction, EnumDef};
 
@@ -18,6 +18,8 @@ pub(crate) struct ModuleContext<'m> {
     compiled: &'m CompiledModule,
     /// Where the definition each name binds to is declared.
     definitions: HashMap<&'m str, Origin<'m>>,
+    /// The trait each name binds to, and where it is declared.
+    traits: HashMap<&'m str, (&'m CompiledTrait, Origin<'m>)>,
     /// The templates an expression's constructor call or sub read can name:
     /// the module's own, and every prelude structure that wins its name.
     templates: HashMap<String, &'m TopologyTemplate>,
@@ -55,6 +57,15 @@ impl<'m> ModuleContext<'m> {
             })
             .map(|candidate| (candidate.definition.name.clone(), candidate.definition))
             .collect();
+        let traits =
+            name_env::bind::<CompiledTrait, _>(&compiled.trait_defs, prelude.iter().copied())
+                .winning_candidates()
+                .iter()
+                .map(|candidate| {
+                    let declared = candidate.definition;
+                    (declared.name.as_str(), (declared, candidate.origin))
+                })
+                .collect();
         let enums = name_env::bind::<EnumDef, _>(&compiled.enum_defs, prelude.iter().copied())
             .winners()
             .cloned()
@@ -69,6 +80,7 @@ impl<'m> ModuleContext<'m> {
             parsed,
             compiled,
             definitions,
+            traits,
             templates,
             enums,
             functions,
@@ -93,6 +105,10 @@ impl<'m> ModuleContext<'m> {
         self.parsed
     }
 
+    pub(crate) fn path(&self) -> &'m ModulePath {
+        &self.parsed.path
+    }
+
     /// The qualified name of a definition this module declares.
     pub(crate) fn own_definition(&self, name: &str) -> DefinitionName {
         DefinitionName::new(self.name.clone(), definition_segment(name))
@@ -107,11 +123,82 @@ impl<'m> ModuleContext<'m> {
     /// bound as the existing compile binds it: this module's own, then its
     /// imports', then the standard library's.
     pub(crate) fn definition_named(&self, written: &str) -> Option<DefinitionName> {
-        let module = match self.definitions.get(written)?.module() {
+        let origin = self.definitions.get(written)?;
+        Some(self.qualified(*origin, written))
+    }
+
+    /// The qualified name of the definition `name` declared at `origin`, as
+    /// this module's bindings report it.
+    fn qualified(&self, origin: Origin<'_>, name: &str) -> DefinitionName {
+        let module = match origin.module() {
             None => self.name.clone(),
             Some(path) => Some(module_name(path)),
         };
-        Some(DefinitionName::new(module, definition_segment(written)))
+        DefinitionName::new(module, definition_segment(name))
+    }
+
+    /// The declaration of the trait `name` this module declares.
+    fn own_trait_decl(&self, name: &str) -> Option<&'m TraitDecl> {
+        self.parsed.declarations.iter().find_map(|decl| match decl {
+            Declaration::Trait(declared) if declared.name == name => Some(declared),
+            _ => None,
+        })
+    }
+}
+
+/// Every module a program's names can bind into: its user modules and the
+/// standard library.
+pub(crate) struct ModuleSet<'p, 'm> {
+    modules: Vec<&'p ModuleContext<'m>>,
+}
+
+/// A trait a written name binds to: its qualified name, its declaration and
+/// compile, and the module that declares it, against which its own
+/// refinements resolve.
+pub(crate) struct ResolvedTrait<'p, 'm> {
+    pub(crate) name: DefinitionName,
+    pub(crate) decl: &'m TraitDecl,
+    pub(crate) compiled: &'m CompiledTrait,
+    pub(crate) module: &'p ModuleContext<'m>,
+}
+
+impl<'p, 'm> ModuleSet<'p, 'm> {
+    pub(crate) fn new(modules: Vec<&'p ModuleContext<'m>>) -> Self {
+        Self { modules }
+    }
+
+    /// The trait `written` names in `module`, bound as the existing compile
+    /// binds it, with the declaration it was compiled from; `None` when the
+    /// name binds to no trait.
+    pub(crate) fn trait_named(
+        &self,
+        module: &'p ModuleContext<'m>,
+        written: &str,
+    ) -> Option<ResolvedTrait<'p, 'm>> {
+        let (compiled, origin) = *module.traits.get(written)?;
+        let declaring = match origin.module() {
+            None => module,
+            Some(path) => self
+                .modules
+                .iter()
+                .copied()
+                .find(|m| m.path() == path)
+                .unwrap_or_else(|| {
+                    panic!("the trait `{written}` binds into `{path}`, a module of the program")
+                }),
+        };
+        let decl = declaring.own_trait_decl(written).unwrap_or_else(|| {
+            panic!(
+                "the compiled trait `{written}` of `{}` has a declaration there",
+                declaring.path()
+            )
+        });
+        Some(ResolvedTrait {
+            name: module.qualified(origin, written),
+            decl,
+            compiled,
+            module: declaring,
+        })
     }
 }
 

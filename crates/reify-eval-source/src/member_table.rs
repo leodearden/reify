@@ -1,17 +1,19 @@
 //! A definition's member table: every member it declares or inherits, in
 //! order, each with its kind and declared type.
 
-use reify_ast::{Expr, MemberDecl, SubDecl, TypeExprKind};
+use reify_ast::{Expr, MemberDecl, SubDecl, TraitBoundRef, TypeExprKind};
 use reify_compiler::{
-    CompilationScope, SourceUnitNames, SourceUnitSpec, TopologyTemplate, compile_source_unit,
+    CompilationScope, CompiledTrait, DefaultKind, RequirementKind, SourceUnitNames, SourceUnitSpec,
+    TopologyTemplate, compile_source_unit,
 };
 use reify_core::{
     DefinitionName, Diagnostic, DiagnosticCode, DiagnosticLabel, PathName, SourceSpan, Type,
 };
 
 use crate::definition_scope::definition_scope;
+use crate::inherited_members::inherited_members;
 use crate::member_kind::{self, MemberKind};
-use crate::module_context::ModuleContext;
+use crate::module_context::{ModuleContext, ModuleSet};
 
 /// One member of a definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,24 +83,67 @@ impl<'t> IntoIterator for &'t MemberTable {
     }
 }
 
-/// The table of the definition `definition`, whose own body is `members` and
-/// whose existing-compile template is `template`.
-pub(crate) fn lower_definition(
-    definition: &DefinitionName,
-    members: &[MemberDecl],
+/// A definition as its table is lowered from it: its qualified name, the
+/// traits it is written to conform to, and its own body.
+pub(crate) struct DefinitionBody<'a> {
+    pub(crate) name: &'a DefinitionName,
+    pub(crate) bounds: &'a [TraitBoundRef],
+    pub(crate) members: &'a [MemberDecl],
+}
+
+/// The table of `definition`, declared in `module`, whose existing-compile
+/// template is `template`: the members it inherits from the traits it
+/// conforms to, then its own.
+pub(crate) fn lower_definition<'p, 'm>(
+    definition: &DefinitionBody<'_>,
     template: &TopologyTemplate,
-    module: &ModuleContext<'_>,
+    module: &'p ModuleContext<'m>,
+    modules: &ModuleSet<'p, 'm>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> MemberTable {
+    let inherited = inherited_members(
+        definition.name,
+        definition.bounds,
+        module,
+        modules,
+        diagnostics,
+    );
     let scope = definition_scope(template, module.templates());
     let mut lowering = Lowering {
-        definition,
+        definition: definition.name,
         template,
         scope: &scope,
         module,
         diagnostics,
     };
-    lowering.table(members, &MemberOrigin::Own)
+    let mut members: Vec<Member> = inherited
+        .iter()
+        .map(|member| {
+            let written = WrittenIn {
+                origin: MemberOrigin::Inherited(member.from.clone()),
+                names: member.declared_in,
+                trait_declaration: Some(member.declared_by),
+            };
+            lowering.member(member.decl, &written)
+        })
+        .collect();
+    let own = WrittenIn {
+        origin: MemberOrigin::Own,
+        names: module,
+        trait_declaration: None,
+    };
+    members.extend(lowering.table(definition.members, &own).members);
+    MemberTable { members }
+}
+
+/// Where the members being lowered are written.
+struct WrittenIn<'l, 'm> {
+    origin: MemberOrigin,
+    /// The module whose bindings the members' written names resolve in.
+    names: &'l ModuleContext<'m>,
+    /// The trait whose body declares the members; `None` for the
+    /// definition's own.
+    trait_declaration: Option<&'m CompiledTrait>,
 }
 
 /// What lowering one definition's members reads and reports into.
@@ -107,31 +152,33 @@ struct Lowering<'l, 'm> {
     template: &'l TopologyTemplate,
     /// The scope the definition's expressions compile in.
     scope: &'l CompilationScope<'l>,
+    /// The module declaring the definition, whose enums and functions its
+    /// expressions compile against.
     module: &'l ModuleContext<'m>,
     diagnostics: &'l mut Vec<Diagnostic>,
 }
 
 impl Lowering<'_, '_> {
-    fn table(&mut self, members: &[MemberDecl], origin: &MemberOrigin) -> MemberTable {
+    fn table(&mut self, members: &[MemberDecl], written: &WrittenIn<'_, '_>) -> MemberTable {
         MemberTable {
             members: members
                 .iter()
-                .map(|decl| self.member(decl, origin))
+                .map(|decl| self.member(decl, written))
                 .collect(),
         }
     }
 
-    fn member(&mut self, decl: &MemberDecl, origin: &MemberOrigin) -> Member {
+    fn member(&mut self, decl: &MemberDecl, written: &WrittenIn<'_, '_>) -> Member {
         let (name, guard, declared_type, branches) = match decl {
             MemberDecl::Param(param) => (
                 Some(param.name.as_str()),
                 param.where_clause.as_ref(),
-                self.cell_type(&param.name, param.span),
+                self.cell_type(&param.name, param.span, written),
                 Vec::new(),
             ),
             MemberDecl::Let(binding) => {
                 let declared_type = match binding.type_expr {
-                    Some(_) => self.cell_type(&binding.name, binding.span),
+                    Some(_) => self.cell_type(&binding.name, binding.span, written),
                     None => DeclaredType::Value(self.expression_type(&binding.value)),
                 };
                 (
@@ -162,7 +209,7 @@ impl Lowering<'_, '_> {
                 (
                     Some(sub.name.as_str()),
                     sub.where_clause.as_ref(),
-                    self.sub_definition(&sub.name, element, sub.span),
+                    self.sub_definition(&sub.name, element, sub.span, written.names),
                     Vec::new(),
                 )
             }
@@ -183,8 +230,8 @@ impl Lowering<'_, '_> {
                 None,
                 DeclaredType::None,
                 vec![
-                    self.table(&group.members, origin),
-                    self.table(&group.else_members, origin),
+                    self.table(&group.members, written),
+                    self.table(&group.else_members, written),
                 ],
             ),
             MemberDecl::MatchArmDeclGroup(group) => (
@@ -194,7 +241,7 @@ impl Lowering<'_, '_> {
                 group
                     .arms
                     .iter()
-                    .map(|arm| self.table(std::slice::from_ref(arm.member.as_ref()), origin))
+                    .map(|arm| self.table(std::slice::from_ref(arm.member.as_ref()), written))
                     .collect(),
             ),
             MemberDecl::AssociatedType(associated) => (
@@ -243,16 +290,29 @@ impl Lowering<'_, '_> {
             name: name.map(identifier),
             kind,
             declared_type,
-            origin: origin.clone(),
+            origin: written.origin.clone(),
             guarded: guard.is_some(),
             branches,
         }
     }
 
     /// The existing compile's resolution of the written type of the cell
-    /// `name`; an unresolved type is reported and kept as [`Type::Error`].
-    fn cell_type(&mut self, name: &str, span: SourceSpan) -> DeclaredType {
-        match template_cell_type(self.template, name) {
+    /// `name`: the definition's cell of that name, or for a member a trait
+    /// declares and the definition has no cell of, the trait's. An
+    /// unresolved type is reported and kept as [`Type::Error`].
+    fn cell_type(
+        &mut self,
+        name: &str,
+        span: SourceSpan,
+        written: &WrittenIn<'_, '_>,
+    ) -> DeclaredType {
+        let resolved = match template_cell_type(self.template, name) {
+            Some(ty) => Some(ty),
+            None => written
+                .trait_declaration
+                .and_then(|declared| trait_cell_type(declared, name)),
+        };
+        match resolved {
             Some(ty) if *ty != Type::Error => DeclaredType::Value(ty.clone()),
             _ => {
                 self.report(
@@ -284,9 +344,16 @@ impl Lowering<'_, '_> {
         .result_type
     }
 
-    /// The definition the sub `name` instantiates, written `element`.
-    fn sub_definition(&mut self, name: &str, element: &str, span: SourceSpan) -> DeclaredType {
-        match self.module.definition_named(element) {
+    /// The definition the sub `name` instantiates, written `element` in a
+    /// body of the module `names`.
+    fn sub_definition(
+        &mut self,
+        name: &str,
+        element: &str,
+        span: SourceSpan,
+        names: &ModuleContext<'_>,
+    ) -> DeclaredType {
+        match names.definition_named(element) {
             Some(definition) => DeclaredType::Definition(definition),
             None => {
                 self.report(
@@ -330,6 +397,32 @@ fn template_cell_type<'t>(template: &'t TopologyTemplate, name: &str) -> Option<
                 .and_then(|group| group.arms.first())
                 .map(|arm| &arm.arm_type)
         })
+}
+
+/// The type the trait `declared` gives its `param` or typed `let` `name`,
+/// whether it requires the member or provides a default.
+fn trait_cell_type<'t>(declared: &'t CompiledTrait, name: &str) -> Option<&'t Type> {
+    let required = declared
+        .required_members
+        .iter()
+        .filter(|requirement| requirement.name == name)
+        .find_map(|requirement| match &requirement.kind {
+            RequirementKind::Param(ty) | RequirementKind::Let(ty) => Some(ty),
+            RequirementKind::Sub(_) | RequirementKind::Fn(_) | RequirementKind::AssocType(_) => {
+                None
+            }
+        });
+    required.or_else(|| {
+        declared
+            .defaults
+            .iter()
+            .filter(|default| default.name.as_deref() == Some(name))
+            .find_map(|default| match &default.kind {
+                DefaultKind::Param { cell_type, .. } => Some(cell_type),
+                DefaultKind::Let { cell_type, .. } => cell_type.as_ref(),
+                DefaultKind::Constraint(_) | DefaultKind::Fn(_) | DefaultKind::AssocType(_) => None,
+            })
+    })
 }
 
 /// The element a keyed sub `name : Keyed<Element>` holds.

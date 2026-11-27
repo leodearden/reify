@@ -486,3 +486,30 @@ structure def Hot : TemperatureDependent { param t : Length = 1mm }
         "a stdlib trait's members are inherited, naming the trait under its std module"
     );
 }
+
+#[test]
+fn a_bound_naming_no_trait_is_reported_and_the_other_traits_still_inherited() {
+    let output = accepted(
+        "
+trait Sized { param size : Length = 1mm }
+structure def Odd : Nonsuch + Sized { param t : Length = 1mm }
+",
+    );
+    assert_eq!(
+        provenance(table(&output, "Odd")),
+        vec![
+            (
+                Some("size"),
+                MemberKind::Cell,
+                inherited_from(entry_definition("Sized"))
+            ),
+            (Some("t"), MemberKind::Cell, MemberOrigin::Own),
+        ],
+        "a bound naming no trait contributes nothing, and the walk goes on"
+    );
+    assert!(
+        error_codes(&output).contains(&Some(DiagnosticCode::UnresolvedTrait)),
+        "a bound naming no trait is an UnresolvedTrait error: {:#?}",
+        output.diagnostics
+    );
+}

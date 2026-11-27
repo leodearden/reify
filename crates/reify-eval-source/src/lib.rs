@@ -9,6 +9,7 @@
 
 mod definition_list;
 mod definition_scope;
+mod inherited_members;
 mod member_kind;
 mod member_table;
 mod module_context;
@@ -57,7 +58,11 @@ pub enum SourceRefusal {
 pub fn compile_entry(entry_path: &Path, entry_source: &str) -> Result<SourceOutput, SourceRefusal> {
     let program = program_modules::ProgramModules::compile(entry_path, entry_source)?;
     let mut diagnostics = Vec::new();
-    let mut definitions = program.lower(stdlib_modules::compiled(), &mut diagnostics)?;
+    let mut definitions = program.lower(
+        stdlib_modules::compiled(),
+        stdlib_modules::contexts()?,
+        &mut diagnostics,
+    )?;
     if !program.entry_has_no_prelude() {
         let stdlib = stdlib_modules::lowered().as_ref().map_err(Clone::clone)?;
         definitions.extend(stdlib.definitions.iter().cloned());

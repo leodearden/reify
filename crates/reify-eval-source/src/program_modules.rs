@@ -18,7 +18,7 @@ use reify_ir::{
 
 use crate::SourceRefusal;
 use crate::definition_list::{self, Definition};
-use crate::module_context::{ModuleContext, has_no_prelude, module_name};
+use crate::module_context::{ModuleContext, ModuleSet, has_no_prelude, module_name};
 
 /// The user modules of one program: the entry first, then every module it
 /// imports, directly or not, in the order the program compiled them.
@@ -135,18 +135,30 @@ impl ProgramModules {
     }
 
     /// The definitions of every user module, the entry's first, each module
-    /// resolving against `stdlib` and then its own imports.
+    /// resolving against `stdlib` and then its own imports; the traits they
+    /// conform to may be declared in any user module or in `stdlib_contexts`.
     pub(crate) fn lower(
         &self,
         stdlib: &[CompiledModule],
+        stdlib_contexts: &[ModuleContext<'_>],
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<Vec<Definition>, SourceRefusal> {
+        let contexts: Vec<ModuleContext<'_>> = self
+            .modules
+            .iter()
+            .map(|module| {
+                let tier = stdlib.iter().chain(&module.imports).collect();
+                ModuleContext::new(module.name.clone(), &module.parsed, &module.compiled, tier)
+            })
+            .collect();
+        let modules = ModuleSet::new(contexts.iter().chain(stdlib_contexts).collect());
         let mut definitions = Vec::new();
-        for module in &self.modules {
-            let tier = stdlib.iter().chain(&module.imports).collect();
-            let context =
-                ModuleContext::new(module.name.clone(), &module.parsed, &module.compiled, tier);
-            definitions.extend(definition_list::lower_module(&context, diagnostics)?);
+        for context in &contexts {
+            definitions.extend(definition_list::lower_module(
+                context,
+                &modules,
+                diagnostics,
+            )?);
         }
         Ok(definitions)
     }
