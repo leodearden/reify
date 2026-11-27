@@ -3,6 +3,7 @@
 
 use std::fmt;
 
+use reify_core::InstancePath;
 use serde::Deserialize;
 
 use crate::expectation::Expectation;
@@ -53,7 +54,8 @@ pub struct Candidates {
 #[serde(deny_unknown_fields)]
 #[expect(dead_code, reason = "read once entries run")] // debt: ticket tkt_0RXF3RZ3T23TSSXGWCWN0S20BF
 pub struct CandidateList {
-    pub path: String,
+    #[serde(deserialize_with = "crate::path_text::path")]
+    pub path: InstancePath,
     pub values: Vec<ExpectedValue>,
 }
 
