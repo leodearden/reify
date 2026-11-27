@@ -2,6 +2,7 @@
 //! loads every entry under tests/corpus/ and checks the corpus is valid.
 
 mod bookkeeping;
+mod compile_step;
 mod corpus_tree;
 mod entry;
 mod expectation;
