@@ -2,7 +2,7 @@
 //! call of design.rs's constructors or an enum variant, so a failing case
 //! found by the random run can be pasted in as a named test.
 
-use reify_eval_core::{Limit, Step};
+use reify_eval_core::{Limit, Step, StepKey};
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{
@@ -58,9 +58,9 @@ fn list(items: impl Iterator<Item = String>) -> String {
 }
 
 fn step_text(step: &Step) -> String {
-    match step {
-        Step::Named(name) => format!("step({:?})", &**name),
-        Step::Index(index) => format!("index({index})"),
+    match step.key() {
+        StepKey::Name(name) => format!("step({:?})", &**name),
+        StepKey::Index(index) => format!("index({index})"),
     }
 }
 
