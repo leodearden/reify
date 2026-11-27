@@ -3909,6 +3909,7 @@ impl<'a> Lowering<'a> {
             is_priv: self.has_priv_keyword(node),
             members,
             frame_expr,
+            where_clause: self.lower_where_clause(node),
             span: self.span(node),
             content_hash: self.content_hash(node),
         })

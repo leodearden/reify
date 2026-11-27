@@ -84,7 +84,8 @@ pub fn make_param(name: &str, span: SourceSpan) -> MemberDecl {
 /// Build a `MemberDecl::Port` with the given `name` and `span`.
 ///
 /// `direction` is `None`; `type_name` is `"SomePort"`; `members` and
-/// `frame_expr` are empty/`None`; `content_hash` is [`dummy_hash()`].
+/// `frame_expr` and `where_clause` are empty/`None`; `content_hash` is
+/// [`dummy_hash()`].
 pub fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
     MemberDecl::Port(PortDecl {
         name: name.to_string(),
@@ -93,6 +94,7 @@ pub fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
         is_priv: false,
         members: Vec::new(),
         frame_expr: None,
+        where_clause: None,
         span,
         content_hash: dummy_hash(),
     })

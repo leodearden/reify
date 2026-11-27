@@ -817,6 +817,9 @@ pub struct PortDecl {
     pub is_priv: bool,
     pub members: Vec<MemberDecl>,
     pub frame_expr: Option<Expr>,
+    /// The port's own `where` guard: `port p : T where flag`, or
+    /// `port p : T { … } where flag`. The old compile does not read it.
+    pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
@@ -2550,6 +2553,7 @@ mod member_test_fixtures {
             is_priv: false,
             members,
             frame_expr: None,
+            where_clause: None,
             span: SourceSpan::new(0, 1),
             content_hash: ContentHash(0),
         })

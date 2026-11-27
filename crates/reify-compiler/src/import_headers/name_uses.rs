@@ -744,6 +744,7 @@ impl Collector {
             is_priv: _,
             members,
             frame_expr,
+            where_clause,
             span: _,
             content_hash: _,
         } = port;
@@ -754,6 +755,7 @@ impl Collector {
         if let Some(frame) = frame_expr {
             self.visit_expr(frame);
         }
+        self.where_clause(where_clause);
     }
 
     fn connect(&mut self, connect: &ConnectDecl) {
