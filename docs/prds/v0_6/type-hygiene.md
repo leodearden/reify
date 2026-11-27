@@ -82,7 +82,7 @@ For `BinOp::{And,Or}`: non-Bool, non-Error/TypeParam operand → **error** (gene
 
 ### 7.2 Polymorphic-zero contract (compile-time literal rewrite)
 
-In a BinOp of comparison or Add/Sub kind, if exactly one operand is a syntactic literal `0`/`0.0` (optionally unary-negated) typed dimensionless and the other types `Scalar<D>` (D ≠ dimensionless): rewrite the literal to `Scalar<D>(0.0)` (type + value). Applies before the §7.1 guard. Never fires for non-zero literals, non-literal zeros, or non-scalar siblings. Runtime layers see an ordinary dimensioned scalar.
+In a BinOp of comparison or Add/Sub kind, if exactly one operand is a syntactic literal `0`/`0.0` (optionally unary-negated) typed dimensionless and the other types `Scalar<D>` (D ≠ dimensionless): rewrite the literal to `Scalar<D>(0.0)` (type + value). Applies before the §7.1 guard. Never fires for non-zero literals, non-literal zeros, or non-scalar siblings. Runtime layers see an ordinary dimensioned scalar. *Amendment (#10398):* a `TypeParam` sibling also adopts, by rewriting the zero to `sibling * 0` (still compile time, value layer untouched); the mechanism is in `docs/notes/dimensioned-zero-coercion.md`.
 
 ### 7.3 Value-level acceptance contract (eval layer)
 
