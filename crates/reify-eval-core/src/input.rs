@@ -22,12 +22,15 @@ pub enum InputKey {
 pub enum Limit {
     /// How many steps below its root a node may be.
     Depth,
+    /// How many children a node's value may declare.
+    ChildrenPerNode,
 }
 
 impl Limit {
     fn name(self) -> &'static str {
         match self {
             Limit::Depth => "depth",
+            Limit::ChildrenPerNode => "children_per_node",
         }
     }
 }

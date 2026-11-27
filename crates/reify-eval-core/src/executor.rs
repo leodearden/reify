@@ -305,6 +305,8 @@ impl Executor {
         while let Some(work) = queue.pop_front() {
             match work {
                 Work::Answered(key, entry) => {
+                    let limits = self.indexes.of(key.snapshot).limits();
+                    let entry = limit_check::children(entry, limits, &self.kinds);
                     let answer = Answer::Final(entry.outcome.clone());
                     let answered = finish::answered(
                         key,

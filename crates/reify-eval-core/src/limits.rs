@@ -11,6 +11,7 @@ use crate::outcome::{Erased, Value};
 
 pub(crate) struct Limits {
     depth: Option<u64>,
+    children_per_node: Option<u64>,
 }
 
 impl Limits {
@@ -21,12 +22,18 @@ impl Limits {
     pub fn of(inputs: &OrdMap<InputKey, Input>) -> Self {
         Self {
             depth: setting(inputs, Limit::Depth),
+            children_per_node: setting(inputs, Limit::ChildrenPerNode),
         }
     }
 
     /// How many steps below its root a node may be.
     pub fn depth(&self) -> Option<u64> {
         self.depth
+    }
+
+    /// How many children a node's value may declare.
+    pub fn children_per_node(&self) -> Option<u64> {
+        self.children_per_node
     }
 }
 

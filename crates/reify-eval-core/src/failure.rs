@@ -38,6 +38,12 @@ pub enum Failure {
     /// one value. A path is given it in the snapshot's index only, and
     /// nothing is filed in the store for it.
     TooDeep { limit: u64 },
+    /// The node's value declares more children than the snapshot's
+    /// children setting, `limit`, allows (contract 7.6). It names no path.
+    /// The node is given it in the snapshot's index only, while the store
+    /// keeps the value as its body produced it, so its children answer it
+    /// too and another snapshot's setting may accept the value.
+    TooManyChildren { limit: u64 },
 }
 
 impl Failure {
@@ -61,6 +67,9 @@ impl Failure {
             }
             Failure::TooDeep { limit } => {
                 encoder.tag("failure.too_deep").number(*limit);
+            }
+            Failure::TooManyChildren { limit } => {
+                encoder.tag("failure.too_many_children").number(*limit);
             }
         }
     }
