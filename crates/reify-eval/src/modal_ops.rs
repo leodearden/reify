@@ -2137,6 +2137,10 @@ fn mechanism_shift_unsupported_diagnostic(shift_hz: f64) -> Option<Diagnostic> {
     })
 }
 
+/// The stdlib fn [`run_mechanism_modal`] implements, named in its decode
+/// diagnostics.
+const MECHANISM_MODAL_ANALYSIS: &str = "mechanism_modal_analysis";
+
 /// Core implementation for the `modal::mechanism_modal` compute target (task
 /// #4271).
 ///
@@ -2188,10 +2192,6 @@ fn mechanism_shift_unsupported_diagnostic(shift_hz: f64) -> Option<Diagnostic> {
 /// Closed-chain mechanisms (any non-empty `loop_closures` list) are not
 /// supported and return the degenerate result. Only open-chain mechanisms are
 /// handled.
-/// The stdlib fn [`run_mechanism_modal`] implements, named in its decode
-/// diagnostics.
-const MECHANISM_MODAL_ANALYSIS: &str = "mechanism_modal_analysis";
-
 fn run_mechanism_modal(
     value_inputs: &[Value],
     _prior_warm_state: Option<&OpaqueState>,
