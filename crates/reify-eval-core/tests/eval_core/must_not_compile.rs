@@ -5,15 +5,16 @@
 
 #[test]
 fn a_body_cannot_wait_in_a_section_or_carry_the_resource_out_but_two_loopholes_compile() {
-    let must_not_compile = glob_of_programs("tests/must_not_compile", 5);
-    let loopholes = glob_of_programs("tests/loopholes", 2);
+    let must_not_compile = glob_of_exactly("tests/must_not_compile", 6);
+    let loopholes = glob_of_exactly("tests/loopholes", 2);
     let programs = trybuild::TestCases::new();
     programs.compile_fail(must_not_compile);
     programs.pass(loopholes);
 }
 
-/// trybuild passes a glob that matches nothing, so the count PRD 12.2 gives is checked first.
-fn glob_of_programs(directory: &str, count: usize) -> String {
+/// trybuild passes a glob that matches no file, so this fails unless `directory` holds exactly
+/// `count` programs.
+fn glob_of_exactly(directory: &str, count: usize) -> String {
     let paths: std::io::Result<Vec<_>> = std::fs::read_dir(directory)
         .and_then(|entries| entries.map(|entry| Ok(entry?.path())).collect());
     let found = paths
