@@ -5012,6 +5012,13 @@ entries:
     manifested_phase: ops
     note: 'The same bounded watcher-rearm wait (--timeout 3600, Bash timeout 3660000) is re-issued unchanged after each WATCHER_REARM_OUTCOME: CEILING exit=124, at turns 119, 161, and 200. The digest''s Retry Loops section records Bash x6, but only three designed-outcome results are listed.'
     evidence_quote: 'WATCHER_REARM_OUTCOME: CEILING exit=124'
+  - date: '2026-11-26'
+    project: reify
+    session: 184ec9c8-83b6-4772-9bc6-be48c98cc730
+    origin_phase: ops
+    manifested_phase: ops
+    note: The watcher re-issues the same bounded rearm command (--timeout 3600) after each CEILING exit 124 with no change in approach, matching the entry's mechanism.
+    evidence_quote: '{"command": "cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 3600" ... WATCHER_REARM_OUTCOME: CEILING exit=124 (record 178)'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -9441,6 +9448,13 @@ entries:
     manifested_phase: unknown
     note: A Bash call chained `sleep 60` with `cat` of a background task's output file was blocked by the anti-chaining guard, which is the mechanism this entry names.
     evidence_quote: 'Blocked: sleep 60 followed by: cat /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-4/c1e6cbc6-a2c4-4ae8-b3fa-6605e04989e3/tasks/bjt1uqzt8.output'
+  - date: '2026-11-26'
+    project: reify
+    session: 43506180-5d90-4d27-9e76-9cea2e0d177d
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest shows a `sleep 60` chained with `cat` of a background task's output file, which the sandbox guard blocks. This is the anti-chaining guard blocking a sleep+poll chain for background task output.
+    evidence_quote: 'Blocked: sleep 60 followed by: cat /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-18/43506180-5d90-4d27-9e76-9cea2e0d177d/tasks/bn6zuz6dw.output. To wait for a condition, use Monitor with an until-loop'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -9879,6 +9893,13 @@ entries:
     manifested_phase: unknown
     note: The guard blocked a sleep-120 chain used to poll a background run's log, and the block message says to use Monitor or run_in_background instead.
     evidence_quote: '<tool_use_error>Blocked: sleep 120 followed by: cd /tmp/instance-design/failing wc -l run.log awk ''{print $1}'' run.log sort uniq -c uptime. To wait for a condition, use Monitor with an until-loop'
+  - date: '2026-11-26'
+    project: reify
+    session: 030513d6-92f6-409a-ae3f-794d73528b66/subagents/agent-ac2128c1d2a050c10
+    origin_phase: recon
+    manifested_phase: recon
+    note: The guard blocked a sleep-then-check chain (sleep 80; date -u) used to wait on a condition, which is the polling-chain mechanism this entry names.
+    evidence_quote: 'Blocked: sleep 80 followed by: date -u. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.'
 - id: entry-cand-20260801-5
   title: Bash `rg` invocation fails — ripgrep binary absent from worktree environment
   severity: medium
@@ -13839,6 +13860,13 @@ entries:
     manifested_phase: recon
     note: 'A multi-command Bash call ran `git grep` with a context flag (-A12) placed where git read it as a revision, not an option. The command exited 128 with ''unable to resolve revision: -A12'', which matches the entry''s flag-misplacement and exit-128 mechanism. The full command is truncated in the digest, so the exact argument order is inferred from the error.'
     evidence_quote: 'fatal: unable to resolve revision: -A12'
+  - date: '2026-11-26'
+    project: reify
+    session: d38922ae-d0a3-437c-aeff-dcffda15fc59/subagents/agent-a3efd82b981b0f972
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Context flag -A8 is placed after the git grep pattern and before --, so git parses it as a revision and exits 128. The same mechanism recurs at record 307 with -A12.
+    evidence_quote: 'fatal: unable to resolve revision: -A8'
   filing: withheld
 - id: entry-cand-20261106-1
   title: Ratchet failure points to a --help diagnostic the agent cannot run under don't-ask permission mode
@@ -33590,6 +33618,19 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: The docs from step-10 said every `reify <command>` works as `./Reify_<version>_amd64.AppImage cli <command>`. That's wrong for `gui` and `gui-debug`. Before running the bundled `reify`, the `cli` path moves back to the directory the AppImage was run from. `reify gui` then starts the bundled GUI from that directory, the bundled WebKit can't find its helper programs, and the GUI exits 127.
+- id: cand-20261126-1
+  title: Bounded rearm wait suppressed by appending pending escalation IDs to the exclude file instead of handling them
+  cause: The agent repeatedly appends deliberately-pending escalation IDs to .watcher-rearm-exclude-l1 to make the bounded watcher wait proceed past the CEILING. The exclude mechanism is documented as a way to suppress deliberately-pending escalations, so this use can silently hide escalations from the watcher and leaves no record in the codebase of why they were excluded.
+  area: escalation-watcher
+  first_seen: '2026-11-26'
+  disposition: pending
+  sightings:
+  - date: '2026-11-26'
+    project: reify
+    session: 184ec9c8-83b6-4772-9bc6-be48c98cc730
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: cd /home/leo/src/reify/data/escalations && echo esc-ticket-janitor-40 >> .watcher-rearm-exclude-l1; cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 3600
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
