@@ -1051,6 +1051,31 @@ mod tests {
         }
     }
 
+    /// `impulse_spec` (`ImpulseForce.impulse`) reads the IMPULSE registry
+    /// const and accepts only an IMPULSE `Scalar`: a FORCE is a neighbouring
+    /// dimension, and a bare `Real` carries none.
+    #[test]
+    fn impulse_spec_accepts_only_an_impulse_scalar() {
+        use reify_core::DimensionVector as DV;
+        let spec = impulse_spec();
+        assert_eq!(spec.dimension, DV::IMPULSE);
+        assert_eq!(spec.type_name, "Impulse");
+        let scalar = |dimension| crate::value::Value::Scalar {
+            si_value: 2.5,
+            dimension,
+        };
+        assert_eq!(
+            accept_arg(&scalar(DV::IMPULSE), &spec),
+            Acceptance::Accepted(2.5)
+        );
+        for refused in [scalar(DV::FORCE), crate::value::Value::Real(2.5)] {
+            assert!(
+                matches!(accept_arg(&refused, &spec), Acceptance::Rejected(_)),
+                "{refused:?} must be refused"
+            );
+        }
+    }
+
     /// The PRD-5 constructors inherit `accept_arg`'s STRICT dimension equality:
     /// a neighbouring dimension is as wrong as a bare `Real`.
     #[test]

@@ -11299,6 +11299,175 @@ mod tests {
         );
     }
 
+    // ── S15 α (task 8674): forcing sources decode through their declared types ──
+
+    fn dimensioned(si_value: f64, dimension: DimensionVector) -> Value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        }
+    }
+
+    /// A `type_name` forcing source at the tip along ẑ, carrying `fields`.
+    fn tip_source(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+        let mut all = vec![
+            ("at".to_string(), Value::String("tip".to_string())),
+            ("direction".to_string(), vec3_value([0.0, 0.0, 1.0])),
+        ];
+        all.extend(fields.into_iter().map(|(key, v)| (key.to_string(), v)));
+        struct_instance(type_name, all)
+    }
+
+    /// One well-formed source of each ForcingFunction conformer, in the order
+    /// StepForce, HarmonicForce, ImpulseForce, SampledForce.
+    fn every_forcing_kind() -> Vec<Value> {
+        let force = |n| dimensioned(n, DimensionVector::FORCE);
+        vec![
+            tip_source(
+                "StepForce",
+                vec![("magnitude", force(10.0)), ("start_time", time_scalar(0.0))],
+            ),
+            tip_source(
+                "HarmonicForce",
+                vec![
+                    ("amplitude", force(5.0)),
+                    ("frequency", dimensioned(30.0, DimensionVector::FREQUENCY)),
+                    ("phase", dimensioned(0.0, DimensionVector::ANGLE)),
+                ],
+            ),
+            tip_source(
+                "ImpulseForce",
+                vec![
+                    ("impulse", dimensioned(0.1, DimensionVector::IMPULSE)),
+                    ("time", time_scalar(0.02)),
+                ],
+            ),
+            tip_source(
+                "SampledForce",
+                vec![
+                    (
+                        "time_samples",
+                        Value::List(vec![time_scalar(0.0), time_scalar(0.05), time_scalar(0.1)]),
+                    ),
+                    (
+                        "force_samples",
+                        Value::List(vec![force(0.0), force(3.0), force(0.0)]),
+                    ),
+                ],
+            ),
+        ]
+    }
+
+    fn run_transient_with_sources(sources: Vec<Value>) -> ComputeOutcome {
+        let mut inputs = tip_transient_inputs(|mode| mode);
+        inputs[1] = forcing_history(sources);
+        run_transient(&inputs)
+    }
+
+    /// [`every_forcing_kind`] with the source at `index` passed through `edit`.
+    fn run_with_edited_source(index: usize, edit: impl FnOnce(Value) -> Value) -> ComputeOutcome {
+        let mut sources = every_forcing_kind();
+        let source = sources.remove(index);
+        sources.insert(index, edit(source));
+        run_transient_with_sources(sources)
+    }
+
+    /// Each forcing field reads through the spec its declaration names, and a
+    /// field the spec refuses fails the solve naming `<Type>.<field>`.
+    #[test]
+    fn transient_response_reads_each_forcing_field_through_its_declared_type() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        use reify_core::DiagnosticCode::{ComputeInputMalformed, DimensionedArgRejected};
+
+        let baseline = run_transient_with_sources(every_forcing_kind());
+        assert!(
+            matches!(&baseline, ComputeOutcome::Completed { diagnostics, .. } if diagnostics.is_empty()),
+            "every well-formed forcing kind must Complete cleanly, got {baseline:?}"
+        );
+
+        let length = dimensioned(1.0, DimensionVector::LENGTH);
+        let refusals = [
+            (
+                0,
+                "magnitude",
+                length.clone(),
+                "StepForce.magnitude argument expects Force",
+            ),
+            (
+                1,
+                "phase",
+                Value::Real(0.5),
+                "HarmonicForce.phase argument expects Angle",
+            ),
+            (
+                2,
+                "impulse",
+                dimensioned(0.1, DimensionVector::FORCE),
+                "ImpulseForce.impulse argument expects Impulse",
+            ),
+            (
+                3,
+                "force_samples",
+                Value::List(vec![
+                    dimensioned(0.0, DimensionVector::FORCE),
+                    length.clone(),
+                ]),
+                "SampledForce.force_samples argument expects Force",
+            ),
+            (
+                0,
+                "direction",
+                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), length.clone()]),
+                "StepForce.direction argument expects Real",
+            ),
+        ];
+        for (index, key, refused, path) in refusals {
+            assert_one_coded_error(
+                &run_with_edited_source(index, |source| with_field(source, key, Some(refused))),
+                DimensionedArgRejected,
+                &format!("transient_response: {path}"),
+            );
+        }
+
+        assert_one_coded_error(
+            &run_with_edited_source(0, |source| with_field(source, "magnitude", None)),
+            ComputeInputMalformed,
+            "StepForce.magnitude",
+        );
+    }
+
+    /// A conformer the trampoline has no sampler for fails the solve naming
+    /// its type, instead of contributing a silent zero force.
+    #[test]
+    fn transient_response_refuses_an_unsupported_forcing_kind() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        let my_force = tip_source("MyForce", vec![("magnitude", Value::Real(1.0))]);
+        assert_one_coded_error(
+            &run_with_edited_source(0, |_| my_force),
+            reify_core::DiagnosticCode::FeaLoadKindUnsupported,
+            "MyForce",
+        );
+    }
+
+    /// B6, loads stay quiet: an unresolved forcing field contributes no force
+    /// and no diagnostic, exactly as if the source were absent.
+    #[test]
+    fn an_unresolved_forcing_field_contributes_no_force_quietly() {
+        let mut with_undef = every_forcing_kind();
+        with_undef[0] = with_field(with_undef[0].clone(), "magnitude", Some(Value::Undef));
+        let quiet = run_transient_with_sources(with_undef);
+        let ComputeOutcome::Completed { diagnostics, .. } = &quiet else {
+            panic!("an Undef StepForce.magnitude must Complete, got {quiet:?}");
+        };
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+        let without = run_transient_with_sources(every_forcing_kind().split_off(1));
+        assert_eq!(
+            mode_coords_from_outcome(&quiet),
+            mode_coords_from_outcome(&without)
+        );
+    }
+
     /// step-5λ (RED → GREEN in step-6): cache-hit test for `run_transient_response`.
     ///
     /// (1) Cold call (prior=None) → `reused_setup == false`, Completes, donates a
