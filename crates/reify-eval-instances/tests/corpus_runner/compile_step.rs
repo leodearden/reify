@@ -88,7 +88,7 @@ pub fn compile_problems(entry: &LoadedEntry) -> Vec<Problem> {
 }
 
 /// The file an entry is compiled from: its `entry_file`, or its one file.
-fn entry_file(entry: &LoadedEntry) -> Option<&SourceFile> {
+pub fn entry_file(entry: &LoadedEntry) -> Option<&SourceFile> {
     let files = &entry.sources.files;
     match &entry.record.entry_file {
         Some(name) => files.iter().find(|file| file.name == *name),
