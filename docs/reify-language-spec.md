@@ -183,7 +183,7 @@ Each such `auto` is one unknown per instance of the declaration, and it belongs 
 
 Two more placements are compile errors:
 
-- An `auto` anywhere in a purpose's body, because a purpose decides nothing (§4.4).
+- An `auto` at any binding site in a purpose's body, because a purpose decides nothing (§4.4).
 - In a sub's braces, `let x : T = auto`, and an `auto` as a constructor argument inside a member written there. The `auto` would be in the parent's text while the member is the sub's, so it would have no single owner. Write the `let` in the parent and pass it in. An assignment `bore = auto` in the braces stays valid: it is an argument written by the parent (§8.7).
 
 `auto` is **not** a general expression operand. It may not appear as a function-call argument, inside an arithmetic or logical expression, in a `constraint`/`minimize`/`maximize` body, in a field `source`, or in a collection literal. These are parse errors, except a named function-call argument (`clamp(x: auto)`), which parses and is a compile error (`E_AUTO_NOT_AT_BINDING_SITE`). To bound a solver-delegated value, attach a constraint to the binding rather than embedding `auto` in an expression: write `length = auto, length > 2mm`, not `length = auto + 2mm`. (Reconciled 2026-05-26 with the grammar, which admits `auto` only at binding sites; see `docs/prds/auto-binding-site-positions.md`. The prior "anywhere a value expression is expected" wording over-promised relative to the parser.)
@@ -939,7 +939,7 @@ Semantics:
 
 ### 4.4 Purpose Declarations
 
-Purposes are named, parameterized declaration kinds with AST identity. A purpose body may contain `constraint` declarations, applied constraint definitions (`constraint Name(args)`), `let` bindings, and guarded (`where`) blocks, as well as `Output` occurrence instantiations. An objective (`minimize`/`maximize`) or an `auto` in a purpose's body is a compile error, whose message says to write the objective in the definition.
+Purposes are named, parameterized declaration kinds with AST identity. A purpose body may contain `constraint` declarations, applied constraint definitions (`constraint Name(args)`), `let` bindings, and guarded (`where`) blocks, as well as `Output` occurrence instantiations. An objective (`minimize`/`maximize`) in a purpose's body is a compile error whose message says to write it in the definition; an `auto` there is an error too (§2.9).
 
 ```
 purpose_decl ::= 'pub'? 'purpose' IDENT type_params? '(' purpose_params ')' '{' purpose_member* '}'
@@ -2142,7 +2142,7 @@ structure def TreeBracket {
 
 **Termination requirement:** A recursive structure definition must have a termination condition (`where` guard, `Option` type, or variant type base case). A recursive definition with no reachable termination condition is a static error.
 
-**Recursive generic enums:** A recursive enum such as `enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }` (§3.9.2) needs no separate termination check. A `Value::Enum` is a finite value built bottom-up — leaves constructed first, then each `Node` built from already-constructed children — so no single construction expression can build an unbounded value. The non-recursive variant (`Leaf`) is exactly the "variant type base case" named in the termination requirement above. This is consistent with §4.3's note that the compiler does not attempt termination checking: infinite recursion in a value-building function is a runtime stack overflow, as today, not a compile error. Contrast recursive *structures* (this section), whose eager unfolding is depth-controlled by a `where`-guarded `sub` — a recursive enum value has no analogous unfolding step to guard.
+**Recursive generic enums:** A recursive enum such as `enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }` (§3.9.2) needs no separate termination check. A `Value::Enum` is a finite value built bottom-up — leaves constructed first, then each `Node` built from already-constructed children — so no single construction expression can build an unbounded value. The non-recursive variant (`Leaf`) is exactly the "variant type base case" named in the termination requirement above. This is consistent with §4.3's note that the compiler does not attempt termination checking: infinite recursion in a value-building function is a runtime stack overflow, as today, not a compile error. Contrast recursive *structures* (this section), whose recursion is stopped by a `where`-guarded `sub` read per level (§6.3) — a recursive enum value has no analogous guarded member.
 
 **`undef` is NOT a valid termination mechanism.** `undef` means "not yet decided," not "structurally absent."
 
@@ -3231,13 +3231,13 @@ where
 | # | Item | Target | Notes |
 |---|------|--------|-------|
 | 1 | Default robustness objective | v0.1.1 | Mechanism depends on constraint solver internals |
-| 2 | Rich structural query/traversal | Realized (instances on the core) | `self.children`, `self.members` and `self.descendants` exist as lists of the values of present members (§8.6). Filtering one by trait is written with `filter`, as in `filter(self.descendants, Costed)` (§10.8). |
+| 2 | Rich structural query/traversal | Realized (instances on the core) | `self.children`, `self.members` and `self.descendants` exist as lists of the values of present members (§8.6). Filtering one by trait is written with `filter`, as in `filter(self.descendants, Costed)`. See docs/prds/v0_6/structural-query-traversal.md. |
 | 3 | Geometry selector strengthening | v0.2 | Persistent naming, advanced topological queries |
 | 4 | `Result<T>` or `fallback` expressions | Realized (v0.6) | Layer A — `Option` recovery combinators (`unwrap_or`/`or_else`/`or_default`/`map_or`/`is_some`/`is_none`/`get_or`, plus the `fallback` alias of `unwrap_or`) shipped in v0.6, orthogonal to graph-`Failed` (§9.6 D1). Layer B — `Result<T,E>` error-handling shipped in v0.6 as a generic data-carrying prelude enum (`enum Result<T, E> { Ok { value: T }, Err { error: E } }`) with `Ok`/`Err` construction, match-on-`Result` payload binding, and the Result-specialized recovery combinators `unwrap_or`/`or_else`/`fallback`/`is_ok`/`is_err`/`map_err`/`ok_or` (the `Option`→`Result` bridge), built on the generic-data-carrying-enums substrate. `try`/`catch` and the postfix `?`-propagation operator (fork F-Question) remain deferred. See docs/prds/v0_6/result-and-fallback.md, docs/prds/v0_6/data-carrying-enums.md, and docs/prds/v0_6/generic-data-carrying-enums.md; runnable example `examples/m6_result_recovery.ri`. |
 | 5 | Associated `fn` in traits | v0.2+ | Procedural code in traits |
 | 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
-| 8 | Keyed collection identity | Realized (instances on the core) | Keyed collections exist. An element is addressed by its key (`vents["intake"]`, the `chain_index` production of §15), and its key is its identity: elements keep their identity across an insertion, where a list's elements are identified by position (§3.4). |
+| 8 | Keyed collection identity | Realized (instances on the core) | Keyed collections exist. An element is addressed by its key (`vents["intake"]`, the index expression `expr '[' expr ']'` of §15), and its key is its identity: elements keep their identity across an insertion, where a list's elements are identified by position (§3.4). |
 | 9 | Field-valued material properties | v0.2 | `Field<Temperature, Pressure>` for temperature-dependent properties |
 | 10 | Expression-body sugar for `fn` | Realized (v0.6) | `fn f(x: T) -> T = expr` shorthand; §4.3/§15 `fn_body`; see docs/prds/v0_6/expression-operator-completion.md |
 | 11 | No `Date` type | v0.1 | ISO 8601 strings used for timestamps |
