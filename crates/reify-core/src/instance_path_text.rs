@@ -16,68 +16,49 @@ const MODULE_SEPARATOR: &str = "::";
 /// The anchor word of a `connect`'s unknown, `connect[k]`.
 const CONNECT: &str = "connect";
 
-/// The word after a slash that names a fixed child.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Word {
-    Summary,
-    AsValue,
-    Defs,
-    Constraint,
-    Braces,
-    Purpose,
-    Arguments,
-    Guard,
-    Count,
-    At,
-    Auto,
-    Made,
-    Open,
-    Problem,
-    Solves,
+/// Declares `Word`, so the printer's text of each word and the parser's
+/// reading of it come from one row.
+macro_rules! words {
+    ($($word:ident = $text:literal,)+) => {
+        /// The word after a slash that names a fixed child.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Word {
+            $($word,)+
+        }
+
+        impl Word {
+            fn text(self) -> &'static str {
+                match self {
+                    $(Word::$word => $text,)+
+                }
+            }
+
+            fn from_text(text: &str) -> Option<Word> {
+                match text {
+                    $($text => Some(Word::$word),)+
+                    _ => None,
+                }
+            }
+        }
+    };
 }
 
-impl Word {
-    const ALL: [Word; 15] = [
-        Word::Summary,
-        Word::AsValue,
-        Word::Defs,
-        Word::Constraint,
-        Word::Braces,
-        Word::Purpose,
-        Word::Arguments,
-        Word::Guard,
-        Word::Count,
-        Word::At,
-        Word::Auto,
-        Word::Made,
-        Word::Open,
-        Word::Problem,
-        Word::Solves,
-    ];
-
-    fn text(self) -> &'static str {
-        match self {
-            Word::Summary => "summary",
-            Word::AsValue => "as-value",
-            Word::Defs => "defs",
-            Word::Constraint => "constraint",
-            Word::Braces => "braces",
-            Word::Purpose => "purpose",
-            Word::Arguments => "arguments",
-            Word::Guard => "guard",
-            Word::Count => "count",
-            Word::At => "at",
-            Word::Auto => "auto",
-            Word::Made => "made",
-            Word::Open => "open",
-            Word::Problem => "problem",
-            Word::Solves => "solves",
-        }
-    }
-
-    fn from_text(text: &str) -> Option<Word> {
-        Word::ALL.into_iter().find(|word| word.text() == text)
-    }
+words! {
+    Summary = "summary",
+    AsValue = "as-value",
+    Defs = "defs",
+    Constraint = "constraint",
+    Braces = "braces",
+    Purpose = "purpose",
+    Arguments = "arguments",
+    Guard = "guard",
+    Count = "count",
+    At = "at",
+    Auto = "auto",
+    Made = "made",
+    Open = "open",
+    Problem = "problem",
+    Solves = "solves",
 }
 
 fn is_word_char(c: char) -> bool {
@@ -499,10 +480,12 @@ impl PathTextError {
         Self { offset, problem }
     }
 
+    // G-allow: structured half of a refusal, for a caller that marks the byte where a typed path's text goes wrong: the session layer's path input across the GUI boundary (#10551); read today by tests/instance_path_text.rs, while the corpus runner reports the Display
     pub fn offset(&self) -> usize {
         self.offset
     }
 
+    // G-allow: structured half of a refusal, for a caller that answers each problem differently: the session layer's path input across the GUI boundary (#10551); read today by tests/instance_path_text.rs, while the corpus runner reports the Display
     pub fn problem(&self) -> &PathTextProblem {
         &self.problem
     }
