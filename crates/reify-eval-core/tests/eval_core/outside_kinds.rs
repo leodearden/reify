@@ -208,20 +208,19 @@ fn a_host_can_take_a_path_apart_and_put_it_together_again() {
     let r = Ref::binding("subject")
         .step(Step::named("p"))
         .step(Step::new(OWN, StepKey::Index(0)));
-    let rebuilt = r.steps().iter().fold(
-        Ref::binding(r.binding_name()),
-        |rebuilt, step| rebuilt.step(Step::new(step.space(), step.key().clone())),
-    );
+    let rebuilt = r
+        .steps()
+        .iter()
+        .fold(Ref::binding(r.binding_name()), |rebuilt, step| {
+            rebuilt.step(Step::new(step.space(), step.key().clone()))
+        });
     assert_eq!(rebuilt, r);
 
     assert_eq!(
         Step::new(Space::Default, StepKey::Name("p".into())),
         Step::named("p")
     );
-    assert_eq!(
-        Step::new(Space::Default, StepKey::Index(2)),
-        Step::index(2)
-    );
+    assert_eq!(Step::new(Space::Default, StepKey::Index(2)), Step::index(2));
 }
 
 #[test]
@@ -265,7 +264,10 @@ fn two_places(p2: Declaration) -> Vec<(InputKey, Input)> {
         "P1",
         toy::members([("p", failing()), ("w", why())]),
     ));
-    inputs.extend(toy::root_scope("P2", toy::members([("p", p2), ("w", why())])));
+    inputs.extend(toy::root_scope(
+        "P2",
+        toy::members([("p", p2), ("w", why())]),
+    ));
     inputs
 }
 
@@ -318,14 +320,10 @@ fn equal_failure_descriptions_at_two_places_are_one_stored_result() {
 #[test]
 fn failures_with_different_descriptions_are_not_shared() {
     let mut core = core();
-    let [first, second] =
-        answer_both_places(&mut core, two_places(presence(None, "p.members")));
+    let [first, second] = answer_both_places(&mut core, two_places(presence(None, "p.members")));
 
     let condition = Ref::binding("condition");
-    assert_eq!(
-        first.0,
-        undetermined(condition.clone(), Found::Failure)
-    );
+    assert_eq!(first.0, undetermined(condition.clone(), Found::Failure));
     assert_eq!(
         second,
         (
@@ -448,6 +446,10 @@ fn steps_with_equal_keys_in_different_spaces_are_different_children() {
         (toy::below("R", &["by_own"]), 2),
     ];
     for (at, expected) in cases {
-        assert_eq!(value_at::<i64>(&mut core, &snapshot, &at), expected, "{at:?}");
+        assert_eq!(
+            value_at::<i64>(&mut core, &snapshot, &at),
+            expected,
+            "{at:?}"
+        );
     }
 }

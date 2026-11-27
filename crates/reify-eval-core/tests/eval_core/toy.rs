@@ -13,8 +13,8 @@ use std::thread::{self, ThreadId};
 use reify_eval_core::{
     Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event,
     Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Outcome, OutsideFailure, Path,
-    Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot, Space, Step, StepKey, Turn,
-    Value,
+    Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot, Space, Step, StepKey,
+    Turn, Value,
 };
 
 /// The content a test gives the core for one of its values: a hash of
