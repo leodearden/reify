@@ -46,9 +46,10 @@ use reify_stdlib::modal::transient::{
 };
 use reify_stdlib::resolve_body_mass;
 
+use crate::arg_acceptance::length_spec;
 use crate::compute_targets::bc_resolve::named_leaf_target;
 use crate::compute_targets::result_topology::carried_topology_from_result;
-use crate::compute_targets::stdlib_inputs::DecodeStdlibInput;
+use crate::compute_targets::stdlib_inputs::{DecodeStdlibInput, InputDecodeError, read_positional};
 use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -1520,9 +1521,22 @@ pub(crate) fn run_modal_analysis(
     };
 
     // ── (3) geometry scalars (SI metres) ─────────────────────────────────────
-    let length = read_scalar_si(&value_inputs[1]);
-    let width = read_scalar_si(&value_inputs[2]);
-    let height = read_scalar_si(&value_inputs[3]);
+    let dims = (|| {
+        Ok::<_, InputDecodeError>((
+            read_positional(&value_inputs[1], "length", &length_spec())?,
+            read_positional(&value_inputs[2], "width", &length_spec())?,
+            read_positional(&value_inputs[3], "height", &length_spec())?,
+        ))
+    })();
+    let (length, width, height) = match dims {
+        Ok(dims) => dims,
+        Err(err) => {
+            return ModalTrampolineRun {
+                outcome: err.into_failed(MODAL_ANALYSIS),
+                reused_assembly: false,
+            };
+        }
+    };
     // Build the beam mesh once and share it between the BC realization (4) and
     // the eigensolve (5); both index DOFs against the same node numbering.
     let mesh = build_beam_mesh(length, width, height);
