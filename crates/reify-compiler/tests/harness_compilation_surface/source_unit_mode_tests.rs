@@ -217,14 +217,23 @@ fn compile_unit(
     scope: &CompilationScope,
     module: &CompiledModule,
 ) -> (CompiledSourceUnit, Vec<Diagnostic>) {
-    let expr = parse_expr(text);
+    compile_unit_named(&parse_expr(text), SourceUnitNames::Own, scope, module)
+}
+
+/// Compile `expr` in the source-unit mode, its names resolved as `names` says.
+fn compile_unit_named(
+    expr: &reify_ast::Expr,
+    names: SourceUnitNames,
+    scope: &CompilationScope,
+    module: &CompiledModule,
+) -> (CompiledSourceUnit, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let spec = SourceUnitSpec {
-        names: SourceUnitNames::Own,
+        names,
         expected_type: None,
     };
     let unit = reify_compiler::compile_source_unit(
-        &expr,
+        expr,
         scope,
         &spec,
         &module.enum_defs,
@@ -1267,6 +1276,148 @@ fn geometry_member_of_a_value_is_a_reference() {
     assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
     assert!(
         matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm.held", "body")),
+        "{tree:?}"
+    );
+}
+
+const BRACES_SOURCE: &str = "
+structure def Shaft {
+    param len : Real = 5
+}
+structure def Motor {
+    param d : Real = 10
+    param lock : Bool = false
+    where lock { param torque : Real = 1 }
+    sub shaft : Shaft
+}
+structure def Plate {
+    param t : Real = 3
+}
+structure def Rig {
+    param d : Real = 99
+    param w : Real = 3
+    param t : Real = 8
+    param tight : Bool = false
+    let half = w / 2
+    sub m : Motor {
+        d = w where lock
+        lock = true where tight
+    }
+    sub p = Plate(t: t / 2)
+}
+";
+
+/// The `sub` named `sub` of definition `definition` in the parsed source.
+fn parsed_sub<'p>(
+    parsed: &'p reify_ast::ParsedModule,
+    definition: &str,
+    sub: &str,
+) -> &'p reify_ast::SubDecl {
+    parsed
+        .declarations
+        .iter()
+        .find_map(|decl| match decl {
+            reify_ast::Declaration::Structure(def) if def.name == definition => {
+                def.members.iter().find_map(|m| match m {
+                    reify_ast::MemberDecl::Sub(s) if s.name == sub => Some(s),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no sub {sub} in {definition}"))
+}
+
+/// PRD §5.4 "What declares what", D13 items 14 and 19, D10(g): in a sub's
+/// braces a name is first a `let` of the same braces, then a member of the
+/// sub's definition whether present or not, then a member of the definition
+/// that wrote the braces; `self` is the writer.
+#[test]
+fn braces_names_resolve_against_two_scopes() {
+    let module = compile_clean(BRACES_SOURCE);
+    let registry = template_registry(&module);
+    let motor = definition_scope(&module, &registry, "Motor");
+    let rig = definition_scope(&module, &registry, "Rig");
+    let real = Type::dimensionless_scalar();
+    let lets = std::collections::BTreeMap::from([("h".to_string(), real.clone())]);
+    let braces = SourceUnitNames::Braces {
+        lets: &lets,
+        writer: &rig,
+    };
+    let in_braces = |expr: &reify_ast::Expr| compile_unit_named(expr, braces, &motor, &module);
+    let read = |root: ReferenceRoot, path: &[&str]| (root, members(path), ReferenceRead::Value);
+
+    for (text, expected, ty) in [
+        // The sub's own member comes first, although the writer declares `d` too.
+        ("d", read(ReferenceRoot::Own, &["d"]), &real),
+        ("h", read(ReferenceRoot::BracesLet, &["h"]), &real),
+        // A guarded member, whether present or not.
+        ("torque", read(ReferenceRoot::Own, &["torque"]), &real),
+        (
+            "shaft.len",
+            read(ReferenceRoot::Own, &["shaft", "len"]),
+            &real,
+        ),
+        ("w", read(ReferenceRoot::Writer, &["w"]), &real),
+        ("half", read(ReferenceRoot::Writer, &["half"]), &real),
+        (
+            "self",
+            read(ReferenceRoot::Writer, &[]),
+            &Type::StructureRef("Rig".into()),
+        ),
+        ("self.d", read(ReferenceRoot::Writer, &["d"]), &real),
+    ] {
+        let (unit, diagnostics) = in_braces(&parse_expr(text));
+        assert!(diagnostics.is_empty(), "{text}: {diagnostics:?}");
+        let (reference, actual) = sole_reference(&unit);
+        assert_eq!(shape(reference), expected, "{text}");
+        assert_eq!(actual, ty, "{text}");
+    }
+    let (_, diagnostics) = in_braces(&parse_expr("nosuch"));
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::UnresolvedName),
+        "{diagnostics:?}"
+    );
+
+    // A guard's condition and an assignment's right side get both scopes too.
+    let parsed = reify_syntax::parse(BRACES_SOURCE, reify_core::ModulePath::single("unit_mode"));
+    let m = parsed_sub(&parsed, "Rig", "m");
+    let mut guards = Vec::new();
+    for (name, value, guard) in m.guarded_spec_param_overrides() {
+        let guard = guard.unwrap_or_else(|| panic!("`{name}` has no guard"));
+        let (unit, diagnostics) = in_braces(&guard.condition);
+        assert!(diagnostics.is_empty(), "{name}: {diagnostics:?}");
+        let (reference, ty) = sole_reference(&unit);
+        assert_eq!(ty, &Type::Bool, "{name}");
+        guards.push((name, shape(reference)));
+        if name == "d" {
+            let (unit, diagnostics) = in_braces(value);
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            let (reference, _) = sole_reference(&unit);
+            assert_eq!(shape(reference), read(ReferenceRoot::Writer, &["w"]));
+        }
+    }
+    assert_eq!(
+        guards,
+        vec![
+            ("d", read(ReferenceRoot::Own, &["lock"])),
+            ("lock", read(ReferenceRoot::Writer, &["tight"])),
+        ]
+    );
+
+    // The call form of a sub needs no mode of its own: its argument is
+    // written in, and read against, the writer (D10(g)).
+    let p = parsed_sub(&parsed, "Rig", "p");
+    let (_, argument) = &p.args[0];
+    let (unit, diagnostics) = compile_unit_named(argument, SourceUnitNames::Own, &rig, &module);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let shapes: Vec<_> = unit.references.iter().map(shape).collect();
+    assert_eq!(shapes, vec![own_value(members(&["t"]))]);
+
+    // The existing compile reads the braces' right side on the writer's scope.
+    let (tree, _) = compile_existing("d", &rig, &module);
+    assert!(
+        matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Rig", "d")),
         "{tree:?}"
     );
 }
