@@ -583,6 +583,111 @@ mod tests {
 
     use super::*;
 
+    // ── S15 α T1/T2 (task 8674): the base material decodes as an ElasticMaterial
+
+    use reify_core::DiagnosticCode;
+
+    use super::super::as_printed_material_r0::as_printed_material_r0_trampoline;
+    use super::super::stdlib_inputs::test_support::{
+        assert_one_coded_error, hand_built_material, material_missing_poisson_ratio,
+        material_with_length_youngs_modulus, steel_density,
+    };
+
+    type Trampoline = fn(
+        &[Value],
+        &[RealizationReadHandle],
+        &Value,
+        Option<&OpaqueState>,
+        &CancellationHandle,
+    ) -> ComputeOutcome;
+
+    /// Both rungs, each fed `[_, FDMProcess, AsPrintedOptions]`. The material
+    /// read runs before the realization and G-code lookups, so neither needs
+    /// one.
+    const RUNGS: [(&str, Trampoline); 2] = [
+        ("R-fast", as_printed_material_r_fast_trampoline),
+        ("R0", as_printed_material_r0_trampoline),
+    ];
+
+    fn run(rung: Trampoline, process: Value) -> ComputeOutcome {
+        let options = structure("AsPrintedOptions", vec![]);
+        rung(
+            &[Value::Undef, process, options],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    fn process_with_material(material: Value) -> Value {
+        structure("FDMProcess", vec![("material", material)])
+    }
+
+    fn assert_degraded(rung: &str, outcome: ComputeOutcome) {
+        match outcome {
+            ComputeOutcome::Completed {
+                result: Value::Field { lambda, .. },
+                diagnostics,
+                ..
+            } => {
+                assert!(matches!(*lambda, Value::Undef), "{rung}: {lambda:?}");
+                assert!(diagnostics.is_empty(), "{rung}: {diagnostics:?}");
+            }
+            other => panic!("{rung}: expected the degraded Completed field, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hand_built_base_material_missing_a_field_fails_naming_the_trait_path() {
+        for (_, trampoline) in RUNGS {
+            let outcome = run(
+                trampoline,
+                process_with_material(material_missing_poisson_ratio()),
+            );
+            assert_one_coded_error(
+                &outcome,
+                DiagnosticCode::ComputeInputMalformed,
+                "ElasticMaterial.poisson_ratio",
+            );
+        }
+    }
+
+    #[test]
+    fn a_length_base_youngs_modulus_is_rejected_naming_the_trait_path() {
+        for (_, trampoline) in RUNGS {
+            let outcome = run(
+                trampoline,
+                process_with_material(material_with_length_youngs_modulus()),
+            );
+            assert_one_coded_error(
+                &outcome,
+                DiagnosticCode::DimensionedArgRejected,
+                "ElasticMaterial.youngs_modulus",
+            );
+        }
+    }
+
+    /// as_printed's documented Undef policy is unchanged: an unresolved
+    /// modulus, or no material struct at all, degrades to the Undef-lambda
+    /// field rather than failing.
+    #[test]
+    fn an_undef_base_modulus_or_no_material_still_degrades() {
+        let undef_modulus = hand_built_material(vec![
+            ("youngs_modulus", Value::Undef),
+            ("poisson_ratio", Value::Real(0.35)),
+            ("density", steel_density()),
+        ]);
+        for (rung, trampoline) in RUNGS {
+            assert_degraded(
+                rung,
+                run(trampoline, process_with_material(undef_modulus.clone())),
+            );
+            assert_degraded(rung, run(trampoline, structure("FDMProcess", vec![])));
+            assert_degraded(rung, run(trampoline, process_with_material(Value::Undef)));
+        }
+    }
+
     /// Task 5848 retypes `FDMProcess.build_direction` from `Vec3<Length>` to a
     /// dimensionless 3-vector, moving its default from `vec3(0mm, 0mm, 1mm)` to
     /// `vec3(0, 0, 1)`. That is behaviour-preserving for the knockdown path
