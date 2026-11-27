@@ -10,7 +10,7 @@ use reify_eval_core::{
     Outcome, Path, Produced, Ref, Snapshot, Step, Turn,
 };
 
-use crate::toy::{self, Cell, Members};
+use crate::toy::{self, Cell, Members, ToyKernel, Watch};
 
 /// The answer every node on a ring has.
 fn cycle() -> Answer<i64> {
@@ -405,14 +405,16 @@ fn nothing_is_stored_for_a_ring_and_its_reader_is_found_in_the_store() {
     );
 }
 
+/// A pair over `first` and `second`, read in one read.
+fn pair(first: Binding, second: Binding) -> Declaration {
+    Declaration::new(toy::Pair::ID)
+        .bind("0", first)
+        .bind("1", second)
+}
+
 /// R's members `a`, a pair over its siblings `b` and `l`; `b`, a pair over
 /// `a` and the input x; and `l`, a cell over `a`.
 fn pairs_and_l() -> Members {
-    let pair = |first: Binding, second: Binding| {
-        Declaration::new(toy::Pair::ID)
-            .bind("0", first)
-            .bind("1", second)
-    };
     toy::members([
         ("a", pair(toy::sibling(&["b"]), toy::sibling(&["l"]))),
         ("b", pair(toy::sibling(&["a"]), toy::input("x"))),
@@ -455,4 +457,114 @@ fn a_ring_found_through_a_waiting_lookup_answers_cycle_on_every_node_of_it() {
     let mut answers = run_for(&mut fresh, &s1, &[&l]);
     answers.extend(run_for(&mut fresh, &s1, &[&a, &b]));
     assert_eq!(answers, [cycle(), cycle(), cycle()]);
+}
+
+/// Runs one section on the toy kernel, which makes a box it drops, then
+/// reads the i64 at "then" and answers it. A read that fails makes it
+/// blocked by "then".
+struct AfterASection;
+
+impl Kind for AfterASection {
+    type Out = i64;
+    const ID: KindId = KindId("test.after_a_section");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let _ = cx
+            .exclusive(|kernel: &mut ToyKernel, section| kernel.make_box(1, section))
+            .await;
+        let then = Ref::binding("then");
+        Produced::Outcome(match or_blocked(cx.read::<i64>(&then).await, &then) {
+            Ok(value) => Outcome::of(*value),
+            Err(answer) => answer,
+        })
+    }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(toy::Contented::content(out))
+    }
+}
+
+/// R's members `a`, a pair over its siblings `b` and `c`; `b`, a cell over
+/// `a`; and `c`, which reads `a` once its section has run.
+fn pair_and_late_reader() -> Members {
+    let late = Declaration::new(AfterASection::ID).bind("then", toy::sibling(&["a"]));
+    toy::members([
+        ("a", pair(toy::sibling(&["b"]), toy::sibling(&["c"]))),
+        ("b", toy::cell_over([toy::sibling(&["a"])])),
+        ("c", late),
+    ])
+}
+
+/// The answers at the paths of `requests`, in order, on a gated core of
+/// `pair_and_late_reader`. Each request is made and given a turn, which
+/// leaves c's section running and answers nothing; then the section is
+/// let through and the core runs.
+fn answers_once_the_section_has_run(requests: &[&[&Path]]) -> Vec<Answer<i64>> {
+    let builder = toy::with_scope()
+        .kind::<toy::Pair>()
+        .and_then(|builder| builder.kind::<AfterASection>())
+        .expect("distinct kinds");
+    let watch = Watch::default();
+    let (mut core, keeper) = toy::gated(builder, &watch);
+    let snapshot = core.snapshot(scope_r(pair_and_late_reader(), []));
+    let made: Vec<_> = requests
+        .iter()
+        .map(|paths| {
+            let request = core.evaluate(&snapshot, toy::demand(paths.iter().copied()));
+            assert_eq!(core.turn(), Turn::SectionsRunning(1));
+            request
+        })
+        .collect();
+    keeper.entered();
+    assert!(
+        core.take_events().is_empty(),
+        "no ring is broken while c's section runs"
+    );
+
+    keeper.open();
+    core.run();
+    let events = core.take_events();
+    assert_eq!(core.counters().body_runs(AfterASection::ID), 1);
+    let mut answers = Vec::new();
+    for (request, paths) in made.iter().zip(requests) {
+        answers.extend(
+            paths
+                .iter()
+                .map(|path| toy::answer_at(&events, request, path).downcast::<i64>()),
+        );
+    }
+    for request in made {
+        core.end(request);
+    }
+    answers
+}
+
+#[test]
+fn rings_are_found_at_rest_so_a_node_that_joins_one_after_a_section_answers_cycle() {
+    let (a, b, c) = (r("a"), r("b"), r("c"));
+    assert_eq!(
+        answers_once_the_section_has_run(&[&[&a, &b, &c]]),
+        [cycle(), cycle(), cycle()]
+    );
+    assert_eq!(
+        answers_once_the_section_has_run(&[&[&c], &[&a, &b]]),
+        [cycle(), cycle(), cycle()]
+    );
+}
+
+#[test]
+fn a_ring_of_100000_cells_answers_cycle_on_the_default_test_thread_stack() {
+    const CELLS: usize = 100_000;
+    let names: Vec<String> = (0..CELLS).map(|i| format!("m{i}")).collect();
+    let cells = names.iter().enumerate().map(|(i, name)| {
+        let next = &names[(i + 1) % CELLS];
+        (name.as_str(), toy::cell_over([toy::sibling(&[next])]))
+    });
+    let mut core = toy::with_scope().build();
+    let snapshot = core.snapshot(scope_r(toy::members(cells), []));
+
+    assert_eq!(run_for(&mut core, &snapshot, &[&r(&names[0])]), [cycle()]);
+    let cells = u64::try_from(CELLS).expect("the ring is short enough");
+    assert_eq!(core.counters().body_runs(Cell::ID), cells);
 }
