@@ -1328,8 +1328,12 @@ fn geometry_member_of_a_value_is_a_reference() {
 }
 
 const BRACES_SOURCE: &str = "
-structure def Shaft {
+trait Rated {
+    param rating : Real
+}
+structure def Shaft : Rated {
     param len : Real = 5
+    param rating : Real = 2
 }
 structure def Motor {
     param d : Real = 10
@@ -1337,8 +1341,9 @@ structure def Motor {
     where lock { param torque : Real = 1 }
     sub shaft : Shaft
 }
-structure def Plate {
+structure def Plate : Rated {
     param t : Real = 3
+    param rating : Real = 7
 }
 structure def Rig {
     param d : Real = 99
@@ -1413,6 +1418,17 @@ fn braces_names_resolve_against_two_scopes() {
             &Type::StructureRef("Rig".into()),
         ),
         ("self.d", read(ReferenceRoot::Writer, &["d"]), &real),
+        // A trait-qualified read resolves its sub by the same two scopes.
+        (
+            "shaft.(Rated::rating)",
+            read(ReferenceRoot::Own, &["shaft", "rating"]),
+            &real,
+        ),
+        (
+            "p.(Rated::rating)",
+            read(ReferenceRoot::Writer, &["p", "rating"]),
+            &real,
+        ),
     ] {
         let (unit, diagnostics) = in_braces(&parse_expr(text));
         assert!(diagnostics.is_empty(), "{text}: {diagnostics:?}");
@@ -1421,6 +1437,16 @@ fn braces_names_resolve_against_two_scopes() {
         assert_eq!(actual, ty, "{text}");
     }
     let (_, diagnostics) = in_braces(&parse_expr("nosuch"));
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::UnresolvedName),
+        "{diagnostics:?}"
+    );
+    let (_, diagnostics) = in_braces(&parse_expr("m.(Rated::rating)"));
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::TraitNotImplemented),
+        "{diagnostics:?}"
+    );
+    let (_, diagnostics) = in_braces(&parse_expr("nosuch.(Rated::rating)"));
     assert!(
         has_error_code(&diagnostics, DiagnosticCode::UnresolvedName),
         "{diagnostics:?}"

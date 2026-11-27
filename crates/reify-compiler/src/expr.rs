@@ -58,7 +58,6 @@ use crate::datum_projection::{
 use crate::trajectory_signatures::trajectory_scalar_intrinsic_result_type;
 use crate::type_compat::MulDivRefusal;
 use crate::source_unit_paths::{self, NotAPath};
-use crate::source_unit_tables::{ReferenceRead, ReferenceRoot, SourceStep};
 use reify_core::overload::slot_matches_wildcard_tier;
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
@@ -6305,6 +6304,18 @@ fn compile_expr_guarded_with_expected_inner(
                 }
             };
 
+            if let Some(unit) = scope.source_unit() {
+                return source_unit_paths::compile_qualified_member(
+                    &sub_name,
+                    &trait_name,
+                    &member,
+                    scope,
+                    unit,
+                    expr.span,
+                    diagnostics,
+                );
+            }
+
             // Look up the sub-component's structure type.
             let structure_name = match scope.sub_component_types.get(&sub_name) {
                 Some(s) => s.clone(),
@@ -6380,10 +6391,6 @@ fn compile_expr_guarded_with_expected_inner(
                         )),
                     )
                 });
-            if let Some(unit) = scope.source_unit() {
-                let steps = vec![SourceStep::Member(sub_name), SourceStep::Member(member)];
-                return unit.reference(ReferenceRoot::Own, steps, ReferenceRead::Value, ty);
-            }
             CompiledExpr::value_ref(id, ty)
         }
         // ── task ζ 3941: trait-instance fn dispatch ─────────────────────────────

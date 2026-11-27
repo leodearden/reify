@@ -109,6 +109,101 @@ pub(crate) fn compile_presence(
     Some(recorder.reference(root, steps, ReferenceRead::Presence, Type::Bool))
 }
 
+/// `sub.(Trait::member)` in the source-unit mode: the sub is a path's root,
+/// resolved as any root is (so in a sub's braces it may be the writer's), the
+/// trait is checked against the sub's definition, and the member is one hop.
+pub(crate) fn compile_qualified_member(
+    sub: &str,
+    trait_name: &str,
+    member: &str,
+    scope: &CompilationScope,
+    recorder: &SourceUnitRecorder,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    match qualified_member(sub, trait_name, member, scope, recorder, span, diagnostics) {
+        Ok(read) => read,
+        Err(poison) => *poison,
+    }
+}
+
+fn qualified_member(
+    sub: &str,
+    trait_name: &str,
+    member: &str,
+    scope: &CompilationScope,
+    recorder: &SourceUnitRecorder,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<CompiledExpr, Box<CompiledExpr>> {
+    let rooted = root_target(sub, scope, recorder.names()).ok();
+    let (root, mut steps, target) = match rooted {
+        Some(rooted @ (_, _, Target::Instance(Definition::Named(_)) | Target::Cluster(_))) => {
+            rooted
+        }
+        _ => return Err(unknown_sub(sub, span, diagnostics)),
+    };
+    let conforms = |ty: &Type| match ty {
+        Type::StructureRef(definition) => trait_bounds_of(definition, scope)
+            .is_some_and(|bounds| bounds.iter().any(|bound| bound == trait_name)),
+        _ => false,
+    };
+    let conforming = match &target {
+        Target::Instance(Definition::Named(definition)) => {
+            conforms(&Type::StructureRef(definition.clone()))
+        }
+        Target::Cluster(arms) => arms.iter().any(conforms),
+        _ => false,
+    };
+    if !conforming {
+        return Err(Box::new(make_poison_literal(
+            diagnostics,
+            Diagnostic::error(format!(
+                "sub-component '{sub}' does not implement trait '{trait_name}'"
+            ))
+            .with_code(DiagnosticCode::TraitNotImplemented)
+            .with_label(DiagnosticLabel::new(span, "trait not implemented")),
+        )));
+    }
+    let declared_by_trait = scope
+        .trait_members
+        .get(trait_name)
+        .is_none_or(|members| members.contains(member));
+    let hop = Hop::Member(member);
+    let next = if declared_by_trait {
+        next_target(target, &hop, &mut steps, scope, span, diagnostics)
+    } else {
+        Err(Halt::NotAPath(NotAPath::ByReceiverType))
+    };
+    match next {
+        Ok(Next::Into(target)) if let Some(ty) = target.value_type() => {
+            Ok(recorder.reference(root, steps, ReferenceRead::Value, ty))
+        }
+        Err(Halt::Poison(poison)) => Err(poison),
+        Ok(_) | Err(Halt::NotAPath(_)) => {
+            let owner = format!("trait '{trait_name}'");
+            Err(no_such_member(&owner, member, span, diagnostics))
+        }
+    }
+}
+
+/// The traits a definition declares conformance to.
+fn trait_bounds_of<'s>(definition: &str, scope: &'s CompilationScope) -> Option<&'s [String]> {
+    match template_of(definition, scope) {
+        Some(template) => Some(&template.trait_bounds),
+        None => scope.sub_structure_traits.get(definition).map(Vec::as_slice),
+    }
+}
+
+fn unknown_sub(sub: &str, span: SourceSpan, diagnostics: &mut Vec<Diagnostic>) -> Box<CompiledExpr> {
+    Box::new(make_poison_literal(
+        diagnostics,
+        Diagnostic::error(format!("unknown sub-component '{sub}'"))
+            .with_code(DiagnosticCode::UnresolvedName)
+            .with_label(DiagnosticLabel::new(span, "unknown sub-component")),
+    ))
+}
+
 /// Where a path written in the source leads: from `root`, through `steps`,
 /// to `end`.
 struct Walked<'s> {
@@ -743,11 +838,19 @@ fn member_not_found(
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Halt {
-    let poison = make_poison_literal(
+    Halt::Poison(no_such_member(owner, member, span, diagnostics))
+}
+
+fn no_such_member(
+    owner: &str,
+    member: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Box<CompiledExpr> {
+    Box::new(make_poison_literal(
         diagnostics,
         Diagnostic::error(format!("{owner} has no member '{member}'"))
             .with_code(DiagnosticCode::StructureMemberNotFound)
             .with_label(DiagnosticLabel::new(span, "no such member")),
-    );
-    Halt::Poison(Box::new(poison))
+    ))
 }
