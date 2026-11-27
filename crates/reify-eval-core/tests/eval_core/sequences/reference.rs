@@ -137,12 +137,23 @@ enum Tried {
 }
 
 /// One view a solve opened: the reference that answered the reads made
-/// through it.
+/// through it, and the places those reads named, in order.
 pub struct Trial {
     reference: Reference,
+    demand: Vec<ModelPath>,
 }
 
 impl Trial {
+    pub fn reference(&self) -> &Reference {
+        &self.reference
+    }
+
+    /// The places the solve's reads through the view named, in order: what
+    /// the trial was demanded.
+    pub fn demand(&self) -> &[ModelPath] {
+        &self.demand
+    }
+
     /// Each path the trial answered, with its answer.
     pub fn answers(&self) -> impl Iterator<Item = (&ModelPath, &Expected)> {
         self.reference
@@ -282,6 +293,11 @@ impl Reference {
         self.trials.get(opener).map_or(&[], Vec::as_slice)
     }
 
+    /// Every trial any solve ran.
+    pub fn every_trial(&self) -> impl Iterator<Item = &Trial> {
+        self.trials.values().flatten()
+    }
+
     /// The kind of the node declared at `path`, if its declaration has
     /// been worked out and is a node.
     fn node_declared(&self, path: &ModelPath) -> Option<ToyKind> {
@@ -302,12 +318,7 @@ impl Reference {
     /// ring halts before it is worked out, as the core answers it "cycle"
     /// without resolving it.
     pub fn paths_resolved(&self) -> usize {
-        let trials: usize = self
-            .trials
-            .values()
-            .flatten()
-            .map(Trial::paths_resolved)
-            .sum();
+        let trials: usize = self.every_trial().map(Trial::paths_resolved).sum();
         self.declared.len() + trials
     }
 
@@ -822,10 +833,12 @@ impl Reference {
             opener: at.clone(),
             supposed,
         };
-        let mut trial = Reference::supposing(self.inputs.clone(), Some(supposition));
+        let mut trial = Trial {
+            reference: Reference::supposing(self.inputs.clone(), Some(supposition)),
+            demand: Vec::new(),
+        };
         let held = self.constraints_hold(at, decl, &mut trial, constraints);
-        let trials = self.trials.entry(at.clone()).or_default();
-        trials.push(Trial { reference: trial });
+        self.trials.entry(at.clone()).or_default().push(trial);
         Ok(if held? { Tried::Held } else { Tried::Failed })
     }
 
@@ -861,13 +874,16 @@ impl Reference {
         &mut self,
         at: &ModelPath,
         decl: &Rc<Decl>,
-        trial: &mut Reference,
+        trial: &mut Trial,
         constraints: u64,
     ) -> Result<bool, Halt> {
         for index in 0..constraints {
             let read = match self.target(at, decl, &bare(&constraint(index)))? {
                 Target::Settled(outcome) => outcome,
-                Target::Path(path) => trial.shared(&path)?.outcome.clone(),
+                Target::Path(path) => {
+                    trial.demand.push(path.clone());
+                    trial.reference.shared(&path)?.outcome.clone()
+                }
             };
             let held = match typed_int(read) {
                 Typed::Value(value) => value >= 0,

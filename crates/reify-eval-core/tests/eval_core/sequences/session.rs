@@ -22,7 +22,7 @@ use super::expected::{Expect, Expected, Out};
 use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
 use super::mismatch::Mismatch;
 use super::reach::{Reach, Shape};
-use super::reference::Reference;
+use super::reference::{Reference, Trial};
 use super::seen::Seen;
 use crate::toy;
 
@@ -79,6 +79,43 @@ fn below_call(
     }
     if when_reads(true) {
         reached.push(Shape::ChildOnTakenBranch);
+    }
+    reached
+}
+
+/// The shapes the trials of the solve at `solve` reached: each kind of
+/// structure a trial answered, a guard path present in one trial and
+/// absent in another, and a collection path whose count differs between
+/// two.
+fn trial_shapes(reference: &Reference, solve: &ModelPath) -> BTreeSet<Shape> {
+    let mut reached = BTreeSet::new();
+    let mut guards: BTreeMap<&ModelPath, BTreeSet<bool>> = BTreeMap::new();
+    let mut counts: BTreeMap<&ModelPath, BTreeSet<u64>> = BTreeMap::new();
+    for (path, expected) in reference.trials(solve).iter().flat_map(Trial::answers) {
+        let shape = match expected.node {
+            Some(ToyKind::Cell) => Shape::TrialReachedCell,
+            Some(ToyKind::Guard) => Shape::TrialReachedGuard,
+            Some(ToyKind::Collection) => Shape::TrialReachedCollection,
+            Some(ToyKind::Call) => Shape::TrialReachedCall,
+            _ => continue,
+        };
+        reached.insert(shape);
+        match (expected.node, &expected.outcome) {
+            (Some(ToyKind::Guard), Expect::Value(_) | Expect::Absent) => {
+                let present = expected.outcome != Expect::Absent;
+                guards.entry(path).or_default().insert(present);
+            }
+            (Some(ToyKind::Collection), Expect::Value(Out::Elements { count, .. })) => {
+                counts.entry(path).or_default().insert(*count);
+            }
+            _ => {}
+        }
+    }
+    if guards.values().any(|presence| presence.len() > 1) {
+        reached.insert(Shape::TrialChangedGuard);
+    }
+    if counts.values().any(|count| count.len() > 1) {
+        reached.insert(Shape::TrialChangedCount);
     }
     reached
 }
@@ -566,11 +603,18 @@ impl Session {
             (Some(ToyKind::Shape), Expect::Value(_)) => reached.push(Shape::BoxValue),
             (Some(ToyKind::Measure), Expect::Value(_)) => reached.push(Shape::MeasureValue),
             (Some(ToyKind::Call), Expect::Value(_)) => reached.push(Shape::CallValue),
+            (Some(ToyKind::Solve), Expect::Value(_)) => reached.push(Shape::SolveValue),
+            (Some(ToyKind::Solved(_)), Expect::Value(_)) => reached.push(Shape::SolvedPart),
             (_, Expect::Failure(Failure::WrongType { .. })) => reached.push(Shape::WrongType),
             (Some(ToyKind::Cell), Expect::Failure(Failure::OfKind { kind, code }))
                 if *kind == toy::Cell::ID && *code == toy::DIVISION_BY_ZERO =>
             {
                 reached.push(Shape::DivisionByZero)
+            }
+            (Some(ToyKind::Solve), Expect::Failure(Failure::OfKind { kind, code }))
+                if *kind == toy::Solve::ID && *code == toy::NO_CANDIDATE_HOLDS =>
+            {
+                reached.push(Shape::SolveFoundNoCandidate)
             }
             (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { at })) => {
                 reached.push(Shape::BlockedBy);
@@ -611,6 +655,9 @@ impl Session {
             if above.node == Some(ToyKind::Call) {
                 reached.extend(below_call(reference, &parent, path, &expected.outcome));
             }
+        }
+        if expected.node == Some(ToyKind::Solve) {
+            reached.extend(trial_shapes(reference, path));
         }
         for shape in reached {
             self.reach.reached(shape);

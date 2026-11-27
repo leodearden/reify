@@ -283,7 +283,8 @@ fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
 
 /// The values one step smaller than `value`: an int or a bound toward
 /// zero, true made false, a member or a call's site dropped, or a member's
-/// declaration made smaller, a declaration made smaller.
+/// declaration made smaller, a declaration made smaller, a problem's
+/// candidate dropped or one constraint fewer.
 fn smaller_values(value: &Val) -> Vec<Val> {
     match value {
         Val::Int(value) => {
@@ -329,7 +330,19 @@ fn smaller_values(value: &Val) -> Vec<Val> {
                 Val::Calls(fewer)
             })
             .collect(),
-        Val::Problem(_) => Vec::new(),
+        Val::Problem(problem) => {
+            let dropped = (0..problem.candidates.len()).map(|dropped| {
+                let mut fewer = problem.clone();
+                fewer.candidates.remove(dropped);
+                fewer
+            });
+            let constrained = problem.constraints.checked_sub(1).map(|constraints| {
+                let mut fewer = problem.clone();
+                fewer.constraints = constraints;
+                fewer
+            });
+            dropped.chain(constrained).map(Val::Problem).collect()
+        }
     }
 }
 

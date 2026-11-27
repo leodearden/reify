@@ -6,8 +6,8 @@ use reify_eval_core::{Limit, Link, Space, Step, StepKey};
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{
-    Bind, Decl, Key, ModelPath, Site, ToyKind, Val, call, cell, collection, guard, measure, picker,
-    scope, shape,
+    Bind, Decl, Key, ModelPath, PartType, Site, ToyKind, Val, call, cell, collection, constraint,
+    guard, measure, picker, scope, shape, solve, solved_flag, solved_int, unknown,
 };
 use crate::toy;
 
@@ -157,7 +157,10 @@ fn bind_text(bind: &Bind) -> String {
 }
 
 fn kind_text(kind: ToyKind) -> String {
-    format!("ToyKind::{kind:?}")
+    match kind {
+        ToyKind::Solved(part_type) => format!("ToyKind::Solved(PartType::{part_type:?})"),
+        kind => format!("ToyKind::{kind:?}"),
+    }
 }
 
 /// A declaration as the constructor that makes it, where one does, else
@@ -224,11 +227,43 @@ fn decl_text(decl: &Decl) -> String {
     {
         return format!("measure({})", bind_text(&of));
     }
+    if let Some(text) = solve_text(decl) {
+        return text;
+    }
     let bindings = decl
         .bindings
         .iter()
         .map(|(name, bind)| format!("({name:?}, {})", bind_text(bind)));
     format!("decl({}, [{}])", kind_text(decl.kind), list(bindings))
+}
+
+/// A declaration of a solve or a solved part as the constructor that
+/// makes it, where one does.
+fn solve_text(decl: &Decl) -> Option<String> {
+    let bound = |name: &str| decl.bindings.get(name).cloned();
+    if let Some(problem) = bound("problem") {
+        let unknowns: Vec<_> = (0..).map_while(|at| bound(&unknown(at))).collect();
+        let constraints: Vec<_> = (0..).map_while(|at| bound(&constraint(at))).collect();
+        let made = solve(problem.clone(), unknowns.clone(), constraints.clone());
+        return (*decl == made).then(|| {
+            let (unknowns, constraints) = (unknowns.iter(), constraints.iter());
+            format!(
+                "solve({}, [{}], [{}])",
+                bind_text(&problem),
+                list(unknowns.map(bind_text)),
+                list(constraints.map(bind_text))
+            )
+        });
+    }
+    let (of, Some(Bind::Constant(Val::Int(part)))) = (bound("solve")?, bound("part")) else {
+        return None;
+    };
+    let (made, name) = match decl.kind {
+        ToyKind::Solved(PartType::Int) => (solved_int(of.clone(), part), "solved_int"),
+        ToyKind::Solved(PartType::Flag) => (solved_flag(of.clone(), part), "solved_flag"),
+        _ => return None,
+    };
+    (*decl == made).then(|| format!("{name}({}, {part})", bind_text(&of)))
 }
 
 fn val_text(value: &Val) -> String {
