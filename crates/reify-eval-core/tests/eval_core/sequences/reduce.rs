@@ -171,6 +171,12 @@ fn value_size(value: &Val) -> u64 {
         Val::Members(members) => members.values().map(|decl| 1 + decl_size(decl)).sum(),
         Val::Decl(decl) => decl_size(decl),
         Val::Bound(bound) => *bound,
+        Val::Calls(sites) => sites
+            .iter()
+            .map(|site| {
+                1 + site.sites.len() as u64 + site.offset.unsigned_abs() + decl_size(&site.callee)
+            })
+            .sum(),
     }
 }
 
@@ -188,6 +194,7 @@ fn bind_steps(bind: &Bind) -> u64 {
         Bind::Declarer(place) => place.len() as u64,
         Bind::Passed(r) => r.steps.len() as u64,
         Bind::Input(_) => 0,
+        Bind::Constant(value) => value_size(value),
     }
 }
 
@@ -263,8 +270,8 @@ fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
 }
 
 /// The values one step smaller than `value`: an int or a bound toward
-/// zero, true made false, a member dropped or made smaller, a declaration
-/// made smaller.
+/// zero, true made false, a member or a call's site dropped, or a member's
+/// declaration made smaller, a declaration made smaller.
 fn smaller_values(value: &Val) -> Vec<Val> {
     match value {
         Val::Int(value) => {
@@ -303,11 +310,19 @@ fn smaller_values(value: &Val) -> Vec<Val> {
             }
             smaller.into_iter().map(Val::Bound).collect()
         }
+        Val::Calls(sites) => (0..sites.len())
+            .map(|dropped| {
+                let mut fewer = sites.clone();
+                fewer.remove(dropped);
+                Val::Calls(fewer)
+            })
+            .collect(),
     }
 }
 
 /// A declaration of any other kind made a cell with no terms, a binding
-/// dropped, or a binding's steps shortened by one.
+/// dropped, a binding's steps shortened by one, or a constant's value
+/// made smaller.
 fn smaller_decls(of: &Decl) -> Vec<Decl> {
     let mut smaller = Vec::new();
     if of.kind != ToyKind::Cell {
@@ -332,6 +347,16 @@ fn smaller_decls(of: &Decl) -> Vec<Decl> {
         let mut shortened = of.clone();
         shortened.bindings.insert(name.clone(), shorter);
         smaller.push(shortened);
+    }
+    for (name, bind) in &of.bindings {
+        let Bind::Constant(value) = bind else {
+            continue;
+        };
+        for value in smaller_values(value) {
+            let mut shrunk = of.clone();
+            shrunk.bindings.insert(name.clone(), Bind::Constant(value));
+            smaller.push(shrunk);
+        }
     }
     smaller
 }

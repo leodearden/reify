@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use reify_eval_core::{
-    Binding, Declaration, Input, InputKey, Kind, KindId, Limit, Path, Ref, Root, Step,
+    Binding, Declaration, Input, InputKey, Kind, KindId, Limit, Link, Path, Ref, Root, Step,
 };
 
 use crate::toy;
@@ -21,6 +21,7 @@ pub enum ToyKind {
     Collection,
     Shape,
     Measure,
+    Call,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -48,6 +49,8 @@ pub enum Bind {
     Input(String),
     Declarer(Vec<Step>),
     Passed(ModelRef),
+    /// A value held in the declaration itself.
+    Constant(Val),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,6 +67,21 @@ pub enum Val {
     Decl(Decl),
     /// The value of a limit setting.
     Bound(u64),
+    /// A call's sites, in the order it declares their children.
+    Calls(Vec<Site>),
+}
+
+/// One site of a call, as `toy::CallSite` is: the chain of call sites it
+/// declares its children at, whether it declares one per term, what its
+/// one child is given beside the call's sum, the callee's binding the
+/// argument is bound at, and the callee.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Site {
+    pub sites: Vec<u64>,
+    pub each: bool,
+    pub offset: i64,
+    pub argument: String,
+    pub callee: Decl,
 }
 
 pub type Inputs = BTreeMap<Key, Val>;
@@ -123,6 +141,7 @@ impl Bind {
             Bind::Input(name) => Binding::Input(InputKey::named(name.as_str())),
             Bind::Declarer(place) => Binding::Declarer(place.clone()),
             Bind::Passed(r) => Binding::Passed(r.to_core()),
+            Bind::Constant(value) => Binding::Constant(value.to_core()),
         }
     }
 }
@@ -136,6 +155,7 @@ impl ToyKind {
             ToyKind::Collection => toy::Collection::ID,
             ToyKind::Shape => toy::Shape::ID,
             ToyKind::Measure => toy::Measure::ID,
+            ToyKind::Call => toy::Call::ID,
         }
     }
 }
@@ -165,6 +185,21 @@ impl Val {
             Val::Members(members) => toy::input_of(toy::Members(core_members(members))),
             Val::Decl(decl) => toy::input_of(decl.to_core()),
             Val::Bound(bound) => toy::input_of(*bound),
+            Val::Calls(sites) => {
+                toy::input_of(toy::Calls(sites.iter().map(Site::to_core).collect()))
+            }
+        }
+    }
+}
+
+impl Site {
+    pub fn to_core(&self) -> toy::CallSite {
+        toy::CallSite {
+            sites: self.sites.clone(),
+            each: self.each,
+            offset: self.offset,
+            argument: self.argument.clone(),
+            callee: self.callee.to_core(),
         }
     }
 }
@@ -275,6 +310,39 @@ pub fn measure(shape: Bind) -> Decl {
     decl(ToyKind::Measure, [("shape", shape)])
 }
 
+/// A call adding what `terms` name, bound at "0", "1", … in order, whose
+/// sites are what `calls` names.
+pub fn call(terms: impl IntoIterator<Item = Bind>, calls: Bind) -> Decl {
+    let mut call = cell(terms);
+    call.kind = ToyKind::Call;
+    call.bindings.insert(String::from("calls"), calls);
+    call
+}
+
+/// A call site at the chain `sites` declaring `callee`, its argument bound
+/// at "0".
+pub fn site(sites: &[u64], each: bool, offset: i64, callee: Decl) -> Site {
+    Site {
+        sites: sites.to_vec(),
+        each,
+        offset,
+        argument: String::from("0"),
+        callee,
+    }
+}
+
+/// The step of a call's child: the chain of `sites`, then the iteration
+/// index `each` if the site loops.
+pub fn call_step(sites: &[u64], each: Option<u64>) -> Step {
+    let sites = sites.iter().copied().map(Link::Site);
+    Step::chain(toy::CALL_SPACE, sites.chain(each.map(Link::Iteration)))
+}
+
+/// A binding to the constant `value`.
+pub fn constant(value: Val) -> Bind {
+    Bind::Constant(value)
+}
+
 pub fn int(value: i64) -> Val {
     Val::Int(value)
 }
@@ -289,6 +357,11 @@ pub fn members(members: impl IntoIterator<Item = (Step, Decl)>) -> Val {
 
 pub fn declaration(decl: Decl) -> Val {
     Val::Decl(decl)
+}
+
+/// A call's sites.
+pub fn calls_value(sites: impl IntoIterator<Item = Site>) -> Val {
+    Val::Calls(sites.into_iter().collect())
 }
 
 /// The key of the input declaring root `name`.
