@@ -785,7 +785,18 @@ pub fn evaluate_to_idle(
     snapshot: &Snapshot,
     paths: &[&Path],
 ) -> (Request, Vec<Event>) {
-    let request = core.evaluate(snapshot, demand(paths.iter().copied()), Budget::unlimited());
+    evaluate_within(core, snapshot, paths, Budget::unlimited())
+}
+
+/// A fresh request for `paths` on `snapshot` under `budget`, run to idle,
+/// and the events of that turn.
+pub fn evaluate_within(
+    core: &mut Core,
+    snapshot: &Snapshot,
+    paths: &[&Path],
+    budget: Budget,
+) -> (Request, Vec<Event>) {
+    let request = core.evaluate(snapshot, demand(paths.iter().copied()), budget);
     assert_eq!(core.turn(), Turn::Idle);
     (request, core.take_events())
 }
