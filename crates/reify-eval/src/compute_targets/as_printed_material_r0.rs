@@ -49,11 +49,12 @@ use reify_fdm::{
 use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{
-    AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_vec3, material_frame_value,
-    orthotropic_material, read_base_elastic, zone_params_value,
+    AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_vec3, in_process,
+    material_frame_value, orthotropic_material, read_base_elastic, zone_params_value,
 };
-use super::{MM_TO_M, rejected_input_outcome, struct_data};
-use crate::arg_acceptance::{FieldRejection, dimensionless_spec, length_spec, read_field};
+use super::stdlib_inputs::InputDecodeError;
+use super::{MM_TO_M, struct_data};
+use crate::arg_acceptance::{dimensionless_spec, length_spec, read_field};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// `@optimized("fdm::as_printed_material_r0")` ComputeNode trampoline.
@@ -67,7 +68,8 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// component, degrades the same way. A present numeric FDMProcess field the reader refuses — a number
 /// of the wrong dimension or a value that is not a number at all — is
 /// [`ComputeOutcome::Failed`] with that field's `DimensionedArgRejected` Error,
-/// exactly as on the R-fast rung.
+/// and a base material missing a declared field is a `ComputeInputMalformed`
+/// one, exactly as on the R-fast rung.
 pub fn as_printed_material_r0_trampoline(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
@@ -83,15 +85,16 @@ pub fn as_printed_material_r0_trampoline(
             diagnostics: Vec::new(),
             structured_detail: vec![],
         },
-        Err(rejection) => rejected_input_outcome(rejection.to_error(AS_PRINTED_MATERIAL)),
+        Err(err) => err.into_failed(AS_PRINTED_MATERIAL),
     }
 }
 
 /// Build the R0 `AsPrintedZones` material field: `Ok(None)` if any required
 /// input is missing / malformed / non-finite (caller degrades to
 /// [`degraded_field`]), `Err` if a present numeric FDMProcess field is refused
-/// — a number of the wrong dimension or a value that is not a number at all.
-fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejection> {
+/// — a number of the wrong dimension or a value that is not a number at all —
+/// or the base material lacks a declared field.
+fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, InputDecodeError> {
     // value_inputs = [gcode String, FDMProcess, AsPrintedOptions].
     let Some(process) = value_inputs.get(1).and_then(struct_data) else {
         return Ok(None);
@@ -100,8 +103,9 @@ fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejectio
     // ── FDMProcess → BaseElastic + R0Options ───────────────────────────────────
     // The dimension-checked reads run first, so a rejection never depends on
     // whether the G-code parses.
-    let layer_height = read_field(process, "layer_height", &length_spec())?;
-    let infill_density = read_field(process, "infill_density", &dimensionless_spec())?;
+    let layer_height = read_field(process, "layer_height", &length_spec()).map_err(in_process)?;
+    let infill_density =
+        read_field(process, "infill_density", &dimensionless_spec()).map_err(in_process)?;
     let base = read_base_elastic(process)?;
     let (
         Some(Value::String(gcode)),
