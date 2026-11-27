@@ -47,10 +47,7 @@ fn a_path_name_is_a_reify_identifier() {
 
 #[test]
 fn a_module_name_has_at_least_one_segment() {
-    assert_eq!(
-        ModuleName::new(vec![]),
-        Err(InstancePathError::EmptyModule)
-    );
+    assert_eq!(ModuleName::new(vec![]), Err(InstancePathError::EmptyModule));
     let module = ModuleName::new(vec![name("std"), name("units")]).expect("two segments");
     assert_eq!(module.segments(), &[name("std"), name("units")]);
 }
@@ -68,7 +65,10 @@ fn an_auto_site_has_segments_and_every_chain_names_an_argument() {
         key: None,
     };
 
-    assert_eq!(AutoSite::new(a(), vec![]), Err(InstancePathError::EmptyAutoSite));
+    assert_eq!(
+        AutoSite::new(a(), vec![]),
+        Err(InstancePathError::EmptyAutoSite)
+    );
     assert_eq!(
         AutoSite::new(a(), vec![AutoSiteSegment::Chain(chain(&[0]))]),
         Err(InstancePathError::ChainWithoutArgument {
@@ -93,7 +93,10 @@ fn an_auto_site_has_segments_and_every_chain_names_an_argument() {
     assert_eq!(
         AutoSite::new(
             a(),
-            vec![AutoSiteSegment::Chain(chain(&[0])), AutoSiteSegment::Placement]
+            vec![
+                AutoSiteSegment::Chain(chain(&[0])),
+                AutoSiteSegment::Placement
+            ]
         ),
         Err(InstancePathError::ChainWithoutArgument {
             chain: chain(&[0]),
