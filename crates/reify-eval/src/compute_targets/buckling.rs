@@ -93,7 +93,7 @@ use reify_solver_elastic::{
 };
 
 use super::fea_loads::{load_items, point_load_force};
-use super::stdlib_inputs::{InputDecodeError, extract_material, read_positional};
+use super::stdlib_inputs::{DecodeStdlibInput, InputDecodeError, read_positional};
 use crate::arg_acceptance::length_spec;
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -682,7 +682,7 @@ struct BucklingInputs {
 /// readers as `solve_elastic_static`, returning the first `Err`.
 fn read_buckling_inputs(value_inputs: &[Value]) -> Result<BucklingInputs, InputDecodeError> {
     Ok(BucklingInputs {
-        mat: extract_material(&value_inputs[0])?,
+        mat: IsotropicElastic::decode(&value_inputs[0])?,
         length: read_positional(&value_inputs[1], "length", &length_spec())?,
         width: read_positional(&value_inputs[2], "width", &length_spec())?,
         height: read_positional(&value_inputs[3], "height", &length_spec())?,

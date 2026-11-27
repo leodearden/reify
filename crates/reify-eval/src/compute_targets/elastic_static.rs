@@ -233,8 +233,8 @@ use super::fea_loads::{
     gravity_magnitude, load_items, material_density, point_load_force, pressure_load_magnitude,
 };
 use super::stdlib_inputs::{
-    ComponentRead, DecodeFailure, InputDecodeError, extract_material, isotropic_from_data,
-    read_component, read_positional, required_field,
+    ComponentRead, DecodeFailure, DecodeStdlibInput, InputDecodeError, read_component,
+    read_positional, required_field,
 };
 use crate::arg_acceptance::{dimensionless_spec, length_spec, pressure_spec};
 use reify_solver_elastic::{
@@ -4272,7 +4272,7 @@ fn element_stress_anisotropic(
 /// - `"OrthotropicMaterial"` → read 9 constants (e1..e3, g12..g23, nu12..nu23)
 ///   → `Rust OrthotropicMaterial` → `AnisotropicMaterial::from_law(&law, I₃)` → Anisotropic.
 /// - `"TransverseIsotropicMaterial"` → read 5 constants → same.
-/// - else → `extract_material` (reads `youngs_modulus` + `poisson_ratio`) → Isotropic.
+/// - else → the `ElasticMaterial` decoder (`youngs_modulus` + `poisson_ratio`) → Isotropic.
 ///
 /// Identity material frame `I₃` is used for the homogeneous `ConstitutiveLaw`
 /// surface (axis-aligned cantilever, beam axis = material 1-axis → E1 governs
@@ -4282,7 +4282,7 @@ fn element_stress_anisotropic(
 /// Task D7 (compute-fea-hardening PRD): Result-ified — returns
 /// `Err(InputDecodeError)` instead of panicking on a malformed `Value`,
 /// propagating every dependency-extractor call (`classify_material_as_printed_zones`,
-/// `modulus_field`, `ratio_field`, `extract_material`) via `?`, and its own
+/// `modulus_field`, `ratio_field`, the `ElasticMaterial` decoder) via `?`, and its own
 /// non-StructureInstance guard returns `NotAStructure` at the `material`
 /// input directly instead of panicking. The sole production call site
 /// (`solve_elastic_static_trampoline`'s validate-all-inputs gate, D9/task
@@ -4307,20 +4307,16 @@ fn classify_material(val: &Value) -> Result<MaterialModel, InputDecodeError> {
     if is_named_anisotropic_law(&data.type_name) {
         Ok(MaterialModel::Anisotropic(law_from_value(data, IDENTITY)?))
     } else {
-        // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
-        // from the pre-δ trampoline). `val` is already known to be
-        // Value::StructureInstance here — the `data` match above returns
-        // Err on any other variant before control reaches this arm — so
-        // extract_material's own NotAStructure check is
-        // defensive/unreachable from this call site; it exists so the leaf
-        // is directly unit-testable on a non-StructureInstance input (see
-        // extract_material_rejects_non_structure_instance).
+        // Isotropic fallback: the ElasticMaterial decoder reads
+        // youngs_modulus + poisson_ratio off the already-destructured data
+        // (`val` is a StructureInstance here; the `data` match above returns
+        // Err on any other variant).
         //
         // Deliberately NOT routed through `law_from_value`/`from_law`:
         // this arm returns the bare `IsotropicElastic` as
         // `MaterialModel::Isotropic`, not an `AnisotropicMaterial`, so a
         // homogeneous isotropic field keeps its own compute path.
-        Ok(MaterialModel::Isotropic(extract_material(val)?))
+        Ok(MaterialModel::Isotropic(IsotropicElastic::decode_fields(data)?))
     }
 }
 
@@ -4596,7 +4592,7 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, InputDe
 /// `law`'s `type_name` dispatches three ways (the shared `law_from_value`) —
 /// `OrthotropicMaterial`, `TransverseIsotropicMaterial`, or (task #7210) an
 /// isotropic-structural fallback that reads `youngs_modulus`/`poisson_ratio`
-/// via `isotropic_from_data`. The prior "unsupported law type" panic (task
+/// through the `ElasticMaterial` decoder. The prior "unsupported law type" panic (task
 /// #5084) rested on the premise that the DSL only ever emits the two named
 /// laws here; that premise was false — `AnisotropicMaterial.law` is declared
 /// `ConstitutiveLaw` in `constitutive.ri`, and every isotropic preset in
@@ -4709,10 +4705,10 @@ fn law_from_value(
         // MySteel : DampedMaterial`, so presence of the
         // youngs_modulus/poisson_ratio pair — not a name list — is the only
         // sound discriminator (mirrors `classify_material`'s own isotropic
-        // `_` arm, which calls `extract_material` directly rather than
-        // through this function — see its comment for why). Reads straight
-        // off `law_data` via `isotropic_from_data`, so there is no second
-        // `&Value` that could describe a different StructureInstance.
+        // `_` arm, which calls the decoder directly rather than through this
+        // function — see its comment for why). Reads straight off `law_data`
+        // via `decode_fields`, so there is no second `&Value` that could
+        // describe a different StructureInstance.
         //
         // A failure here means `type_name` matched neither named arm above
         // NOR the isotropic shape, so `annotate_law_type` folds the
@@ -4725,7 +4721,7 @@ fn law_from_value(
         // an isotropic DampedMaterial preset is exactly where a non-zero eta
         // matters for #6883 (eta, MSE).
         _ => {
-            let law = isotropic_from_data(law_data)
+            let law = IsotropicElastic::decode_fields(law_data)
                 .map_err(|e| annotate_law_type(e, &law_data.type_name))?;
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
@@ -11740,231 +11736,6 @@ mod tests {
         };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0), scalar(4.0)]);
         assert_eq!(extract_point3_si(&point, "aabb_min"), Ok([1.0, 2.0, 3.0]));
-    }
-
-    // ── task 5081 (PRD compute-fea-hardening D3): Result-ify extract_material
-    // (isotropic material scalar/real field extraction) — mirrors D2's
-    // RED-plus-characterization-lock pattern. ─────────────────────────────
-
-    /// step-1 RED: `extract_material` must reject a non-StructureInstance
-    /// `Value` with `NotAStructure` naming `ElasticMaterial` instead of
-    /// panicking.
-    #[test]
-    fn extract_material_rejects_non_structure_instance() {
-        let res = extract_material(&Value::Real(1.0));
-        match res {
-            Err(InputDecodeError {
-                input,
-                failure: DecodeFailure::NotAStructure { .. },
-                ..
-            }) => {
-                assert_eq!(input, "ElasticMaterial");
-            }
-            other => panic!(
-                "expected Err(ExpectedStructureInstance) for a non-StructureInstance Value, got: {:?}",
-                other
-            ),
-        }
-    }
-
-    /// Amendment (task #5081 review round 3, suggestion 1): shared
-    /// `Value::StructureInstance` builder for the `extract_material_*` tests
-    /// below, replacing the repeated ~8-line struct-literal boilerplate.
-    /// `PersistentMap`/`StructureInstanceData`/`StructureTypeId` are already
-    /// in scope via the `use super::*` at the top of this test module, so
-    /// the per-test `use reify_ir::{..}` imports these tests used to repeat
-    /// are no longer needed either.
-    fn isotropic_material(fields: PersistentMap<String, Value>) -> Value {
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "IsotropicMaterial".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 1,
-            fields,
-        }))
-    }
-
-    /// A well-formed `youngs_modulus` field pair (`Value::Scalar<Pressure>`),
-    /// shared by the `poisson_ratio`-focused tests below where
-    /// `youngs_modulus` must already be valid for control to reach the
-    /// `poisson_ratio` read.
-    fn valid_youngs_modulus_field() -> (String, Value) {
-        (
-            "youngs_modulus".to_string(),
-            Value::Scalar {
-                si_value: 2.0e9,
-                dimension: DimensionVector::PRESSURE,
-            },
-        )
-    }
-
-    /// `extract_material` reads `youngs_modulus` under `pressure_spec`, the
-    /// as-printed reader's spec for the same field: a bare `Real` and a
-    /// `Scalar` of another dimension are both `Rejected`, naming the field. A
-    /// LENGTH modulus is refused rather than read as pascals.
-    #[test]
-    fn extract_material_rejects_wrong_typed_youngs_modulus() {
-        for youngs_modulus in [Value::Real(1.0), scalar(1.0, DimensionVector::LENGTH)] {
-            let fields: PersistentMap<String, Value> = [
-                ("youngs_modulus".to_string(), youngs_modulus.clone()),
-                ("poisson_ratio".to_string(), Value::Real(0.3)),
-            ]
-            .into_iter()
-            .collect();
-
-            let res = extract_material(&isotropic_material(fields));
-            assert!(
-                matches!(
-                    &res,
-                    Err(InputDecodeError {
-                        failure: DecodeFailure::Rejected(FieldRejection { path, rejection }),
-                        ..
-                    }) if path == "ElasticMaterial.youngs_modulus"
-                        && rejection.expected == "Pressure"
-                ),
-                "youngs_modulus {youngs_modulus:?} must be Rejected naming \
-                 ElasticMaterial.youngs_modulus, got {res:?}"
-            );
-        }
-    }
-
-    /// Amendment (task #5081 review, suggestion 2): `extract_material` must
-    /// route an absent `youngs_modulus` field to `Missing` rather than silently
-    /// falling through. An unresolved (`Undef`) one is no missing field: it
-    /// is `Unresolved`, so the diagnostic does not misdirect an
-    /// Undef-propagation investigation.
-    #[test]
-    fn extract_material_rejects_missing_youngs_modulus() {
-        let res = extract_material(&isotropic_material(PersistentMap::new()));
-        assert!(
-            matches!(
-                res,
-                Err(InputDecodeError {
-                    field: Some("youngs_modulus"),
-                    failure: DecodeFailure::Missing,
-                    ..
-                })
-            ),
-            "expected Missing for an absent youngs_modulus field, got: {:?}",
-            res
-        );
-        let unresolved: PersistentMap<String, Value> =
-            [("youngs_modulus".to_string(), Value::Undef)]
-                .into_iter()
-                .collect();
-        let res = extract_material(&isotropic_material(unresolved));
-        assert!(
-            matches!(
-                res,
-                Err(InputDecodeError {
-                    field: Some("youngs_modulus"),
-                    failure: DecodeFailure::Unresolved,
-                    ..
-                })
-            ),
-            "an unresolved youngs_modulus must be Unresolved, not missing, got: {res:?}"
-        );
-    }
-
-    /// `extract_material` reads `poisson_ratio` under `dimensionless_spec`, the
-    /// as-printed reader's spec for the same field: a dimensioned `Scalar` is
-    /// `Rejected`, naming the field. `youngs_modulus` is well-formed so
-    /// control reaches the `poisson_ratio` read.
-    #[test]
-    fn extract_material_rejects_wrong_typed_poisson_ratio() {
-        let fields: PersistentMap<String, Value> = [
-            valid_youngs_modulus_field(),
-            (
-                "poisson_ratio".to_string(),
-                scalar(0.3, DimensionVector::PRESSURE),
-            ),
-        ]
-        .into_iter()
-        .collect();
-
-        let res = extract_material(&isotropic_material(fields));
-        assert!(
-            matches!(
-                &res,
-                Err(InputDecodeError {
-                    failure: DecodeFailure::Rejected(FieldRejection { path, rejection }),
-                    ..
-                }) if path == "ElasticMaterial.poisson_ratio" && rejection.expected == "Real"
-            ),
-            "a PRESSURE poisson_ratio must be Rejected naming \
-             ElasticMaterial.poisson_ratio, got {res:?}"
-        );
-    }
-
-    /// Every dimensionless spelling of `poisson_ratio` reads, as it does in the
-    /// as-printed reader: a `Real`, an `Int` and a dimensionless `Scalar`.
-    #[test]
-    fn extract_material_reads_every_dimensionless_poisson_ratio_spelling() {
-        for poisson_ratio in [
-            Value::Real(0.0),
-            Value::Int(0),
-            scalar(0.0, DimensionVector::DIMENSIONLESS),
-        ] {
-            let fields: PersistentMap<String, Value> = [
-                valid_youngs_modulus_field(),
-                ("poisson_ratio".to_string(), poisson_ratio.clone()),
-            ]
-            .into_iter()
-            .collect();
-
-            assert_eq!(
-                extract_material(&isotropic_material(fields)),
-                Ok(IsotropicElastic {
-                    youngs_modulus: 2.0e9,
-                    poisson_ratio: 0.0,
-                }),
-                "poisson_ratio {poisson_ratio:?} must read as 0.0"
-            );
-        }
-    }
-
-    /// Amendment (task #5081 review, amendment round 2): `extract_material`
-    /// must route an absent `poisson_ratio` field to `Missing` rather than silently
-    /// falling through. Mirrors `extract_material_rejects_missing_youngs_modulus`,
-    /// so each field has direct wrong-typed AND absent coverage.
-    #[test]
-    fn extract_material_rejects_missing_poisson_ratio() {
-        let fields: PersistentMap<String, Value> =
-            [valid_youngs_modulus_field()].into_iter().collect();
-
-        let res = extract_material(&isotropic_material(fields));
-        assert!(
-            matches!(
-                res,
-                Err(InputDecodeError {
-                    field: Some("poisson_ratio"),
-                    failure: DecodeFailure::Missing,
-                    ..
-                })
-            ),
-            "expected Missing for an absent poisson_ratio field, got: {:?}",
-            res
-        );
-    }
-
-    /// step-5: `extract_material` must return `Ok` with the exact
-    /// `IsotropicElastic` values for a well-formed material StructureInstance,
-    /// locking the success path alongside the error paths above.
-    #[test]
-    fn extract_material_accepts_well_formed_material() {
-        let fields: PersistentMap<String, Value> = [
-            valid_youngs_modulus_field(),
-            ("poisson_ratio".to_string(), Value::Real(0.3)),
-        ]
-        .into_iter()
-        .collect();
-
-        assert_eq!(
-            extract_material(&isotropic_material(fields)),
-            Ok(IsotropicElastic {
-                youngs_modulus: 2.0e9,
-                poisson_ratio: 0.3,
-            })
-        );
     }
 
     // ── task #5084 (PRD compute-fea-hardening D5): anisotropic_material_from_value

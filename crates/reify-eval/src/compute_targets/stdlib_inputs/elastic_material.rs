@@ -1,30 +1,33 @@
 //! The `ElasticMaterial` input: the isotropic pair `youngs_modulus` /
 //! `poisson_ratio` every FEA trampoline reads.
 
-use reify_ir::{StructureInstanceData, Value};
+use reify_ir::StructureInstanceData;
 use reify_solver_elastic::IsotropicElastic;
 
-use super::{InputDecodeError, required_field};
+use super::{DecodeStdlibInput, InputDecodeError, required_field};
 use crate::arg_acceptance::{dimensionless_spec, pressure_spec};
 
-const STRUCTURE: &str = "ElasticMaterial";
+/// `ElasticMaterial`'s isotropic pair, decoded off any conformer by shape:
+/// `youngs_modulus` a Pressure, `poisson_ratio` dimensionless. `density` and
+/// `yield_stress` stay with the trampolines that read them.
+impl DecodeStdlibInput for IsotropicElastic {
+    const STRUCTURE: &'static str = "ElasticMaterial";
 
-/// Read `youngs_modulus` (a Pressure) and `poisson_ratio` (dimensionless) off
-/// an already-destructured instance.
-pub(crate) fn isotropic_from_data(
-    data: &StructureInstanceData,
-) -> Result<IsotropicElastic, InputDecodeError> {
-    Ok(IsotropicElastic {
-        youngs_modulus: required_field(data, STRUCTURE, "youngs_modulus", &pressure_spec())?,
-        poisson_ratio: required_field(data, STRUCTURE, "poisson_ratio", &dimensionless_spec())?,
-    })
-}
-
-/// [`isotropic_from_data`] on a `Value`, which must be a structure instance.
-pub(crate) fn extract_material(val: &Value) -> Result<IsotropicElastic, InputDecodeError> {
-    match val {
-        Value::StructureInstance(data) => isotropic_from_data(data),
-        other => Err(InputDecodeError::not_a_structure(STRUCTURE, None, other)),
+    fn decode_fields(data: &StructureInstanceData) -> Result<Self, InputDecodeError> {
+        Ok(IsotropicElastic {
+            youngs_modulus: required_field(
+                data,
+                Self::STRUCTURE,
+                "youngs_modulus",
+                &pressure_spec(),
+            )?,
+            poisson_ratio: required_field(
+                data,
+                Self::STRUCTURE,
+                "poisson_ratio",
+                &dimensionless_spec(),
+            )?,
+        })
     }
 }
 

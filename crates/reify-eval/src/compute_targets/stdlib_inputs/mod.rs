@@ -20,8 +20,6 @@ mod elastic_material;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub(crate) use elastic_material::{extract_material, isotropic_from_data};
-
 /// A stdlib structure (or trait) a trampoline decodes from one input `Value`.
 pub(crate) trait DecodeStdlibInput: Sized {
     /// The name every path the decoder emits starts with: the trait name for
