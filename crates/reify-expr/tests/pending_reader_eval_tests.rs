@@ -11,10 +11,14 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
-use reify_core::{Type, ValueCellId};
+use reify_ast::QuantifierKind;
+use reify_core::{Diagnostic, DimensionVector, Type, ValueCellId};
 use reify_expr::{CellRead, EvalContext, Evaluated, PendingReader, eval_expr, eval_expr_or_pending};
-use reify_ir::{BinOp, CompiledExpr, CompiledMatchArm, CompiledPattern, Value, ValueMap};
-use reify_test_support::builders::{list_expr, std_call};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledMatchArm, CompiledPattern,
+    ComputeDispatch, ComputeDispatchOutcome, Value, ValueMap,
+};
+use reify_test_support::builders::{compiled_function, conditional_expr, list_expr, std_call};
 
 // ── The test reader ─────────────────────────────────────────────────────────
 
@@ -274,7 +278,7 @@ fn a_logical_operator_whose_left_operand_decides_is_pending_when_the_other_is_no
 // ── An `if` or a `match` whose condition is pending evaluates no arm ───────
 
 fn if_then_else(condition: CompiledExpr, a: &ValueCellId, b: &ValueCellId) -> CompiledExpr {
-    reify_test_support::builders::conditional_expr(condition, read_int(a), read_int(b))
+    conditional_expr(condition, read_int(a), read_int(b))
 }
 
 /// `match discriminant { Red => read(a), _ => read(b) }`.
@@ -388,8 +392,6 @@ fn an_if_or_a_match_whose_condition_is_here_evaluates_only_the_taken_arm() {
 
 // ── A quantifier evaluates its body for every element ──────────────────────
 
-use reify_ast::QuantifierKind;
-
 const MANY: usize = 10_000;
 
 fn element(i: usize) -> ValueCellId {
@@ -470,7 +472,7 @@ fn a_quantifier_over_ten_thousand_cells_that_are_here_asks_for_every_one_and_kee
 /// `forall p in [0, 1]: if p == 0 then false else read(other)`, after corpus
 /// entry `quantifier-later-element-read-is-cycle`.
 fn later_element_reads_other(other: &ValueCellId) -> CompiledExpr {
-    let body = reify_test_support::builders::conditional_expr(
+    let body = conditional_expr(
         binop(BinOp::Eq, read_int(&loop_var()), int(0), Type::Bool),
         CompiledExpr::literal(Value::Bool(false), Type::Bool),
         read_bool(other),
@@ -500,7 +502,7 @@ fn a_quantifier_whose_collection_holds_a_pending_read_evaluates_no_body() {
         .not_yet(&c)
         .with(&a, Value::Bool(true))
         .with(&b, Value::Bool(true));
-    let body = reify_test_support::builders::conditional_expr(
+    let body = conditional_expr(
         binop(BinOp::Eq, read_int(&loop_var()), int(1), Type::Bool),
         read_bool(&a),
         read_bool(&b),
@@ -526,4 +528,139 @@ fn a_quantifier_over_an_empty_list_asks_nothing_and_keeps_its_value() {
         assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(expected), "{kind:?}");
         assert_eq!(asked(&reader), BTreeSet::new(), "{kind:?}");
     }
+}
+
+// ── Calls ───────────────────────────────────────────────────────────────────
+
+/// An expression that panics when evaluated: `MetaAccess` with no meta context.
+fn panic_on_eval_sentinel() -> CompiledExpr {
+    CompiledExpr::meta_access("__sentinel".into(), "should_not_evaluate".into())
+}
+
+fn millimetres(n: f64) -> Value {
+    Value::Scalar {
+        si_value: n / 1000.0,
+        dimension: DimensionVector::LENGTH,
+    }
+}
+
+/// `fn <name>(x: Length) -> <body's type> { body }`.
+fn unary_fn(name: &str, body: CompiledExpr) -> CompiledFunction {
+    compiled_function(name, &[("x", Type::length())], vec![], body)
+}
+
+fn call(function: &CompiledFunction, args: Vec<CompiledExpr>) -> CompiledExpr {
+    CompiledExpr::user_function_call(function.name.clone(), args, function.return_type.clone())
+}
+
+#[test]
+fn a_user_function_called_with_an_undefined_argument_is_entered() {
+    let u = cell("u");
+    let five = unary_fn(
+        "five",
+        CompiledExpr::literal(millimetres(5.0), Type::length()),
+    );
+    let expr = call(&five, vec![read(&u, Type::length())]);
+    let functions = [five];
+    let empty = ValueMap::new();
+    let ctx = EvalContext::new(&empty, &functions);
+
+    let reader = TestReader::new().with(&u, Value::Undef);
+    assert_eq!(
+        eval_expr_or_pending(&expr, &ctx, &reader),
+        Evaluated::Value(millimetres(5.0))
+    );
+    assert_eq!(eval_expr(&expr, &ctx), Value::Undef, "the old entry does not enter it");
+}
+
+#[test]
+fn a_user_function_called_with_a_pending_argument_is_not_entered() {
+    let c = cell("c");
+    let boom = unary_fn("boom", panic_on_eval_sentinel());
+    let expr = call(&boom, vec![read(&c, Type::length())]);
+    let functions = [boom];
+    let empty = ValueMap::new();
+    let ctx = EvalContext::new(&empty, &functions);
+
+    let reader = TestReader::new().not_yet(&c);
+    assert_eq!(eval_expr_or_pending(&expr, &ctx, &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&c]));
+}
+
+/// A selector hook that builds `Int 7` for a call named `probe`.
+fn probe_hook(expr: &CompiledExpr, _: &ValueMap, _: &mut Vec<Diagnostic>) -> Option<Value> {
+    match &expr.kind {
+        CompiledExprKind::FunctionCall { function, .. } if function.name == "probe" => {
+            Some(Value::Int(7))
+        }
+        _ => None,
+    }
+}
+
+fn panicking_hook(expr: &CompiledExpr, _: &ValueMap, _: &mut Vec<Diagnostic>) -> Option<Value> {
+    panic!("the built-in was run: {:?}", expr.kind)
+}
+
+#[test]
+fn a_built_in_called_with_an_undefined_argument_is_not_run() {
+    let u = cell("u");
+    let expr = std_call("probe", vec![read_int(&u)], Type::Int);
+    let empty = ValueMap::new();
+    let ctx = EvalContext::simple(&empty).with_symbolic_selector_ctor(probe_hook);
+
+    let reader = TestReader::new().with(&u, Value::Undef);
+    assert_eq!(
+        eval_expr_or_pending(&expr, &ctx, &reader),
+        Evaluated::Value(Value::Undef)
+    );
+
+    let reader = TestReader::new().with(&u, Value::Int(1));
+    assert_eq!(
+        eval_expr_or_pending(&expr, &ctx, &reader),
+        Evaluated::Value(Value::Int(7)),
+        "with a defined argument the built-in is run"
+    );
+}
+
+#[test]
+fn a_built_in_whose_argument_holds_a_pending_read_in_a_container_is_not_run() {
+    let c = cell("c");
+    let expr = std_call(
+        "probe",
+        vec![list_expr(vec![read_int(&c)])],
+        Type::Int,
+    );
+    let empty = ValueMap::new();
+    let ctx = EvalContext::simple(&empty).with_symbolic_selector_ctor(panicking_hook);
+
+    let reader = TestReader::new().not_yet(&c);
+    assert_eq!(eval_expr_or_pending(&expr, &ctx, &reader), Evaluated::Pending);
+}
+
+/// A compute dispatcher that panics if anything is dispatched to it.
+struct PanickingDispatch;
+
+impl ComputeDispatch for PanickingDispatch {
+    fn dispatch(&self, target: &str, args: &[Value]) -> ComputeDispatchOutcome {
+        panic!("dispatched {target} with {args:?}")
+    }
+}
+
+#[test]
+fn an_optimized_function_called_with_an_undefined_argument_evaluates_its_body_without_dispatch() {
+    let u = cell("u");
+    let five = CompiledFunction {
+        optimized_target: Some("solver::five".to_string()),
+        ..unary_fn("five", CompiledExpr::literal(millimetres(5.0), Type::length()))
+    };
+    let expr = call(&five, vec![read(&u, Type::length())]);
+    let functions = [five];
+    let empty = ValueMap::new();
+    let ctx = EvalContext::new(&empty, &functions).with_compute_dispatch(&PanickingDispatch);
+
+    let reader = TestReader::new().with(&u, Value::Undef);
+    assert_eq!(
+        eval_expr_or_pending(&expr, &ctx, &reader),
+        Evaluated::Value(millimetres(5.0))
+    );
 }
