@@ -9,13 +9,12 @@ use std::sync::Arc;
 
 use crate::declaration::Declaration;
 use crate::declared_children::{ChildSteps, DeclaredChildren};
+use crate::index::Declared;
 use crate::key::Key;
 use crate::record::Answers;
 
 pub(crate) struct Lookup {
-    declaration: Arc<Declaration>,
-    /// Whether its declaration depended on a substitution.
-    declared_dependent: bool,
+    declared: Declared,
     /// Whether the answer it finds depends on a substitution so far: its
     /// declaration did, or a request it moved past read an answer that did.
     depended: bool,
@@ -27,13 +26,11 @@ pub(crate) struct Lookup {
 }
 
 impl Lookup {
-    /// A lookup for a node declared `declaration`, whose declaration
-    /// `depended` on a substitution or not, starting at `key`.
-    pub fn new(declaration: Arc<Declaration>, depended: bool, key: Key) -> Self {
+    /// A lookup for a node `declared` so, starting at `key`.
+    pub fn new(declared: Declared, key: Key) -> Self {
         Self {
-            declaration,
-            declared_dependent: depended,
-            depended,
+            depended: declared.depended,
+            declared,
             key,
             children: DeclaredChildren::default(),
             queued: false,
@@ -41,7 +38,7 @@ impl Lookup {
     }
 
     pub fn declaration(&self) -> &Arc<Declaration> {
-        &self.declaration
+        &self.declared.declaration
     }
 
     /// The children the requests it moved past declared.
@@ -54,18 +51,18 @@ impl Lookup {
         self.depended
     }
 
-    /// Gives up the lookup, which found nothing to apply, leaving the
-    /// declaration for the body that runs in its place, with whether it
-    /// depended on a substitution.
-    pub fn miss(self) -> (Arc<Declaration>, bool) {
-        (self.declaration, self.declared_dependent)
+    /// Gives up the lookup, which found nothing to apply, leaving what the
+    /// node was declared as for the body that runs in its place.
+    pub fn miss(self) -> Declared {
+        self.declared
     }
 
     /// Gives up the lookup, which found a result: the node's declaration,
     /// the steps of the children it declared and whether the result
     /// depended on a substitution.
     pub fn found(self) -> (Arc<Declaration>, ChildSteps, bool) {
-        (self.declaration, self.children.into_steps(), self.depended)
+        let declaration = self.declared.declaration;
+        (declaration, self.children.into_steps(), self.depended)
     }
 
     pub fn key(&self) -> Key {

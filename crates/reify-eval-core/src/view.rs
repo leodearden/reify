@@ -5,8 +5,9 @@
 
 use std::sync::Arc;
 
+pub use crate::mailbox::Viewed;
 use crate::mailbox::{Ask, Mailbox, Reply};
-use crate::outcome::{Outcome, Value};
+use crate::outcome::Value;
 use crate::reference::Ref;
 use crate::substitution::Substitution;
 use crate::wanted::Wanted;
@@ -16,15 +17,6 @@ pub struct View<'a> {
     /// Which of its run's views it is, in the order they were opened.
     ordinal: u32,
     substitution: Substitution,
-}
-
-/// What a read through a view gave.
-#[derive(Debug, PartialEq)]
-pub struct Viewed<T: ?Sized> {
-    pub outcome: Outcome<T>,
-    /// Whether the answer depended on the substitution: it is supposed, or
-    /// what it was worked out from read a supposed answer.
-    pub depended: bool,
 }
 
 impl<'a> View<'a> {
@@ -46,7 +38,8 @@ impl<'a> View<'a> {
         };
         match self.mailbox.exchange(ask).await {
             Reply::Viewed(mut viewed) => {
-                let (outcome, depended) = viewed.pop().expect("a read gives an outcome per item");
+                let Viewed { outcome, depended } =
+                    viewed.pop().expect("a read gives an outcome per item");
                 Viewed {
                     outcome: outcome.downcast(),
                     depended,

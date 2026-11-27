@@ -40,10 +40,19 @@ pub(crate) enum Ask {
 
 pub(crate) enum Reply {
     Outcomes(Vec<Outcome<Erased>>),
-    /// Each outcome read through a view, with whether it depended on the
-    /// substitution.
-    Viewed(Vec<(Outcome<Erased>, bool)>),
+    /// What each item read through a view gave.
+    Viewed(Vec<Viewed<Erased>>),
     Product(Product),
+}
+
+/// What a read through a view gave. Defined with the replies, which carry
+/// it, and named by `view`, which reads it.
+#[derive(Debug, PartialEq)]
+pub struct Viewed<T: ?Sized> {
+    pub outcome: Outcome<T>,
+    /// Whether the answer depended on the substitution: it is supposed, or
+    /// what it was worked out from read a supposed answer.
+    pub depended: bool,
 }
 
 pub(crate) enum Posted {

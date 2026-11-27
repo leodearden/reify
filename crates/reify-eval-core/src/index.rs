@@ -87,6 +87,17 @@ impl Entry {
     }
 }
 
+/// What a node was declared as in its state, `D` being an outcome that may
+/// be no declaration or a node's own declaration; and whether that
+/// depended on the substitution of the state's view: it did where it was
+/// read from a parent's answer, or declared by a run, that did. In a
+/// snapshot it never does.
+#[derive(Clone)]
+pub(crate) struct Declared<D = Arc<Declaration>> {
+    pub declaration: D,
+    pub depended: bool,
+}
+
 /// An outcome a view supposes at a path, with its content.
 pub(crate) struct Supposed {
     pub outcome: Outcome<Erased>,

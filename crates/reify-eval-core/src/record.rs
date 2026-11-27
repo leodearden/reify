@@ -12,6 +12,7 @@ use crate::content::Content;
 use crate::declaration::Declaration;
 use crate::declared_children::{Conflict, DeclaredChildren};
 use crate::index::{Index, StateId};
+use crate::mailbox::Viewed;
 use crate::outcome::{Erased, Outcome};
 use crate::path_table::PathId;
 use crate::step::Step;
@@ -80,9 +81,14 @@ impl Answers {
         self.outcomes
     }
 
-    /// Each outcome, with whether it depended on a substitution.
-    pub fn into_viewed(self) -> Vec<(Outcome<Erased>, bool)> {
-        self.outcomes.into_iter().zip(self.depended).collect()
+    /// What each item read gave, as a read through a view reports it.
+    pub fn into_viewed(self) -> Vec<Viewed<Erased>> {
+        let viewed = |(outcome, depended)| Viewed { outcome, depended };
+        self.outcomes
+            .into_iter()
+            .zip(self.depended)
+            .map(viewed)
+            .collect()
     }
 }
 

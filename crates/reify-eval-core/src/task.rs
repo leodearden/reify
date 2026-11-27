@@ -11,7 +11,7 @@ use crate::cx::Cx;
 use crate::declaration::Declaration;
 use crate::declared_children::{ChildSteps, DeclaredChildren};
 use crate::erased_kind::{Body, ErasedKind};
-use crate::index::StateId;
+use crate::index::{Declared, StateId};
 use crate::job::Product;
 use crate::key::Chain;
 use crate::mailbox::{Mailbox, Posted, Reply};
@@ -56,9 +56,12 @@ pub(crate) struct Task {
 }
 
 impl Task {
-    /// Starts the body of `kind` for a node declared `declaration`, whose
-    /// declaration `depended` on a substitution or not.
-    pub fn start(kind: &dyn ErasedKind, declaration: Arc<Declaration>, depended: bool) -> Self {
+    /// Starts the body of `kind` for a node `declared` so.
+    pub fn start(kind: &dyn ErasedKind, declared: Declared) -> Self {
+        let Declared {
+            declaration,
+            depended,
+        } = declared;
         let mailbox = Arc::new(Mailbox::new());
         let cancel = Cancel::default();
         let body = kind.start(Cx::new(Arc::clone(&mailbox), cancel.clone()));

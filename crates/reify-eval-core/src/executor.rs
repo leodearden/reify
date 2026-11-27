@@ -23,7 +23,7 @@ use crate::demand::Demand;
 use crate::event::{Event, RequestError, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::finish;
-use crate::index::{self, Entry, Indexes, NodeKey, StateId};
+use crate::index::{self, Declared, Entry, Indexes, NodeKey, StateId};
 use crate::input::{Input, InputKey};
 use crate::job::Report;
 use crate::key::Key;
@@ -375,7 +375,7 @@ impl Executor {
     /// substitution its declaration depends.
     fn resolve(&mut self, key: NodeKey) -> Option<Work> {
         let index = self.indexes.of(key.state);
-        let (declared, depended) = match self.paths.parent(key.path) {
+        let declared = match self.paths.parent(key.path) {
             None => {
                 let root = self
                     .paths
@@ -383,50 +383,58 @@ impl Executor {
                     .expect("a path with no parent is a root");
                 let input = index.input(&InputKey::Root(root.clone()));
                 let declared = input.map_or(Outcome::Absent, Input::outcome);
-                (declared.downcast::<Declaration>(), false)
+                Declared {
+                    declaration: declared.downcast::<Declaration>(),
+                    depended: false,
+                }
             }
             Some((parent, step)) => {
                 let entry = index
                     .entry(parent)
                     .expect("a path is worked out once its parent is answered");
-                (declaration_of(step, entry, &self.kinds), entry.depended)
+                Declared {
+                    declaration: declaration_of(step, entry, &self.kinds),
+                    depended: entry.depended,
+                }
             }
         };
-        self.work_out(key, declared, depended)
+        self.work_out(key, declared)
     }
 
     /// Works out the path at `key`, which resolved to `declared`, or which
-    /// a body declared so (contract 7.1); `depended` says whether that
-    /// declaration depended on a substitution. A declaration of a node too
-    /// deep for the snapshot's depth setting answers that failure; one at a
-    /// path its view supposes answers the supposed outcome; any other
+    /// a body declared so (contract 7.1). A declaration of a node too deep
+    /// for the snapshot's depth setting answers that failure; one at a path
+    /// its view supposes answers the supposed outcome; any other
     /// declaration starts a lookup; any other outcome is the path's answer.
     /// A path no live request needs once its resolution is charged is not
     /// worked out.
-    fn work_out(
-        &mut self,
-        key: NodeKey,
-        declared: Outcome<Declaration>,
-        depended: bool,
-    ) -> Option<Work> {
+    fn work_out(&mut self, key: NodeKey, declared: Declared<Outcome<Declaration>>) -> Option<Work> {
         if !self.charge_resolution(key) {
             return None;
         }
         self.counters.count_path_resolved();
-        let declared = match declared {
+        let Declared {
+            declaration,
+            depended,
+        } = declared;
+        let declaration = match declaration {
             Outcome::Value(_) => {
                 let depth = self.paths.depth(key.path);
                 let limits = self.indexes.of(key.state).limits();
-                limit_check::depth(depth, limits).map_or(declared, Outcome::Failure)
+                limit_check::depth(depth, limits).map_or(declaration, Outcome::Failure)
             }
             other => other,
         };
-        let (content, outcome) = match declared {
+        let (content, outcome) = match declaration {
             Outcome::Value(declaration) => {
                 if let Some(supposed) = self.indexes.of(key.state).supposed(key.path) {
                     return Some(Work::Answered(key, Entry::supposed(supposed, declaration)));
                 }
-                self.look_up(key, declaration, depended);
+                let declared = Declared {
+                    declaration,
+                    depended,
+                };
+                self.look_up(key, declared);
                 return None;
             }
             Outcome::Failure(failure) => (Content::of_failure(&failure), Outcome::Failure(failure)),
@@ -465,8 +473,11 @@ impl Executor {
         if self.resolving.remove(&key) {
             self.waits.forget(key);
         }
-        let depended = self.depended_so_far(reader);
-        if let Some(work) = self.work_out(key, Outcome::Value(declaration), depended) {
+        let declared = Declared {
+            declaration: Outcome::Value(declaration),
+            depended: self.depended_so_far(reader),
+        };
+        if let Some(work) = self.work_out(key, declared) {
             self.work(work);
         }
     }
@@ -553,17 +564,17 @@ impl Executor {
         self.remove_reader(key)
     }
 
-    /// Queues a lookup for the node at `key`, which starts at its recipe's
-    /// key, its declaration having `depended` on a substitution or not; a
-    /// kind the core was not built with fails outside the inputs.
-    fn look_up(&mut self, key: NodeKey, declaration: Arc<Declaration>, depended: bool) {
-        let kind_id = declaration.kind();
+    /// Queues a lookup for the node at `key`, `declared` so, which starts
+    /// at its recipe's key; a kind the core was not built with fails
+    /// outside the inputs.
+    fn look_up(&mut self, key: NodeKey, declared: Declared) {
+        let kind_id = declared.declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
             return self.end_outside(key, unknown);
         };
         let start = Key::of_recipe(kind.recipe());
-        let lookup = Lookup::new(declaration, depended, start);
+        let lookup = Lookup::new(declared, start);
         self.lookups.insert(key, lookup);
         self.queue(key);
     }
@@ -574,25 +585,24 @@ impl Executor {
     fn miss(&mut self, key: NodeKey) {
         self.readings.remove(&key);
         self.waits.forget(key);
-        let (declaration, depended) = self
+        let declared = self
             .lookups
             .remove(&key)
             .expect("a lookup that misses is in progress")
             .miss();
-        self.start(key, declaration, depended);
+        self.start(key, declared);
     }
 
-    /// Starts the body of the node at `key`, whose lookup found nothing,
-    /// its declaration having `depended` on a substitution or not.
-    fn start(&mut self, key: NodeKey, declaration: Arc<Declaration>, depended: bool) {
-        let kind_id = declaration.kind();
+    /// Starts the body of the node at `key`, `declared` so, whose lookup
+    /// found nothing.
+    fn start(&mut self, key: NodeKey, declared: Declared) {
+        let kind_id = declared.declaration.kind();
         let kind = self
             .kinds
             .get(kind_id)
             .expect("a lookup is made only for a kind the core was built with");
         self.counters.count_body_run(kind_id);
-        self.tasks
-            .insert(key, Task::start(kind, declaration, depended));
+        self.tasks.insert(key, Task::start(kind, declared));
         self.queue(key);
     }
 
