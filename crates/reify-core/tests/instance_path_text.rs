@@ -326,30 +326,100 @@ impl Rng {
     }
 }
 
-const STEP_KINDS: usize = 19;
+type Draw<T> = fn(&mut Rng) -> Option<T>;
 
-/// How often each choice was drawn into a kept path.
+/// Declares one drawer per variant of a type and `kind_of`, the row a built
+/// value matches. Its match is exhaustive, so a variant with no row, and so
+/// never drawn, does not compile.
+macro_rules! choices {
+    ($draws:ident, $kind_of:ident, $ty:ty { $($pattern:pat => $draw:expr,)+ }) => {
+        const $draws: &[Draw<$ty>] = &[$($draw,)+];
+
+        fn $kind_of(value: &$ty) -> usize {
+            match value {
+                $($pattern => {})+
+            }
+            [$(matches!(value, $pattern),)+]
+                .iter()
+                .position(|&matched| matched)
+                .expect("the match above is exhaustive")
+        }
+    };
+}
+
+choices!(STEPS, step_kind, PathStep {
+    PathStep::Member(_) => |rng| Some(PathStep::Member(draw_name(rng))),
+    PathStep::Element(_) => |rng| Some(PathStep::Element(draw(rng, ELEMENTS)?)),
+    PathStep::Summary => |_| Some(PathStep::Summary),
+    PathStep::AsValue => |_| Some(PathStep::AsValue),
+    PathStep::Defs(_) => |rng| Some(PathStep::Defs(draw_definition(rng))),
+    PathStep::Constraint(_) => |rng| Some(PathStep::Constraint(draw_number(rng))),
+    PathStep::Braces => |_| Some(PathStep::Braces),
+    PathStep::Purpose(_) => |rng| Some(PathStep::Purpose(draw_number(rng))),
+    PathStep::Arguments => |_| Some(PathStep::Arguments),
+    PathStep::Guard(_) => |rng| Some(PathStep::Guard(draw_number(rng))),
+    PathStep::Count(_) => |rng| Some(PathStep::Count(draw_name(rng))),
+    PathStep::At(_) => |rng| Some(PathStep::At(draw_name(rng))),
+    PathStep::Auto(_) => |rng| Some(PathStep::Auto(draw_site(rng)?)),
+    PathStep::MadeList => |_| Some(PathStep::MadeList),
+    PathStep::Made(_) => |rng| Some(PathStep::Made(draw_chain(rng))),
+    PathStep::Open(None) => |_| Some(PathStep::Open(None)),
+    PathStep::Open(Some(_)) => |rng| Some(PathStep::Open(Some(draw_chain(rng)))),
+    PathStep::Problem => |_| Some(PathStep::Problem),
+    PathStep::Solves => |_| Some(PathStep::Solves),
+});
+
+choices!(ELEMENTS, element_kind, PathElement {
+    PathElement::Index(_) => |rng| Some(PathElement::Index(draw_number(rng))),
+    PathElement::Key(_) => |rng| Some(PathElement::Key(draw_key(rng))),
+});
+
+choices!(ANCHORS, anchor_kind, AutoAnchor {
+    AutoAnchor::Member { .. } => |rng| {
+        let name = draw_name(rng);
+        let key = (rng.below(2) == 0).then(|| draw_key(rng));
+        Some(AutoAnchor::Member { name, key })
+    },
+    AutoAnchor::Connect(_) => |rng| Some(AutoAnchor::Connect(draw_number(rng))),
+});
+
+choices!(SEGMENTS, segment_kind, AutoSiteSegment {
+    AutoSiteSegment::Argument(_) => |rng| Some(AutoSiteSegment::Argument(draw_name(rng))),
+    AutoSiteSegment::Chain(_) => |rng| Some(AutoSiteSegment::Chain(draw_chain(rng))),
+    AutoSiteSegment::Placement => |_| Some(AutoSiteSegment::Placement),
+});
+
+fn draw<T>(rng: &mut Rng, draws: &[Draw<T>]) -> Option<T> {
+    draws[rng.below(draws.len())](rng)
+}
+
+/// How often each choice appears in the kept paths, counted from the paths
+/// themselves.
 #[derive(Default)]
 struct Coverage {
     roots: [u32; 2],
-    steps: [u32; STEP_KINDS],
-    elements: [u32; 2],
-    anchors: [u32; 2],
-    segments: [u32; 3],
+    steps: [u32; STEPS.len()],
+    elements: [u32; ELEMENTS.len()],
+    anchors: [u32; ANCHORS.len()],
+    segments: [u32; SEGMENTS.len()],
 }
 
 impl Coverage {
-    fn merge(&mut self, other: &Coverage) {
-        fn add<const N: usize>(into: &mut [u32; N], from: &[u32; N]) {
-            for (a, b) in into.iter_mut().zip(from) {
-                *a += b;
+    fn record(&mut self, path: &InstancePath) {
+        self.roots[usize::from(path.root().module().is_some())] += 1;
+        for step in path.steps() {
+            self.steps[step_kind(step)] += 1;
+            match step {
+                PathStep::Element(element) => self.elements[element_kind(element)] += 1,
+                PathStep::Auto(site) => {
+                    self.anchors[anchor_kind(site.anchor())] += 1;
+                    for segment in site.segments() {
+                        self.segments[segment_kind(segment)] += 1;
+                    }
+                }
+                _ => {}
             }
         }
-        add(&mut self.roots, &other.roots);
-        add(&mut self.steps, &other.steps);
-        add(&mut self.elements, &other.elements);
-        add(&mut self.anchors, &other.anchors);
-        add(&mut self.segments, &other.segments);
     }
 
     fn assert_every_choice_drawn(&self) {
@@ -406,86 +476,31 @@ fn draw_chain(rng: &mut Rng) -> CallChain {
     CallChain::new(indices).expect("at least one index")
 }
 
-fn draw_definition(rng: &mut Rng) -> (DefinitionName, usize) {
+fn draw_definition(rng: &mut Rng) -> DefinitionName {
     if rng.below(2) == 0 {
-        return (DefinitionName::new(None, draw_name(rng)), 0);
+        return DefinitionName::new(None, draw_name(rng));
     }
     let segments = (0..=rng.below(3)).map(|_| draw_name(rng)).collect();
     let module = ModuleName::new(segments).expect("at least one segment");
-    (DefinitionName::new(Some(module), draw_name(rng)), 1)
+    DefinitionName::new(Some(module), draw_name(rng))
 }
 
-fn draw_element(rng: &mut Rng, coverage: &mut Coverage) -> PathElement {
-    let kind = rng.below(2);
-    coverage.elements[kind] += 1;
-    match kind {
-        0 => PathElement::Index(draw_number(rng)),
-        _ => PathElement::Key(draw_key(rng)),
-    }
-}
-
-fn draw_site(rng: &mut Rng, coverage: &mut Coverage) -> Option<AutoSite> {
-    let anchor_kind = rng.below(2);
-    coverage.anchors[anchor_kind] += 1;
-    let anchor = match anchor_kind {
-        0 => AutoAnchor::Member {
-            name: draw_name(rng),
-            key: (rng.below(2) == 0).then(|| draw_key(rng)),
-        },
-        _ => AutoAnchor::Connect(draw_number(rng)),
-    };
+fn draw_site(rng: &mut Rng) -> Option<AutoSite> {
+    let anchor = draw(rng, ANCHORS)?;
     let segments = (0..=rng.below(4))
-        .map(|_| {
-            let kind = rng.below(3);
-            coverage.segments[kind] += 1;
-            match kind {
-                0 => AutoSiteSegment::Argument(draw_name(rng)),
-                1 => AutoSiteSegment::Chain(draw_chain(rng)),
-                _ => AutoSiteSegment::Placement,
-            }
-        })
-        .collect();
+        .map(|_| draw(rng, SEGMENTS))
+        .collect::<Option<Vec<_>>>()?;
     AutoSite::new(anchor, segments).ok()
 }
 
-fn draw_step(rng: &mut Rng, coverage: &mut Coverage) -> Option<PathStep> {
-    let kind = rng.below(STEP_KINDS);
-    coverage.steps[kind] += 1;
-    Some(match kind {
-        0 => PathStep::Member(draw_name(rng)),
-        1 => PathStep::Element(draw_element(rng, coverage)),
-        2 => PathStep::Summary,
-        3 => PathStep::AsValue,
-        4 => PathStep::Defs(draw_definition(rng).0),
-        5 => PathStep::Constraint(draw_number(rng)),
-        6 => PathStep::Braces,
-        7 => PathStep::Purpose(draw_number(rng)),
-        8 => PathStep::Arguments,
-        9 => PathStep::Guard(draw_number(rng)),
-        10 => PathStep::Count(draw_name(rng)),
-        11 => PathStep::At(draw_name(rng)),
-        12 => PathStep::Auto(draw_site(rng, coverage)?),
-        13 => PathStep::MadeList,
-        14 => PathStep::Made(draw_chain(rng)),
-        15 => PathStep::Open(None),
-        16 => PathStep::Open(Some(draw_chain(rng))),
-        17 => PathStep::Problem,
-        _ => PathStep::Solves,
-    })
-}
-
-fn draw_path(rng: &mut Rng, coverage: &mut Coverage) -> InstancePath {
-    let (root, root_kind) = draw_definition(rng);
-    coverage.roots[root_kind] += 1;
-    let mut path = InstancePath::new(root);
+fn draw_path(rng: &mut Rng) -> InstancePath {
+    let mut path = InstancePath::new(draw_definition(rng));
     for _ in 0..rng.below(MAX_STEPS + 1) {
-        let mut drawn = Coverage::default();
-        let Some(step) = draw_step(rng, &mut drawn) else {
+        let Some(step) = draw(rng, STEPS) else {
             continue;
         };
         if let Ok(longer) = path.then(step) {
             path = longer;
-            coverage.merge(&drawn);
         }
     }
     path
@@ -497,9 +512,8 @@ fn generated_paths_print_to_distinct_texts_that_parse_back() {
     let mut coverage = Coverage::default();
     let mut by_text: HashMap<String, InstancePath> = HashMap::new();
     for _ in 0..GENERATED_PATHS {
-        let mut drawn = Coverage::default();
-        let path = draw_path(&mut rng, &mut drawn);
-        coverage.merge(&drawn);
+        let path = draw_path(&mut rng);
+        coverage.record(&path);
         let text = path.to_string();
         let parsed = text
             .parse::<InstancePath>()
