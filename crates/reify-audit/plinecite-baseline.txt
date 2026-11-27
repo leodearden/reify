@@ -485,7 +485,6 @@ crates/reify-expr/src/lib.rs :: units.rs:680
 crates/reify-expr/src/lib.rs :: value.rs:885
 crates/reify-expr/src/sampled_fd.rs :: medial.rs:991
 crates/reify-ir/src/arg_acceptance.rs :: crates/reify-compiler/stdlib/materials_fea.ri:132
-crates/reify-ir/src/arg_acceptance.rs :: crates/reify-stdlib/src/flexures/common.rs:109
 crates/reify-ir/src/arg_acceptance.rs :: dimension.rs:283
 crates/reify-ir/src/arg_acceptance.rs :: dimension.rs:302
 crates/reify-ir/src/arg_acceptance.rs :: materials_fea.ri:179
@@ -626,7 +625,6 @@ crates/reify-stdlib/src/fea.rs :: fea_multi_case.ri:143
 crates/reify-stdlib/src/fea.rs :: field_reductions.rs:96
 crates/reify-stdlib/src/fea.rs :: multi_case.rs:214
 crates/reify-stdlib/src/fea.rs :: solver_elastic.ri:282
-crates/reify-stdlib/src/flexures/common.rs :: reify-eval/src/modal_ops.rs:839
 crates/reify-stdlib/src/geometry.rs :: geometry.rs:279
 crates/reify-stdlib/src/helpers.rs :: fea/loads.rs:161
 crates/reify-stdlib/src/helpers.rs :: stackup.rs:32
@@ -643,7 +641,6 @@ crates/reify-stdlib/src/loop_closure.rs :: joints.rs:239
 crates/reify-stdlib/src/loop_closure.rs :: joints.rs:336
 crates/reify-stdlib/src/loop_closure.rs :: joints.rs:785
 crates/reify-stdlib/src/loop_closure.rs :: joints.rs:800
-crates/reify-stdlib/src/loop_closure.rs :: loop_closure.rs:399
 crates/reify-stdlib/src/loop_closure.rs :: loop_closure.rs:87
 crates/reify-stdlib/src/loop_closure_solver.rs :: mechanism.rs:1547
 crates/reify-stdlib/src/mechanism.rs :: mechanism.rs:435

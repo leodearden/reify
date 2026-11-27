@@ -1,0 +1,10 @@
+import std.tolerancing.DimensionalTolerance
+structure def Shaft {
+    sub dia : DimensionalTolerance {
+        nominal = 8mm
+        upper_deviation = 0mm
+        lower_deviation = 0.1mm
+    }
+    let tol = DimensionalTolerance(nominal: 8mm, upper_deviation: 0mm, lower_deviation: 0.1mm)
+    let band = tol.tolerance_band
+}

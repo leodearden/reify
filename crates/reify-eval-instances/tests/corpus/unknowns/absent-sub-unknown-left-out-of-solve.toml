@@ -1,0 +1,29 @@
+tests = "an `auto` written on a guarded sub is absent with the sub, and leaves the other unknowns of its owner solvable."
+rule = "Part 6.2 (\"When the sub is absent, so is the unknown, and a solve leaves it out\"); Part 6.4 requirement 4; decision 3."
+provenance = "logic-1 L8 (taken: 6.2 and 6.4); logic-2 holds-up (`x` = 20 mm). design 6.4 requirement 4; 6.2. `Beam`'s bounds changed on 2026-11-26 from 10 mm to 7 mm, so that the absent constraint, had it stayed in the problem, would make it infeasible and the entry would show what bears; the answers are unchanged."
+needs = ["instance", "guard", "constraint", "summary", "unknown", "solve-forced"]
+answer_basis = "stated (Part 6.2 and 6.4 requirement 4). `use_b` is false, so `b`, its unknown `len` (at `Asm/auto[b.len]`) and the constraint under `where use_b` are absent; `x == 20mm` alone decides `x`. Had the absent sub and constraint stayed in the problem, `b.len` = 7 mm would need `x` = 14 mm, against `x == 20mm`: no value. The braces hold an argument assignment only, so the entry does not need `braces`."
+today = "run `l8.ri` (bounds of 10 mm): `Asm.x` about 20 mm, `Asm.b.len = undef` with W_UNDERDETERMINED."
+
+[candidates]
+note = "14 mm meets the absent constraint with `b.len` at 7 mm and breaks `x == 20mm`; the first taken is 20 mm, and under a reading that keeps the absent members in the problem none is taken."
+
+[[candidates.unknown]]
+path = "Asm.x"
+values = ["14mm", "20mm"]
+
+[[expect]]
+path = "Asm.x"
+value = "20 mm"
+
+[[expect]]
+path = "Asm.b"
+presence = "absent"
+
+[[expect]]
+path = "Asm/constraint[1]"
+presence = "absent"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

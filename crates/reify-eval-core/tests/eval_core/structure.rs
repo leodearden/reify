@@ -3,12 +3,11 @@
 //! answers absent.
 
 use std::any::type_name;
+use std::collections::BTreeSet;
 
-use reify_eval_core::{
-    Answer, Binding, Declaration, Erased, Failure, Input, InputKey, Kind, Outcome, Step, Turn,
-};
+use reify_eval_core::{Answer, Budget, Declaration, Erased, Failure, Kind, Outcome, Step, Turn};
 
-use crate::toy::{self, Cell, Scope};
+use crate::toy::{self, Cell, Collection, Elements, Guard, Measure, Members, Scope};
 
 fn is_absent(answer: &Answer<Erased>) -> bool {
     matches!(answer, Answer::Final(Outcome::Absent))
@@ -24,7 +23,11 @@ fn a_path_below_a_node_whose_kind_declares_no_children_answers_absent() {
     ]);
     let (total, below) = (toy::at("total"), toy::below("total", &["x"]));
 
-    let request = core.evaluate(&snapshot, toy::demand([&total, &below]));
+    let request = core.evaluate(
+        &snapshot,
+        toy::demand([&total, &below]),
+        Budget::unlimited(),
+    );
     assert_eq!(core.turn(), Turn::Idle);
 
     let events = core.take_events();
@@ -45,7 +48,7 @@ fn a_path_below_a_root_with_no_input_answers_absent() {
     let snapshot = core.snapshot([]);
     let below = toy::below("missing", &["x"]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&below]));
+    let request = core.evaluate(&snapshot, toy::demand([&below]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &below);
@@ -61,7 +64,7 @@ fn a_path_below_a_root_whose_input_is_not_a_declaration_answers_that_failure() {
     let snapshot = core.snapshot([toy::root("seven", 7_i64)]);
     let below = toy::below("seven", &["x"]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&below]));
+    let request = core.evaluate(&snapshot, toy::demand([&below]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &below);
@@ -81,7 +84,7 @@ fn a_demanded_path_already_answered_in_the_snapshot_is_told_without_resolving_it
     ]);
     let below = toy::below("total", &["x"]);
 
-    let first = core.evaluate(&snapshot, toy::demand([&below]));
+    let first = core.evaluate(&snapshot, toy::demand([&below]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &first, &below);
     assert!(
@@ -90,7 +93,7 @@ fn a_demanded_path_already_answered_in_the_snapshot_is_told_without_resolving_it
     );
     assert_eq!(core.counters().paths_resolved(), 2);
 
-    let second = core.evaluate(&snapshot, toy::demand([&below]));
+    let second = core.evaluate(&snapshot, toy::demand([&below]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &second, &below);
     assert!(
@@ -118,12 +121,12 @@ fn a_scope_s_member_resolves_by_reading_the_scope_s_result() {
     let snapshot = core.snapshot(inputs);
     let (reader, m) = (toy::below("R", &["reader"]), toy::below("R", &["s", "m"]));
 
-    let first = core.evaluate(&snapshot, toy::demand([&reader]));
+    let first = core.evaluate(&snapshot, toy::demand([&reader]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &first, &reader);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(4)));
 
-    let second = core.evaluate(&snapshot, toy::demand([&m]));
+    let second = core.evaluate(&snapshot, toy::demand([&m]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &second, &m);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(4)));
@@ -148,7 +151,7 @@ fn a_body_that_reads_a_node_not_yet_computed_runs_once() {
     let snapshot = core.snapshot(inputs);
     let a = toy::below("R", &["a"]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&a]));
+    let request = core.evaluate(&snapshot, toy::demand([&a]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &a);
@@ -162,7 +165,7 @@ fn a_member_the_scope_does_not_declare_answers_absent() {
     let snapshot = core.snapshot(toy::root_scope("R", toy::members([("b", toy::cell(&[]))])));
     let nope = toy::below("R", &["nope"]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&nope]));
+    let request = core.evaluate(&snapshot, toy::demand([&nope]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &nope);
@@ -190,7 +193,7 @@ fn a_chain_of_100000_dependent_cells_is_evaluated_on_the_default_test_thread_sta
     let snapshot = core.snapshot(inputs);
     let last = toy::below("R", &[&names[CELLS - 1]]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&last]));
+    let request = core.evaluate(&snapshot, toy::demand([&last]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &last);
@@ -274,50 +277,28 @@ fn a_collection_declares_as_many_elements_as_its_count_reads() {
 }
 
 #[test]
-fn an_input_attached_to_a_scope_s_path_adds_a_member() {
-    let x = toy::below("R", &["x"]);
-    for attached in [false, true] {
-        let mut core = toy::with_structure().build();
-        let mut inputs = vec![toy::named("v", 9_i64)];
-        inputs.extend(toy::root_scope("R", toy::members([])));
-        if attached {
-            let extra = toy::members([("x", toy::cell(&["v"]))]);
-            inputs.push((InputKey::attached(toy::at("R"), "extra"), Input::of(extra)));
-        }
-        let snapshot = core.snapshot(inputs);
-
-        let answer = toy::answer_alone(&mut core, &snapshot, &x);
-        if attached {
-            assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(9)));
-        } else {
-            assert!(is_absent(&answer), "{answer:?}");
-        }
-    }
-}
-
-#[test]
 fn a_ref_computed_from_an_earlier_answer_reads_the_element_it_names() {
     let pick = toy::below("R", &["pick"]);
     for (index, expected) in [(1_i64, Some(10_i64)), (5, None)] {
         let mut core = toy::with_structure().build();
-        let element = toy::cell_over([Binding::Attached("value".into())]);
+        let elements = toy::Members(
+            ["v0", "v1", "v2"]
+                .into_iter()
+                .zip(0_u64..)
+                .map(|(value, i)| (Step::index(i), toy::cell(&[value])))
+                .collect(),
+        );
         let mut inputs = vec![
-            toy::named("three", 3_i64),
             toy::named("index", index),
-            toy::named("element", element),
+            toy::named("v0", 0_i64),
+            toy::named("v1", 10_i64),
+            toy::named("v2", 20_i64),
+            toy::named("elems.members", elements),
         ];
-        for i in 0..3_u64 {
-            let at = toy::below("R", &["elems"]).child(Step::index(i));
-            let value = 10 * i64::try_from(i).expect("small");
-            inputs.push((InputKey::attached(at, "value"), Input::of(value)));
-        }
         inputs.extend(toy::root_scope(
             "R",
             toy::members([
-                (
-                    "elems",
-                    toy::collection(toy::input("three"), toy::input("element")),
-                ),
+                ("elems", toy::scope("elems.members")),
                 ("which", toy::cell(&["index"])),
                 (
                     "pick",
@@ -333,4 +314,58 @@ fn a_ref_computed_from_an_earlier_answer_reads_the_element_it_names() {
             None => assert!(is_absent(&answer), "{answer:?}"),
         }
     }
+}
+
+/// Every step `K::steps` lists for `out` is listed once and declared there,
+/// and no step of `unlisted` is listed or declared (decision D14): `steps`
+/// and `declares` agree.
+fn steps_agree_with_declares<K: Kind>(out: &K::Out, unlisted: &[Step]) {
+    let kind = type_name::<K>();
+    let steps: Vec<Step> = K::steps(out).collect();
+    let distinct: BTreeSet<&Step> = steps.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        steps.len(),
+        "{kind} lists a step twice: {steps:?}"
+    );
+    for step in &steps {
+        assert!(
+            K::declares(out, step).is_some(),
+            "{kind} lists {step:?} but declares nothing there"
+        );
+    }
+    for step in unlisted {
+        assert!(!steps.contains(step), "{kind} lists {step:?}");
+        assert!(
+            K::declares(out, step).is_none(),
+            "{kind} declares {step:?} but does not list it"
+        );
+    }
+}
+
+#[test]
+fn every_step_a_toy_kind_lists_is_one_it_declares_and_it_declares_no_other() {
+    let mut mixed = toy::members([("a", toy::cell(&["x"])), ("b", toy::cell(&["y"]))]);
+    mixed.0.insert(Step::index(2), toy::cell(&["z"]));
+    let probes = [Step::named("missing"), Step::index(0), Step::index(7)];
+    for members in [mixed, Members::default()] {
+        steps_agree_with_declares::<Scope>(&members, &probes);
+        steps_agree_with_declares::<Guard>(&members, &probes);
+        let listed = <Scope as Kind>::steps(&members).count();
+        assert_eq!(listed, members.0.len(), "{members:?}");
+    }
+
+    for count in [0, 3] {
+        let elements = Elements {
+            count,
+            element: toy::cell(&["x"]),
+        };
+        let probes = [Step::index(count), Step::index(count + 5), Step::named("0")];
+        steps_agree_with_declares::<Collection>(&elements, &probes);
+        let listed: Vec<Step> = <Collection as Kind>::steps(&elements).collect();
+        assert_eq!(listed, (0..count).map(Step::index).collect::<Vec<_>>());
+    }
+
+    assert_eq!(<Cell as Kind>::steps(&5).count(), 0);
+    assert_eq!(<Measure as Kind>::steps(&5).count(), 0);
 }

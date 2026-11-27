@@ -1,0 +1,17 @@
+tests = "what a read of a member that only one arm's definition has gives, from outside the instance that holds the `match`."
+rule = "rule E (last bullet); spec 6.4 (narrowing); readings C12."
+provenance = "language-1 L14 (`let d = self.head.socket_depth`); language-2 B7 (d). The design gives the run-time answer and hands the compile-time one to the spec's narrowing. Also, from the merged entries: design rule E; logic-3 R6. logic-3 R6."
+needs = ["instance", "guard", "one-name", "compile-error"]
+answer_basis = "traced. Readings C12: a read from another instance of a member only some arms' definitions have compiles. At run time `s` is Socket, its `head` is a `SocketHead`: `ds` is 4 mm. `h` is Hex, and `HexHead` has no `socket_depth`: `dh` is undefined (rule E, last bullet)."
+today = "compile errors \"unknown member 'head'\" (run `match_arms.ri`)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Pair.ds"
+value = "4 mm"
+
+[[expect]]
+path = "Pair.dh"
+value = "undefined"

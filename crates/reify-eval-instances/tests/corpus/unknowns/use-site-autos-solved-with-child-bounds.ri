@@ -1,0 +1,8 @@
+structure def Beam { param len : Length = 50mm   constraint len >= 10mm   constraint len <= 100mm }
+structure def Rod  { param len : Length = 50mm   constraint len >= 10mm   constraint len <= 100mm }
+structure def Asm {
+    sub a : Beam { len = auto }
+    sub b : Rod  { len = auto }
+    constraint self.a.len + self.b.len == 120mm
+    constraint self.a.len - self.b.len == 20mm
+}

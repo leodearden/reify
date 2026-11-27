@@ -1,0 +1,11 @@
+structure def Beam {
+    param len : Length
+    param k : Length = auto
+    constraint k == 2mm
+    constraint len + k == 50mm
+}
+structure def Asm {
+    sub a : Beam {
+        len = auto
+    }
+}

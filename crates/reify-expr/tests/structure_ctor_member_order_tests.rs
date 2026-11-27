@@ -46,6 +46,7 @@ fn ctor(
         named(ordered),
         named(defaults),
         named(lets),
+        Vec::new(),
         None,
         Type::StructureRef(TYPE.to_string()),
     )

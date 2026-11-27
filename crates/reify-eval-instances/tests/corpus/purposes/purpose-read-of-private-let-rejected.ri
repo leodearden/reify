@@ -1,0 +1,6 @@
+structure def Plate {
+    param t : Length = 3mm
+    let area = t * 40mm
+}
+purpose big_enough(subject : Plate) { constraint subject.area > 100mm * 1mm }
+structure def Asm { sub p : Plate }

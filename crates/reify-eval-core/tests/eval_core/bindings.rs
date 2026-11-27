@@ -5,8 +5,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use reify_eval_core::{
-    Answer, Binding, Core, Cx, Declaration, Event, Input, InputKey, Kind, KindId, Outcome, Path,
-    Produced, Ref, Step, Turn, Value,
+    Answer, Binding, Budget, Core, Cx, Declaration, Event, Input, InputKey, Kind, KindId, Outcome,
+    Path, Produced, Ref, Step, Turn, Value,
 };
 
 use crate::toy::{self, Cell};
@@ -17,6 +17,7 @@ struct List;
 impl Kind for List {
     type Out = Vec<i64>;
     const ID: KindId = KindId("toy.list");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Vec<i64>> {
         let mut list = Vec::new();
@@ -37,6 +38,7 @@ struct Fallback;
 impl Kind for Fallback {
     type Out = i64;
     const ID: KindId = KindId("toy.fallback");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         match cx.read::<i64>(&Ref::binding("arg")).await {
@@ -105,7 +107,7 @@ fn a_body_learns_its_declaration_only_through_recorded_reads() {
 
         for name in &order {
             let at = toy::below("R", &[name]);
-            let _request = core.evaluate(&snapshot, toy::demand([&at]));
+            let _request = core.evaluate(&snapshot, toy::demand([&at]), Budget::unlimited());
             assert_eq!(core.turn(), Turn::Idle);
             match *name {
                 "P1" => assert_eq!(*value_at::<Vec<i64>>(&mut core, &at), [1, 2]),
@@ -164,7 +166,7 @@ fn a_child_bound_to_its_declarer_s_binding_reads_the_place_that_binding_names_an
         toy::below("R", &["holder", "a"]),
     );
 
-    let first = core.evaluate(&snapshot, toy::demand([&holder]));
+    let first = core.evaluate(&snapshot, toy::demand([&holder]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &first, &holder);
     assert!(
@@ -177,7 +179,7 @@ fn a_child_bound_to_its_declarer_s_binding_reads_the_place_that_binding_names_an
         "the place the holder binds is not read by binding it"
     );
 
-    let second = core.evaluate(&snapshot, toy::demand([&a]));
+    let second = core.evaluate(&snapshot, toy::demand([&a]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &second, &a);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(5)));
@@ -238,19 +240,86 @@ fn a_place_binding_on_a_root_names_nothing_and_reads_absent() {
 
 #[test]
 fn a_ref_with_steps_below_a_snapshot_input_names_nothing_and_reads_absent() {
-    for from in [toy::input("five"), Binding::Attached("from".into())] {
-        let mut core = toy::with_cell().build();
-        let inputs = vec![
-            toy::named("zero", 0_i64),
-            toy::named("five", 5_i64),
-            (
-                InputKey::attached(toy::at("lone"), "from"),
-                Input::of(5_i64),
-            ),
-            toy::root("lone", toy::picker(toy::input("zero"), from.clone())),
-        ];
+    let mut core = toy::with_cell().build();
+    let inputs = vec![
+        toy::named("zero", 0_i64),
+        toy::named("five", 5_i64),
+        toy::root("lone", toy::picker(toy::input("zero"), toy::input("five"))),
+    ];
 
-        let answer = i64_at(&mut core, inputs, &toy::at("lone"));
-        assert_eq!(answer, Answer::Final(Outcome::Absent), "{from:?}");
+    let answer = i64_at(&mut core, inputs, &toy::at("lone"));
+    assert_eq!(answer, Answer::Final(Outcome::Absent));
+}
+
+/// A binding to the constant `value`, held in the declaration itself.
+fn constant(value: i64) -> Binding {
+    Binding::Constant(toy::input_of(value))
+}
+
+#[test]
+fn a_read_through_a_constant_binding_answers_its_value() {
+    let mut core = toy::with_cell().build();
+    let inputs = vec![toy::root("lone", toy::cell_over([constant(5)]))];
+
+    let answer = i64_at(&mut core, inputs, &toy::at("lone"));
+    assert_eq!(answer, Answer::Final(Outcome::of(5)));
+}
+
+#[test]
+fn a_ref_with_steps_below_a_constant_reads_absent() {
+    let mut core = toy::with_cell().build();
+    let inputs = vec![
+        toy::named("zero", 0_i64),
+        toy::root("lone", toy::picker(toy::input("zero"), constant(5))),
+    ];
+
+    let answer = i64_at(&mut core, inputs, &toy::at("lone"));
+    assert_eq!(answer, Answer::Final(Outcome::Absent));
+}
+
+/// The inputs of root scopes R1 and R2, whose binding "y" is the constant
+/// each is given, over one members input: a cell `c` over what the
+/// declarer's "y" names.
+fn scopes_with_constants(r1: i64, r2: i64) -> Vec<(InputKey, Input)> {
+    let members = toy::members([("c", toy::cell_over([passed("y")]))]);
+    let scope = |y| toy::scope("shared.members").bind("y", constant(y));
+    vec![
+        toy::named("shared.members", members),
+        toy::root("R1", scope(r1)),
+        toy::root("R2", scope(r2)),
+    ]
+}
+
+#[test]
+fn children_given_an_equal_constant_by_two_parents_share_one_stored_result() {
+    let mut core = toy::with_scope().build();
+    let snapshot = core.snapshot(scopes_with_constants(5, 5));
+
+    for root in ["R1", "R2"] {
+        let c = toy::below(root, &["c"]);
+        let answer = toy::answer_alone(&mut core, &snapshot, &c).downcast::<i64>();
+        assert_eq!(answer, Answer::Final(Outcome::of(5)), "{root}");
     }
+    assert_eq!(core.counters().body_runs(Cell::ID), 1);
+}
+
+#[test]
+fn changing_a_constant_runs_the_body_of_the_node_that_reads_it_and_no_other() {
+    let mut core = toy::with_scope().build();
+    let c = toy::below("R1", &["c"]);
+    assert_eq!(
+        i64_at(&mut core, scopes_with_constants(5, 5), &c),
+        Answer::Final(Outcome::of(5))
+    );
+    let (cells, scopes) = (
+        core.counters().body_runs(Cell::ID),
+        core.counters().body_runs(toy::Scope::ID),
+    );
+
+    assert_eq!(
+        i64_at(&mut core, scopes_with_constants(6, 5), &c),
+        Answer::Final(Outcome::of(6))
+    );
+    assert_eq!(core.counters().body_runs(Cell::ID), cells + 1);
+    assert_eq!(core.counters().body_runs(toy::Scope::ID), scopes);
 }

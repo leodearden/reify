@@ -1,0 +1,38 @@
+structure def P {
+    param v : Length = 1mm
+}
+structure def Asm {
+    param yes : Bool = true
+    param no : Bool = false
+    param u : Bool
+    sub a : P where yes {
+        v = 1mm
+    }
+    sub a : P where u {
+        v = 2mm
+    }
+    sub b : P where u {
+        v = 1mm
+    }
+    sub b : P where not u {
+        v = 2mm
+    }
+    sub c : P where yes {
+        v = 1mm
+    }
+    sub c : P where yes {
+        v = 2mm
+    }
+    sub d : P where no {
+        v = 1mm
+    }
+    sub d : P where no {
+        v = 2mm
+    }
+    sub e : P where yes {
+        v = 1mm
+    }
+    sub e : P where no {
+        v = 2mm
+    }
+}

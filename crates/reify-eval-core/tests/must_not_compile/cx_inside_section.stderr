@@ -1,0 +1,12 @@
+error[E0521]: borrowed data escapes outside of function
+ --> tests/must_not_compile/cx_inside_section.rs:4:5
+  |
+3 | pub async fn body(cx: &Cx) {
+  |                   --  - let's call the lifetime of this reference `'1`
+  |                   |
+  |                   `cx` is a reference that is only valid in the function body
+4 |     cx.exclusive(|_: &mut Vec<i64>, _| drop(cx.read::<i64>(&Ref::binding("x"))))
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |     |
+  |     `cx` escapes the function body here
+  |     argument requires that `'1` must outlive `'static`

@@ -1,0 +1,23 @@
+tests = "a trial point at which a constraint reads past the end of a collection whose count is on trial is rejected, because the undefined input depended on the trial; the test solver therefore takes the first count at which the element exists."
+rule = "rule C (first bullet); readings E35 (a candidate is rejected when a constraint that depended on the trial is undetermined); Part 5 (an index out of range gives undefined); readings A (a count constraint has no `constraint[k]`)."
+provenance = "tracer report `critics/trace-presence-and-values.md`, counter-example N4, and its gap G6 (a solver that accepts an undetermined verdict never builds rule C)."
+needs = ["instance", "collection", "constraint", "unknown", "solve-forced"]
+answer_basis = "traced. The verdict-bearing constraints are `n >= 1` (`constraint[0]`), `n <= 3` (`constraint[1]`) and `vents[2].area >= 1mm` (`constraint[2]`); `vents.count == n` is the count's source. At `n` = 1 and at `n` = 2, `vents[2]` is past the end, so `constraint[2]` is undetermined, and the count it read depended on the trial: both points are rejected (readings E35). At `n` = 3, `vents[2].area` is 2 mm and every constraint is satisfied. The only feasible value is 3, so the answer is forced. A solver that accepted an undetermined verdict would take 1."
+
+[candidates]
+
+[[candidates.unknown]]
+path = "M.n"
+values = ["1", "2", "3"]
+
+[[expect]]
+path = "M.n"
+value = "3"
+
+[[expect]]
+path = "M.vents[2].area"
+value = "2 mm"
+
+[[expect]]
+path = "M/constraint[2]"
+verdict = "satisfied"

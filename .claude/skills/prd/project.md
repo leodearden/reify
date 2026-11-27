@@ -11,20 +11,37 @@ Project specialization for the generic `/prd` skill (`~/.claude/skills/prd/`, �
 
 ## Landing PRD artifacts (author-mode Stage 10 / decompose Step 5.5)
 
-Commit the PRD `.md`, its `.capability-manifest.md`, the `.capability-manifest.yaml` sidecar and any `.ri` fixtures **directly on `main` in project_root, in ONE commit**. Do **not** route them through the orchestrator merge queue, and do **not** use `scripts/land.sh`.
+Land the PRD `.md`, its `.capability-manifest.md`, the `.capability-manifest.yaml` sidecar and any `.ri` fixtures **in ONE commit**. Which vehicle carries that commit depends on the merge queue (Leo, 2026-11-26: "Put docs commits through the merge queue unless the merge verifies are idle (queue empty) - it can't be a worse re-verify cost."):
+
+- **The queue holds an entry** (`mcp__escalation__get_merge_queue` → `depth` above 0): commit on a task branch in a worktree and submit it with `merge_request`. "Sequence, queue route" below.
+- **The queue is empty**: commit **directly on `main` in project_root**. "Sequence, direct route" below.
+
+Do **not** use `scripts/land.sh` for either.
+
+**What each vehicle costs.** The queue route costs the docs change one full merge gate of its own and restarts no other merge; on 2026-11-26 one took 52 minutes from submit to landing with four merges ahead of it. The direct route costs seconds for the commit itself and costs every merge in flight a full re-verify. With speculative verify two or three usually are in flight: five direct docs commits in 100 minutes that day restarted one merge three times. The next paragraph is why no branch route has a docs fast path, and why the direct commit is light.
 
 Both branch routes stamp `DF_VERIFY_ROLE=merge`, which makes `scripts/verify.sh` **force** `--scope all` — unconditionally, overriding even an explicit `--scope` (contract C2 — the top-level `DF_VERIFY_ROLE` → `SCOPE="all"` block, whose comment opens "Defensive belt-and-braces (contract C2): the merge gate never narrows") — and **default** `--profile` to `both` (the role-driven `PROFILE="both"` assignment in the same role-defaults region just above it, gated on `PROFILE_EXPLICIT` so an explicit `--profile` still wins; verify.sh's own C2 comment calls it "the role-driven --profile default". Both are top-level blocks that run *before* `decide_scope` is called, not part of it); dark-factory's INV-1 (`verify.py:5499`, DF task 2883) additionally refuses the docs-only trivial pass at merge role and escalates it to the full global gate, because an adoptable merge verdict must never be stamped from zero evidence. A docs-only merge therefore costs a full cold debug+release workspace build — reify budgets `merge_verify_cold_command_timeout_secs: 10800` (3 h). A commit on `main` instead runs `hooks/pre-commit` → `verify.sh all --profile debug --scope staged --include-infra` with `DF_VERIFY_ROLE` unset (role `task`, so no C2 force), where `decide_scope` classifies every one of the artifacts as no-heavy-checks — the `.md`/`.yaml` via its `*)` catch-all, which delegates the inert class to `reify_is_inert_path` (`scripts/affected-crates-lib.sh`, the task-#7427 SPOT move), and a `tests/prd-gate/fixtures/*.ri` whose basename is in **neither `_RUST_COUPLED_RI_FIXTURES` nor `_GUI_COUPLED_RI_FIXTURES`** (tasks #5536, #6435) via its own arm sitting *ahead* of that catch-all: seconds — so the one-commit landing really is seconds *including* the fixtures.
 
 **Where `.ri` fixtures go (standard, Leo 2026-08-21).** A committed `.ri` fixture that exists as PRD or capability-manifest evidence lives in **`tests/prd-gate/fixtures/`**, and is cited by **full repo-relative path** — never bare `fixtures/<name>.ri`, never a bare stem. `docs/prds/**/fixtures/` is **DEPRECATED**; do not put new fixtures there (#6431 is emptying it). The other three tiers, keyed on who *consumes* the file rather than who motivated it: ephemeral decompose-time probes stay in `/tmp/prd-gate-fixtures/` (`references/grammar-gate.md`) and are never committed; a user-facing design that must keep working goes to `examples/`, graduating to `examples/best_practices/` + `INDEX.md`; a fixture that is purely one crate's test detail and is *not* PRD evidence goes to `crates/<crate>/tests/fixtures/`. A fixture read by a compiled test target does **not** get special placement — it gets **registration** (see the re-baselining trap below).
 
-This is **sanctioned**, not a main-gate violation: `hooks/pre-commit` runs `project-checks` on `main` and then calls `main_gate_mark`, so `hooks/reference-transaction` logs the ref move as SANCTIONED. The `CLAUDE.md` invariant forbids moving `main` *without* a gate (`merge --no-verify`, `update-ref`, `reset`, `commit-tree`) — a hook-gated commit is not that.
+The direct route is **sanctioned**, not a main-gate violation: `hooks/pre-commit` runs `project-checks` on `main` and then calls `main_gate_mark`, so `hooks/reference-transaction` logs the ref move as SANCTIONED. The `CLAUDE.md` invariant forbids moving `main` *without* a gate (`merge --no-verify`, `update-ref`, `reset`, `commit-tree`) — a hook-gated commit is not that.
 
-Sequence — **flip first, commit the stamped sidecar once**:
+Sequence, direct route (the queue is empty) — **flip first, commit the stamped sidecar once**:
 
 1. Write the artifacts as untracked files at their canonical paths, and validate the sidecar with the loader command in "Capability Manifest — reify evidence forms" (`commit_planning` stamps nothing from a sidecar that fails to load).
 2. File the batch (`planning_mode=True`), wire deps, then `commit_planning` — it stamps the on-disk sidecar **in place** and copies `delivered_checks` into producer metadata. Never land an unstamped sidecar and stamp afterwards.
 3. `git add <each exact file path>`.
 4. `git commit --only <same exact paths> -F <msgfile>`.
+
+Sequence, queue route (the queue holds an entry) — the same order, in a worktree:
+
+1. `git -C <project_root> worktree add <a directory outside .worktrees/>/<slug> -b task/<slug> main`. The orchestrator's start-up recovery removes a worktree under `.worktrees/` that has no plan. Write the artifacts at their canonical paths **in that worktree**, and validate the sidecar there.
+2. File the batch (`planning_mode=True`), wire deps, then `commit_planning(..., manifest_root=<the worktree>)`: it stamps the sidecar in the worktree and copies `delivered_checks` into producer metadata. Nothing is written in project_root.
+3. In the worktree: `git add <each exact file path>`, then `git commit --only <same exact paths> -F <msgfile>`.
+4. `mcp__escalation__merge_request(task_id="<slug>", branch="<slug>", worktree=<the worktree>, wait_secs=100, verified_green=False, lane="normal")`. A slug serves as the task id; an explicit `lane` skips the task-store read; the pre-commit's docs checks are not the verification suite, so `verified_green` stays false. Wait with `scripts/await-merge-landing.py --commit <branch head> --request-id <the id returned>`.
+5. After it lands: `git worktree remove <the worktree>`, then `git branch -d task/<slug>`.
+
+**A task of the batch can dispatch before the queue route lands**: `commit_planning` releases it at once, and its worktree branches from `main`. That is harmless when the PRD `.md` is already on `main`, as it is when author-mode Stage 10 landed it before decompose began: the dispatch gate reads `delivered_checks` from task metadata, not from the manifest on disk. If the PRD `.md` is not on `main` yet, land it first by the same route and wait for it. The manifest and its sidecar then land together in a second commit, never one of them alone.
 
 Traps:
 
@@ -39,7 +56,7 @@ Traps:
 
 Landing PRD `.md` and manifest/sidecar via *separate* vehicles is how `resolution-unification` and `stdlib-namespace` ended up with their `.md` on `main` and their manifest halves stranded untracked in project_root (2026-07-25). One commit, all artifacts.
 
-Committing in place also obviates the branch-landing sidecar dance (copying `commit_planning`'s `yaml.dump`-rewritten sidecar back into the branch and `cmp`-ing every file to avoid a dirty tracked file in project_root): the on-disk and committed copies are identical by construction.
+On the direct route, committing in place makes the on-disk and committed copies identical by construction. On the queue route `manifest_root` does the same job: the sidecar is stamped in the worktree that commits it, so nothing is copied between checkouts and project_root gains no dirty tracked file. Without `manifest_root` a branch landing meant copying `commit_planning`'s rewritten sidecar back into the branch and `cmp`-ing every file.
 
 ## Provenance & portfolio
 
@@ -331,7 +348,7 @@ Worked evidence: in esc-6739-1 the docs commit `021591e211` (2026-08-27) narrowe
 - `feedback_prd_grammar_gate` — G3 source.
 - `feedback_orchestrator_narrow_locks_favor_upfront_design` — why G5 tilts toward H.
 - `feedback_commit_prds_before_referencing_tasks` — author commits before decompose references.
-- topic `docs-prd-landing` (canonical, 2026-07-25) — the "Landing PRD artifacts" section above. It **supersedes five contradictory predecessors** (2026-06-02 / 06-24 / 07-01 / 07-06 / 07-11), all deleted. If you recall a "land docs via the merge queue", "`scripts/land.sh`", or "`git merge --ff-only`" landing procedure, it is deleted and wrong — follow the section above.
+- topic `docs-prd-landing` (canonical, 2026-07-25; vehicle rule changed 2026-11-26) — the "Landing PRD artifacts" section above. It **supersedes five contradictory predecessors** (2026-06-02 / 06-24 / 07-01 / 07-06 / 07-11), all deleted. If you recall a "`scripts/land.sh`" or "`git merge --ff-only`" landing procedure, it is deleted and wrong. Whether docs go through the merge queue is decided by the section above (they do whenever the queue holds an entry), not by a recalled procedure.
 - `feedback_planning_mode_scope` — why decompose uses planning_mode=True.
 - `procedural_fused_memory_two_phase_writes` — submit_task + resolve_ticket (planning_mode=False only).
 - `preferences_bookmark_task_pattern` — bookmark/deferred-batch lifecycle.

@@ -3362,9 +3362,11 @@ fn resolve_instance_color(
 /// callers today, and the shared key's cold-path hazard predates this scope.
 /// Before `build_snapshot` acquires a production caller, two things must
 /// happen, in order. First, the shared key is fixed, owned by #7052. Second,
-/// the per-build cost is paid down by a FRESHNESS gate, owned by #7576: skip
-/// when the output cell's cache freshness is `Final` and no realization in the
-/// node's `realization_inputs` moved on this tick. That record is a superset of
+/// the per-build cost is paid down by a FRESHNESS gate (recorded in #7576, and
+/// not being built in this code: the old evaluation orchestration is being
+/// replaced, docs/notes/old-evaluation-core-hold.md): skip when the output
+/// cell's cache freshness is `Final` and no realization in the node's
+/// `realization_inputs` moved on this tick. That record is a superset of
 /// what the node reads (see `redispatched`), so such a gate errs toward
 /// re-dispatching. It must NOT be built by widening `redispatched`'s lifetime:
 /// a signal that outlives the build closes later builds to the node.

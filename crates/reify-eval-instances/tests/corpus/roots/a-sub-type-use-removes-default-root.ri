@@ -1,0 +1,2 @@
+structure def Bolt    { param d : Length = 6mm   constraint d >= 3mm }
+structure def Bracket { sub b : Bolt { d = 8mm } }

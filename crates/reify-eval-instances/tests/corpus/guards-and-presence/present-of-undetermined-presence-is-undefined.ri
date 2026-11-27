@@ -1,0 +1,8 @@
+structure def Fan  { param d : Length = 40mm }
+structure def Case { param cooled : Bool   sub fan : Fan where cooled }
+structure def Top {
+    param x : Bool
+    sub c : Case { cooled = x }
+    let p = present(self.c.fan)
+    let r = if present(self.c.fan) then self.c.fan.d else 0mm
+}

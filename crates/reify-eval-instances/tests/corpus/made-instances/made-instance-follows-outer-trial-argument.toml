@@ -1,0 +1,30 @@
+tests = "an instance made with an argument that is an unknown of the holder follows the outer solve, its own unknown being decided under each trial."
+rule = "contract Example 11 (\"An instance built from something on trial\"); Part 12 (\"An argument on trial\"); Part 6.1."
+provenance = "contract Part B Example 11; design Part 12 \"An argument on trial\". `Slot`'s body is supplied; neither source gives one."
+needs = ["instance", "value", "made", "open", "constraint", "unknown", "solve-forced", "nested-solve"]
+answer_basis = '''
+traced. `w = 8 mm` is forced. Under each trial the made `Slot` decides `depth = width / 2`; at the solution `depth` = 4 mm. `dd` reads `depth` through `Asm.c/open`, whose value carries the decided `depth` (ruling 7).
+Under the candidates (readings E35): the outer trial `w` = 6 mm comes first, and under it the made `Slot` takes `depth` = 3 mm (satisfied), but `w == 8mm` is violated and read the trial, so 6 mm is rejected. Under `w` = 8 mm the inner 3 mm violates `depth == width / 2`, which read the trial, and is rejected; 4 mm is taken. A made instance decided once, at the first outer trial, and not again would keep 3 mm.'''
+today = "unknown."
+
+[candidates]
+
+[[candidates.unknown]]
+path = "Asm.w"
+values = ["6 mm", "8 mm"]
+
+[[candidates.unknown]]
+path = "Asm.c/made[0].depth"
+values = ["3 mm", "4 mm"]
+
+[[expect]]
+path = "Asm.w"
+value = "8 mm"
+
+[[expect]]
+path = "Asm.c/made[0].depth"
+value = "4 mm"
+
+[[expect]]
+path = "Asm.dd"
+value = "4 mm"

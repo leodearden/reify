@@ -1,6 +1,6 @@
 # Capability manifest — engine-state-partition
 
-PRD: `docs/prds/v0_6/engine-state-partition.md`. Machine-readable twin: `engine-state-partition.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`; 17 task blocks, 41 capabilities). Task ids stamped by `commit_planning` 2026-10-14: α #9036, β #9037, γ₁ #9038, γ₂ #9039, δ₁ #9040, δ₂ #9041, δ₃ #9042, ε #9043, ζ #9044, η #9045, θ #9046, ι #9047, κ₁ #9048, κ₂ #9049, λ #9050, μ #9051, ω #9052.
+**AS-AUTHORED record: the PRD was stamped SUPERSEDED on 2026-11-26** (by the new evaluation engine, `docs/prds/evaluation-core.md` and the PRDs under capstone #10552). The capabilities below are decompose-time evidence about the old orchestration, not current claims or work to do. PRD: `docs/prds/v0_6/engine-state-partition.md`. Machine-readable twin: `engine-state-partition.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`; 17 task blocks, 41 capabilities). Task ids stamped by `commit_planning` 2026-10-14: α #9036, β #9037, γ₁ #9038, γ₂ #9039, δ₁ #9040, δ₂ #9041, δ₃ #9042, ε #9043, ζ #9044, η #9045, θ #9046, ι #9047, κ₁ #9048, κ₂ #9049, λ #9050, μ #9051, ω #9052.
 
 **Code anchors** verified against main `988f4522b9` (2026-10-14). Cite-by-symbol; re-locate lines at implementation time.
 

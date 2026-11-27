@@ -3,12 +3,12 @@
 scripts/canon_run.py decides where a command runs; this module decides what
 cache it runs with (dark-factory plans/canonical-build-path-shared-cache-prd.md
 C4-C6): the per-policy cargo and command environment and the CARGO_HOME pin,
-the host.toml store and fallback settings, which real sccache serves them, and
-the store link: the probe, the loopback relay sccache talks to the store
-through, and the watchdog that cuts that relay when the store stops answering;
-the private per-invocation server session over a unix socket; supervise(),
-which runs one command around a session and measures it; and the build_cache
-record, written by the event channel's one encoder.
+the host.toml store and fallback settings, which real sccache serves them, the
+private per-invocation server session over a unix socket, which reaches the
+store through canon_store.py's link (the probe, the loopback relay and the
+watchdog that cuts it); supervise(), which runs one command around a session
+and measures it; and the build_cache record, written by the event channel's
+one encoder.
 It knows nothing of trees, build-directory modes or mount namespaces, and
 imports nothing from canon_run.
 """
@@ -16,29 +16,26 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
-import http.client
 import json
 import os
 import random
 import re
 import resource
-import selectors
 import shutil
 import signal
 import socket
 import stat
-import struct
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-import urllib.parse
-from base64 import b64encode
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass, field, fields
 from enum import StrEnum
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import canon_store  # noqa: E402  (imported after sys.path manipulation)
 
 
 class Policy(StrEnum):
@@ -51,6 +48,13 @@ class Backend(StrEnum):
     SHARED = "shared"
     LOCAL_FALLBACK = "local_fallback"
     NONE = "none"
+
+
+class RecordMode(StrEnum):
+    """C6's mode field: where the recorded invocation ran."""
+
+    CANON = "canon"
+    REAL_PATH = "real_path"
 
 
 class Reason(StrEnum):
@@ -100,6 +104,16 @@ class CacheSettings:
     fallback_dir: str = os.path.expanduser(DEFAULT_FALLBACK_DIR)
     fallback_cap: str = DEFAULT_FALLBACK_CAP
 
+    def __post_init__(self) -> None:
+        """A store_url that Store refuses is refused here, at construction, by Store's own check."""
+        _ = self.store
+
+    @property
+    def store(self) -> canon_store.Store | None:
+        if self.store_url is None:
+            return None
+        return canon_store.Store(self.store_url, self.store_user, self.store_password)
+
 
 def parse_cache_settings(table: Mapping[str, object], path: str | Path) -> CacheSettings:
     values = {}
@@ -110,25 +124,12 @@ def parse_cache_settings(table: Mapping[str, object], path: str | Path) -> Cache
         if not isinstance(value, str):
             raise CacheConfigError(f"host config {path}: {key} {value!r} is not a string")
         values[key] = value
-    store_url = values.get("store_url")
-    problem = None if store_url is None else store_url_problem(store_url)
-    if problem:
-        raise CacheConfigError(f"host config {path}: store_url {store_url!r} {problem}")
     if "fallback_dir" in values:
         values["fallback_dir"] = os.path.expanduser(values["fallback_dir"])
-    return CacheSettings(**values)
-
-
-def store_url_problem(store_url: str) -> str:
-    """Why store_url cannot name the store, or "" when it can."""
-    parts = urllib.parse.urlsplit(store_url)
-    if parts.scheme != "http" or not parts.hostname:
-        return "is not an http:// URL"
     try:
-        parts.hostname.encode("idna")
-    except UnicodeError:
-        return "names a host that is not a valid DNS name"
-    return ""
+        return CacheSettings(**values)
+    except ValueError as exc:
+        raise CacheConfigError(f"host config {path}: {exc}") from exc
 
 
 def is_writable_dir(directory: str) -> bool:
@@ -184,19 +185,40 @@ class ServerAddress:
     fallback_cap: str
 
 
+def uses_guard(policy: Policy) -> bool:
+    """Whether policy puts the compile guard first on PATH and runs a private sccache server."""
+    return policy is not Policy.INCREMENTAL
+
+
+def server_mismatch(policy: Policy, server: ServerAddress | None) -> str:
+    """Why server does not fit policy, or "" when it is present exactly when uses_guard(policy)."""
+    if uses_guard(policy) and server is None:
+        return f"policy '{policy.value}' needs a private server address, and none was given"
+    if not uses_guard(policy) and server is not None:
+        return f"policy '{policy.value}' runs no sccache server, but was given {server.socket}"
+    return ""
+
+
 @dataclass(frozen=True)
 class CacheEnvironment:
     """C4's variable table: what cargo, and the command around it, get under a policy.
 
-    server is None under incremental, which uses no sccache in any form.
+    It holds a server address exactly when the policy runs sccache (server_mismatch):
+    construction refuses a mismatch, and from_record decodes one as None, so a record
+    from another process never reaches for_cargo without the server it names.
     """
 
     policy: Policy
     server: ServerAddress | None
 
+    def __post_init__(self) -> None:
+        problem = server_mismatch(self.policy, self.server)
+        if problem:
+            raise ValueError(f"CacheEnvironment: {problem}")
+
     @property
     def uses_guard(self) -> bool:
-        return self.policy is not Policy.INCREMENTAL
+        return uses_guard(self.policy)
 
     def for_command(self, env: Mapping[str, str]) -> dict[str, str]:
         """The command's environment: the pin and, with sccache, the client's server variables."""
@@ -242,12 +264,15 @@ class CacheEnvironment:
         policy, server = record.get("policy"), record["server"]
         if policy not in tuple(Policy):
             return None
-        if server is None:
-            return cls(Policy(policy), None)
-        names = [address_field.name for address_field in fields(ServerAddress)]
-        if not isinstance(server, dict) or not all(isinstance(server.get(name), str) for name in names):
+        address = None
+        if server is not None:
+            names = [address_field.name for address_field in fields(ServerAddress)]
+            if not isinstance(server, dict) or not all(isinstance(server.get(name), str) for name in names):
+                return None
+            address = ServerAddress(**{name: server[name] for name in names})
+        if server_mismatch(Policy(policy), address):
             return None
-        return cls(Policy(policy), ServerAddress(**{name: server[name] for name in names}))
+        return cls(Policy(policy), address)
 
 
 def drop_sccache_variables(env: dict[str, str]) -> None:
@@ -255,10 +280,11 @@ def drop_sccache_variables(env: dict[str, str]) -> None:
         del env[name]
 
 
-def is_guard(path: str) -> bool:
+def carries_marker(path: str, marker: bytes) -> bool:
+    """Whether marker is within path's first MARKER_WINDOW bytes; False when path cannot be read."""
     try:
         with open(path, "rb") as candidate:
-            return GUARD_MARKER in candidate.read(MARKER_WINDOW)
+            return marker in candidate.read(MARKER_WINDOW)
     except OSError:
         return False
 
@@ -267,56 +293,44 @@ def is_executable_file(path: str) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
+def executables_named(path_value: str, name: str) -> list[str]:
+    """Every `<entry>/<name>` on path_value that is an executable regular file, in PATH order."""
+    candidates = (os.path.join(entry, name) for entry in path_value.split(os.pathsep) if entry)
+    return [candidate for candidate in candidates if is_executable_file(candidate)]
+
+
 def resolve_real_sccache(path_value: str) -> str | None:
     """The first executable `sccache` on path_value that is not a reify-canon guard."""
-    for entry in path_value.split(os.pathsep):
-        candidate = os.path.join(entry, "sccache")
-        if entry and is_executable_file(candidate) and not is_guard(candidate):
-            return candidate
-    return None
+    candidates = executables_named(path_value, "sccache")
+    return next((sccache for sccache in candidates if not carries_marker(sccache, GUARD_MARKER)), None)
 
 
 @dataclass(frozen=True)
 class SessionKnobs:
-    """Every tuning constant of a session in one place (tests replace them)."""
+    """Every tuning constant of a session in one place (tests replace them).
 
-    probe_timeout: float = 2.0
-    slow: float = 2.0
-    watchdog_interval: float = 15.0
-    watchdog_failures: int = 2
+    ready_wait is how long a started server has to answer on its socket, stop_wait
+    each step of waiting for a process before terminating and then killing it, and
+    client_timeout each sccache client call.
+    """
+
+    link: canon_store.LinkKnobs = canon_store.LinkKnobs()
     start_attempts: int = 3
     retry_delay: tuple[float, float] = (0.5, 2.0)
-    socket_wait: float = 60.0
+    ready_wait: float = 60.0
+    stop_wait: float = 60.0
+    client_timeout: float = 60.0
     start_lock: str = "/tmp/reify-canon-sccache-start.lock"
     start_lock_wait: float = 30.0
     tmp_root: str = "/tmp"
 
 
-def basic_auth(settings: CacheSettings) -> dict[str, str]:
-    if settings.store_user is None:
-        return {}
-    credentials = f"{settings.store_user}:{settings.store_password or ''}".encode()
-    return {"Authorization": "Basic " + b64encode(credentials).decode()}
-
-
-def probe_store(
-    settings: CacheSettings, knobs: SessionKnobs, clock: Callable[[], float] = time.monotonic
-) -> bool:
-    """C5: GET <store_url>/.sccache_check (sccache's own start-up check) answers 200 or 404 in time."""
-    if settings.store_url is None:
-        return False
-    parts = urllib.parse.urlsplit(settings.store_url)
-    began = clock()
-    connection = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=knobs.probe_timeout)
-    try:
-        connection.request("GET", parts.path.rstrip("/") + "/.sccache_check", headers=basic_auth(settings))
-        response = connection.getresponse()
-        response.read()
-    except (OSError, UnicodeError, http.client.HTTPException):
-        return False
-    finally:
-        connection.close()
-    return response.status in (200, 404) and clock() - began <= knobs.slow
+def store_reachable(
+    settings: CacheSettings, knobs: canon_store.LinkKnobs = canon_store.LinkKnobs()
+) -> bool | None:
+    """Whether the configured store answers the link's probe; None when no store is configured."""
+    store = settings.store
+    return None if store is None else canon_store.probe_store(store, knobs)
 
 
 def choose_backend(settings: CacheSettings, probe: Callable[[], bool]) -> tuple[Backend, Reason]:
@@ -326,305 +340,6 @@ def choose_backend(settings: CacheSettings, probe: Callable[[], bool]) -> tuple[
     if not probe():
         return Backend.LOCAL_FALLBACK, Reason.STORE_UNREACHABLE
     return Backend.SHARED, Reason.NONE
-
-
-RELAY_CHUNK = 65536
-RELAY_BUFFER_LIMIT = 4 * RELAY_CHUNK
-RELAY_ACCEPT_BACKOFF = 0.1
-
-
-def reset(connection: socket.socket) -> None:
-    """Close with SO_LINGER 0, so the peer gets a reset rather than an orderly end."""
-    try:
-        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-    except OSError:
-        pass
-    connection.close()
-
-
-class _Stream:
-    """One socket of a relayed pair: what is queued for it and whether its reading side ended."""
-
-    def __init__(self, sock: socket.socket, *, connecting: bool = False):
-        self.sock = sock
-        self.peer: _Stream | None = None
-        self.outgoing = bytearray()
-        self.connecting = connecting
-        self.read_done = False
-        self.write_done = False
-
-    def interest(self) -> int:
-        if self.connecting:
-            return selectors.EVENT_WRITE
-        events = 0
-        if not self.read_done and len(self.peer.outgoing) < RELAY_BUFFER_LIMIT:
-            events |= selectors.EVENT_READ
-        if self.outgoing:
-            events |= selectors.EVENT_WRITE
-        return events
-
-
-class Relay:
-    """C5's loopback byte relay from 127.0.0.1:<ephemeral> to the store.
-
-    One thread owns every socket. cut() resets every open connection and from then
-    on resets each new one at once, keeping the port so nothing else can take it;
-    close() releases it. The store is resolved once, at construction, which raises
-    OSError or UnicodeError when it cannot be. If the loop fails, its listener
-    closes (new connections are refused) and cut() and close() still return.
-    When accept() fails for want of a resource (EMFILE, ENFILE), the listener
-    leaves the selector for RELAY_ACCEPT_BACKOFF, so the queued connection does
-    not wake the loop again at once; it is accepted once one is free.
-    """
-
-    def __init__(self, store_host: str, store_port: int):
-        family, _, _, _, address = socket.getaddrinfo(store_host, store_port, type=socket.SOCK_STREAM)[0]
-        self._family, self._target = family, address
-        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._listener.bind(("127.0.0.1", 0))
-        self.port = self._listener.getsockname()[1]
-        self._wake_reader, self._wake_writer = socket.socketpair()
-        self._lock = threading.Lock()
-        self._requests: list[tuple[str, threading.Event]] = []
-        self._is_cut = False
-        self._ended = False
-        self._thread: threading.Thread | None = None
-
-    @property
-    def endpoint(self) -> str:
-        return f"http://127.0.0.1:{self.port}"
-
-    def start(self) -> None:
-        self._listener.listen(64)
-        self._listener.setblocking(False)
-        self._thread = threading.Thread(target=self._loop, name="reify-canon-relay", daemon=True)
-        self._thread.start()
-
-    def cut(self) -> None:
-        self._request("cut")
-
-    def close(self) -> None:
-        if self._thread is not None:
-            self._request("close")
-            self._thread.join()
-            self._thread = None
-        for owned in (self._listener, self._wake_reader, self._wake_writer):
-            owned.close()
-
-    def __enter__(self) -> Relay:
-        self.start()
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
-
-    def _request(self, command: str) -> None:
-        if self._thread is None:
-            return
-        done = threading.Event()
-        with self._lock:
-            if self._ended:
-                return
-            self._requests.append((command, done))
-        with contextlib.suppress(OSError):
-            self._wake_writer.send(b"\0")
-        done.wait()
-
-    def _loop(self) -> None:
-        streams: dict[socket.socket, _Stream] = {}
-        failed = False
-        try:
-            with selectors.DefaultSelector() as selector:
-                self._select_until_closed(selector, streams)
-        except Exception:
-            failed = True
-        finally:
-            for stream in list(streams.values()):
-                self._drop(streams, stream)
-            self._end(failed)
-
-    def _select_until_closed(
-        self, selector: selectors.BaseSelector, streams: dict[socket.socket, _Stream]
-    ) -> None:
-        selector.register(self._listener, selectors.EVENT_READ)
-        selector.register(self._wake_reader, selectors.EVENT_READ)
-        registered: dict[socket.socket, int] = {}
-        resume_accepting_at: float | None = None
-        running = True
-        while running:
-            timeout = None if resume_accepting_at is None else max(0.0, resume_accepting_at - time.monotonic())
-            for key, events in selector.select(timeout):
-                if key.fileobj is self._listener:
-                    if not self._accept(streams):
-                        selector.unregister(self._listener)
-                        resume_accepting_at = time.monotonic() + RELAY_ACCEPT_BACKOFF
-                elif key.fileobj is self._wake_reader:
-                    running = self._serve_requests(streams)
-                elif key.fileobj in streams:
-                    self._pump(streams, streams[key.fileobj], events)
-            if resume_accepting_at is not None and time.monotonic() >= resume_accepting_at:
-                selector.register(self._listener, selectors.EVENT_READ)
-                resume_accepting_at = None
-            self._reregister(selector, streams, registered)
-
-    def _end(self, failed: bool) -> None:
-        """Refuse new connections first when the loop failed, then release every waiting request."""
-        if failed:
-            self._listener.close()
-        with self._lock:
-            self._ended = True
-            pending, self._requests = self._requests, []
-        for _, done in pending:
-            done.set()
-
-    def _serve_requests(self, streams: dict[socket.socket, _Stream]) -> bool:
-        self._wake_reader.recv(4096)
-        with self._lock:
-            requests, self._requests = self._requests, []
-        running = True
-        for command, done in requests:
-            self._is_cut = self._is_cut or command == "cut"
-            running = running and command != "close"
-            for stream in list(streams.values()):
-                self._drop(streams, stream)
-            done.set()
-        return running
-
-    def _accept(self, streams: dict[socket.socket, _Stream]) -> bool:
-        """False when accept() itself failed, leaving the connection queued."""
-        try:
-            client, _ = self._listener.accept()
-        except BlockingIOError:
-            return True
-        except OSError:
-            return False
-        if self._is_cut:
-            reset(client)
-            return True
-        upstream = None
-        try:
-            client.setblocking(False)
-            upstream = socket.socket(self._family, socket.SOCK_STREAM)
-            upstream.setblocking(False)
-            upstream.connect_ex(self._target)
-        except OSError:
-            if upstream is not None:
-                upstream.close()
-            reset(client)
-            return True
-        near, far = _Stream(client), _Stream(upstream, connecting=True)
-        near.peer, far.peer = far, near
-        streams[client], streams[upstream] = near, far
-        return True
-
-    def _pump(self, streams: dict[socket.socket, _Stream], stream: _Stream, events: int) -> None:
-        try:
-            if stream.connecting:
-                error = stream.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
-                if error:
-                    raise ConnectionRefusedError(error, os.strerror(error))
-                stream.connecting = False
-                return
-            if events & selectors.EVENT_READ:
-                data = stream.sock.recv(RELAY_CHUNK)
-                if data:
-                    stream.peer.outgoing += data
-                else:
-                    stream.read_done = True
-            if events & selectors.EVENT_WRITE and stream.outgoing:
-                sent = stream.sock.send(stream.outgoing)
-                del stream.outgoing[:sent]
-            for end in (stream, stream.peer):
-                if end.peer.read_done and not end.outgoing and not end.write_done:
-                    end.sock.shutdown(socket.SHUT_WR)
-                    end.write_done = True
-        except (BlockingIOError, InterruptedError):
-            return
-        except OSError:
-            self._drop(streams, stream)
-            return
-        if stream.write_done and stream.peer.write_done:
-            for end in (stream, stream.peer):
-                streams.pop(end.sock, None)
-                end.sock.close()
-
-    @staticmethod
-    def _drop(streams: dict[socket.socket, _Stream], stream: _Stream) -> None:
-        for end in (stream, stream.peer):
-            if streams.pop(end.sock, None) is not None:
-                reset(end.sock)
-
-    @staticmethod
-    def _reregister(
-        selector: selectors.BaseSelector,
-        streams: dict[socket.socket, _Stream],
-        registered: dict[socket.socket, int],
-    ) -> None:
-        for sock in [sock for sock in registered if sock not in streams]:
-            del registered[sock]
-            selector.unregister(sock)
-        for sock, stream in streams.items():
-            wanted = stream.interest()
-            current = registered.get(sock, 0)
-            if wanted == current:
-                continue
-            if not wanted:
-                selector.unregister(sock)
-                del registered[sock]
-            elif current:
-                selector.modify(sock, wanted)
-                registered[sock] = wanted
-            else:
-                selector.register(sock, wanted)
-                registered[sock] = wanted
-
-
-def _wait_on(stopped: threading.Event, seconds: float) -> bool:
-    return stopped.wait(seconds)
-
-
-class Watchdog:
-    """C5 / boundary row 7: probe the store every interval; cut the relay after enough failures.
-
-    A probe fails when it says unreachable or takes longer than knobs.slow on clock.
-    wait(stopped, seconds) returns True once the watchdog should end.
-    """
-
-    def __init__(
-        self,
-        probe: Callable[[], bool],
-        relay: Relay,
-        knobs: SessionKnobs,
-        clock: Callable[[], float] = time.monotonic,
-        wait: Callable[[threading.Event, float], bool] = _wait_on,
-    ):
-        self._probe, self._relay, self._knobs = probe, relay, knobs
-        self._clock, self._wait = clock, wait
-        self._stopped = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="reify-canon-watchdog", daemon=True)
-        self.lost = False
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stopped.set()
-        self.join()
-
-    def join(self) -> None:
-        if self._thread.ident is not None:
-            self._thread.join()
-
-    def _run(self) -> None:
-        failures = 0
-        while not self._wait(self._stopped, self._knobs.watchdog_interval):
-            began = self._clock()
-            healthy = self._probe() and self._clock() - began <= self._knobs.slow
-            failures = 0 if healthy else failures + 1
-            if failures >= self._knobs.watchdog_failures:
-                self._relay.cut()
-                self.lost = True
-                return
 
 
 SETPRIV = "/usr/bin/setpriv"
@@ -727,23 +442,23 @@ def remove_stale_session_files(build_dir: str, own_pid: int) -> None:
             unlink_quietly(os.path.join(build_dir, name))
 
 
-def reap(process: subprocess.Popen, knobs: SessionKnobs) -> None:
-    """Wait for process, terminating and then killing it when it outlives socket_wait."""
+def reap(process: subprocess.Popen, stop_wait: float) -> None:
+    """Wait for process, terminating and then killing it each time it outlives stop_wait."""
     for escalate in (None, process.terminate, process.kill):
         if escalate is not None:
             escalate()
         try:
-            process.wait(knobs.socket_wait)
+            process.wait(stop_wait)
             return
         except subprocess.TimeoutExpired:
             continue
     process.wait()
 
 
-def stop_now(process: subprocess.Popen, knobs: SessionKnobs) -> None:
+def stop_now(process: subprocess.Popen, stop_wait: float) -> None:
     if process.poll() is None:
         process.terminate()
-    reap(process, knobs)
+    reap(process, stop_wait)
 
 
 @contextlib.contextmanager
@@ -773,7 +488,7 @@ def server_env(
     backend: Backend,
     settings: CacheSettings,
     fallback_dir: str,
-    relay: Relay | None,
+    relay: canon_store.Relay | None,
 ) -> dict[str, str]:
     """C4's server environment: no inherited SCCACHE_*, a foreground server, then the backend."""
     composed = dict(env)
@@ -785,12 +500,13 @@ def server_env(
         SCCACHE_SERVER_UDS=files.socket,
     )
     if backend is Backend.SHARED:
+        store = settings.store
         composed["SCCACHE_WEBDAV_ENDPOINT"] = relay.endpoint
-        composed["SCCACHE_WEBDAV_KEY_PREFIX"] = urllib.parse.urlsplit(settings.store_url).path.strip("/")
-        if settings.store_user is not None:
-            composed["SCCACHE_WEBDAV_USERNAME"] = settings.store_user
-        if settings.store_password is not None:
-            composed["SCCACHE_WEBDAV_PASSWORD"] = settings.store_password
+        composed["SCCACHE_WEBDAV_KEY_PREFIX"] = store.key_prefix
+        if store.user is not None:
+            composed["SCCACHE_WEBDAV_USERNAME"] = store.user
+        if store.password is not None:
+            composed["SCCACHE_WEBDAV_PASSWORD"] = store.password
     else:
         composed["SCCACHE_DIR"] = fallback_dir
         composed["SCCACHE_CACHE_SIZE"] = settings.fallback_cap
@@ -799,14 +515,18 @@ def server_env(
 
 class StartFailure(StrEnum):
     NONE = ""
-    EXITED = "exited"
+    NOT_READY = "not_ready"
     READ_ONLY = "read_only"
 
 
 def start_server(
     sccache: str, env: Mapping[str, str], files: SessionFiles, knobs: SessionKnobs, clock: Callable[[], float]
 ) -> tuple[subprocess.Popen, StartFailure]:
-    """Spawn a foreground server under the start lock and check it: ready, and not read-only."""
+    """Spawn a foreground server under the start lock and check it: ready, and not read-only.
+
+    NOT_READY when it exited, or did not answer within ready_wait; READ_ONLY when its
+    stderr says its storage write check failed.
+    """
     with start_lock(knobs, clock):
         unlink_quietly(files.socket)
         with refusing_os_errors(f"open {files.err}"):
@@ -820,10 +540,10 @@ def start_server(
                 stderr=err,
                 close_fds=True,
             )
-        deadline = clock() + knobs.socket_wait
+        deadline = clock() + knobs.ready_wait
         while not answers(files.socket):
             if process.poll() is not None or clock() >= deadline:
-                return process, StartFailure.EXITED
+                return process, StartFailure.NOT_READY
             time.sleep(POLL_INTERVAL)
         if READ_ONLY_LINE in read_text(files.err):
             return process, StartFailure.READ_ONLY
@@ -854,8 +574,8 @@ class CacheSession:
         reason: Reason,
         store_attempts: int,
         process: subprocess.Popen,
-        relay: Relay | None,
-        watchdog: Watchdog | None,
+        relay: canon_store.Relay | None,
+        watchdog: canon_store.Watchdog | None,
         files: SessionFiles,
         client_env: Mapping[str, str],
         knobs: SessionKnobs,
@@ -887,7 +607,7 @@ class CacheSession:
             if answers(self._files.socket):
                 counters = summed_counters(self._client("--show-stats", "--stats-format", "json"))
                 self._client("--stop-server")
-            reap(self._process, self._knobs)
+            reap(self._process, self._knobs.stop_wait)
             read_only = READ_ONLY_LINE in read_text(self._files.err)
         finally:
             if self._relay is not None:
@@ -917,21 +637,12 @@ class CacheSession:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
-                timeout=self._knobs.socket_wait,
+                timeout=self._knobs.client_timeout,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             return ""
         return completed.stdout
-
-
-def open_relay(settings: CacheSettings) -> Relay | None:
-    """The relay to store_url's host, or None when that host does not resolve."""
-    store = urllib.parse.urlsplit(settings.store_url)
-    try:
-        return Relay(store.hostname, store.port or 80)
-    except (OSError, UnicodeError):
-        return None
 
 
 def open_session(
@@ -953,7 +664,8 @@ def open_session(
     if not is_executable_file(sccache):
         raise CacheSessionError(f"cannot start {sccache}: not an executable file")
     rng = rng or random.Random()
-    probe = probe or (lambda: probe_store(settings, knobs))
+    store = settings.store
+    probe = probe or (lambda: store is not None and canon_store.probe_store(store, knobs.link))
     with refusing_os_errors(f"create the build directory {canon_build_dir}"):
         os.makedirs(canon_build_dir, exist_ok=True)
     remove_stale_session_files(canon_build_dir, os.getpid())
@@ -962,7 +674,7 @@ def open_session(
     backend, reason = choose_backend(settings, probe)
     attempts, relay, process = 0, None, None
     try:
-        relay = open_relay(settings) if backend is Backend.SHARED else None
+        relay = canon_store.open_relay(store) if store is not None and backend is Backend.SHARED else None
         if backend is Backend.SHARED and relay is None:
             backend, reason = Backend.LOCAL_FALLBACK, Reason.STORE_UNREACHABLE
         if relay is not None:
@@ -976,7 +688,7 @@ def open_session(
                 process, failure = start_server(sccache, shared_env, files, knobs, clock)
                 if failure is StartFailure.NONE:
                     break
-                stop_now(process, knobs)
+                stop_now(process, knobs.stop_wait)
             if failure is not StartFailure.NONE:
                 relay.close()
                 relay = None
@@ -987,14 +699,14 @@ def open_session(
             local_env = server_env(env, files, backend, settings, fallback_dir, None)
             process, failure = start_server(sccache, local_env, files, knobs, clock)
             if failure is not StartFailure.NONE:
-                stop_now(process, knobs)
+                stop_now(process, knobs.stop_wait)
                 first_line = next(iter(read_text(files.err).splitlines()), "no stderr")
                 raise CacheSessionError(f"the local-fallback sccache server did not start: {first_line}")
     except BaseException:
         if relay is not None:
             relay.close()
         if process is not None and process.poll() is None:
-            stop_now(process, knobs)
+            stop_now(process, knobs.stop_wait)
         unlink_quietly(files.socket)
         unlink_quietly(files.err)
         raise
@@ -1007,7 +719,7 @@ def open_session(
         store_attempts=attempts,
         process=process,
         relay=relay,
-        watchdog=None if relay is None else Watchdog(probe, relay, knobs, clock),
+        watchdog=None if relay is None else canon_store.Watchdog(probe, relay, knobs.link, clock),
         files=files,
         client_env=environment.for_command(env),
         knobs=knobs,
@@ -1030,9 +742,9 @@ def is_invocation_file(name: str) -> bool:
 
 @dataclass(frozen=True)
 class BuildCacheRecord:
-    """C6's record of one outermost invocation; mode is canon_run's mode value."""
+    """C6's record of one outermost invocation."""
 
-    mode: str
+    mode: RecordMode
     policy: Policy
     backend: Backend
     reason: Reason
@@ -1052,7 +764,7 @@ def write_record(record: BuildCacheRecord, subcommand: str, channel: str | None,
     Never fatal, like the lib itself: a failed write is dropped.
     """
     arguments = [
-        str(record.mode),
+        record.mode.value,
         record.policy.value,
         record.backend.value,
         record.reason.value,
@@ -1088,7 +800,7 @@ class CommandNotFound(Exception):
 class RecordBase:
     """What the caller knows before the command runs; a session supplies the rest."""
 
-    mode: str
+    mode: RecordMode
     policy: Policy
     backend: Backend = Backend.NONE
     reason: Reason = Reason.NONE

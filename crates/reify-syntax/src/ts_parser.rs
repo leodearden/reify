@@ -3219,6 +3219,8 @@ impl<'a> Lowering<'a> {
         // pure, so collecting here alongside the helper's member lowering has no
         // double side effect.
         let mut spec_param_overrides: Vec<(String, Expr)> = Vec::new();
+        // One guard slot per override, pushed beside it so the two stay aligned.
+        let mut spec_param_override_guards: Vec<Option<WhereClause>> = Vec::new();
         // The two body kinds are mutually exclusive by construction:
         //   specialization_body → body: Some(_), keyed_members: empty
         //   keyed_member_block  → body: None,    keyed_members: non-empty
@@ -3275,6 +3277,7 @@ impl<'a> Lowering<'a> {
                     // overrides body's `param_assignment` children and lower each
                     // `(name, value)` via the shared `lower_binding_value` helper.
                     let mut param_overrides: Vec<(String, Expr)> = Vec::new();
+                    let mut param_override_guards: Vec<Option<WhereClause>> = Vec::new();
                     let mut po_cursor = overrides_node.walk();
                     for child in overrides_node.children(&mut po_cursor) {
                         if child.kind() == "param_assignment"
@@ -3284,11 +3287,18 @@ impl<'a> Lowering<'a> {
                             let param_name = self.node_text(name_node).to_string();
                             if let Some(expr) = self.lower_binding_value(value_node) {
                                 param_overrides.push((param_name, expr));
+                                param_override_guards.push(self.lower_where_clause(child));
                             }
                         }
                     }
                     let span = self.span(entry);
-                    entries.push(KeyedSubMemberEntry { key, overrides, param_overrides, span });
+                    entries.push(KeyedSubMemberEntry {
+                        key,
+                        overrides,
+                        param_overrides,
+                        param_override_guards,
+                        span,
+                    });
                 }
                 (None, entries)
             }
@@ -3311,6 +3321,7 @@ impl<'a> Lowering<'a> {
                         let param_name = self.node_text(name_node).to_string();
                         if let Some(expr) = self.lower_binding_value(value_node) {
                             spec_param_overrides.push((param_name, expr));
+                            spec_param_override_guards.push(self.lower_where_clause(child));
                         }
                     }
                 }
@@ -3456,6 +3467,7 @@ impl<'a> Lowering<'a> {
             where_clause,
             body,
             spec_param_overrides,
+            spec_param_override_guards,
             keyed_members,
             is_aux,
             is_priv: self.has_priv_keyword(node),
@@ -3527,6 +3539,7 @@ impl<'a> Lowering<'a> {
             is_collection: false,
             body: None,
             spec_param_overrides: Vec::new(),
+            spec_param_override_guards: Vec::new(),
             keyed_members: Vec::new(),
             // ── fields the derived arm genuinely carries ──
             where_clause: None,
@@ -3896,6 +3909,7 @@ impl<'a> Lowering<'a> {
             is_priv: self.has_priv_keyword(node),
             members,
             frame_expr,
+            where_clause: self.lower_where_clause(node),
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -4749,6 +4763,7 @@ impl<'a> Lowering<'a> {
             where_clause: None,
             body: None,
             spec_param_overrides: vec![],
+            spec_param_override_guards: vec![],
             keyed_members: Vec::new(),
             is_aux: false,
             is_priv: false,

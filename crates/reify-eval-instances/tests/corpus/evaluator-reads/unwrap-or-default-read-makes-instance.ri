@@ -1,0 +1,8 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+}
+structure def Asm {
+    param o : Option<Length> = some(5mm)
+    let x = unwrap_or(o, Plate(t: 1mm).t)
+}

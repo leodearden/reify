@@ -1,0 +1,7 @@
+purpose robust(subject : Structure) { constraint subject.t >= 3mm }
+structure def Bracket { param t : Length = 2mm }
+structure def Holder {
+    sub b : Bracket {
+        purpose robust(self)
+    }
+}

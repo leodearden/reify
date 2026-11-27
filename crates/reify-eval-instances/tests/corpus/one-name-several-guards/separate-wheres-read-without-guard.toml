@@ -1,0 +1,17 @@
+tests = "a name declared under separate `where` guards (not the arms of one `where`/`else`) is read by a declaration with no guard like any member: rule E chooses the declaration whose guard is true."
+rule = "rule E; readings C11; Leo's ruling of 2026-11-26 on the PRD's D13 (a read of a member that may be absent compiles wherever it is written), which amends decision 3b line 1 and Part 4."
+provenance = "language-2 B7 (c) (the spec's desugared form, which compiles and evaluates today). Until Leo ruled, the design's narrower exception made this read a compile error although `k` is there for every `n`. Renamed from `separate-wheres-leave-name-guarded`."
+needs = ["compile-error", "instance", "guard", "one-name"]
+answer_basis = "traced. `n` is 3: the guard `n < 3` is false and `n >= 3` is true, so `k` is present with the second declaration, 2 mm (rule E: present with the declaration whose guard is true when every other guard is false). `r` is 4 mm."
+today = "compiles with \"warning: unguarded reference to guarded cell 'k'\"; `K.r = 4 mm` (run `alt_separate_read.ri`)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "K.k"
+value = "2 mm"
+
+[[expect]]
+path = "K.r"
+value = "4 mm"

@@ -1550,6 +1550,24 @@ pub enum CompiledGeometryOp {
     },
 }
 
+impl CompiledGeometryOp {
+    /// The op's named scalar arguments; a `Boolean` has none, only operands.
+    pub fn args(&self) -> &[(String, CompiledExpr)] {
+        match self {
+            CompiledGeometryOp::Boolean { .. } => &[],
+            CompiledGeometryOp::Primitive { args, .. }
+            | CompiledGeometryOp::Modify { args, .. }
+            | CompiledGeometryOp::Transform { args, .. }
+            | CompiledGeometryOp::Pattern { args, .. }
+            | CompiledGeometryOp::Sweep { args, .. }
+            | CompiledGeometryOp::Curve { args, .. }
+            | CompiledGeometryOp::Profile { args, .. }
+            | CompiledGeometryOp::Surface { args, .. }
+            | CompiledGeometryOp::Isosurface { args, .. } => args,
+        }
+    }
+}
+
 /// Primitive geometry kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum PrimitiveKind {

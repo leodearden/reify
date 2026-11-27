@@ -8,14 +8,21 @@ use std::task::{Context, Poll, Waker};
 use crate::cancel::Cancel;
 use crate::cx::Cx;
 use crate::declaration::Declaration;
+use crate::declared_children::{ChildSteps, DeclaredChildren};
 use crate::erased_kind::{Body, ErasedKind};
 use crate::job::Product;
+use crate::key::Chain;
 use crate::mailbox::{Mailbox, Posted, Reply};
-use crate::outcome::{Erased, Outcome};
+use crate::outcome::Erased;
 use crate::produced::Produced;
+use crate::record::Answers;
 
 pub(crate) struct Task {
     declaration: Arc<Declaration>,
+    /// The keys its reads have taken it through, from its recipe's key.
+    chain: Chain,
+    /// The children its answered reads declared.
+    children: DeclaredChildren,
     mailbox: Arc<Mailbox>,
     cancel: Cancel,
     /// The section the body waits on, if it waits on one.
@@ -34,6 +41,8 @@ impl Task {
         let body = kind.start(Cx::new(Arc::clone(&mailbox), cancel.clone()));
         Self {
             declaration,
+            chain: Chain::new(kind.recipe()),
+            children: DeclaredChildren::default(),
             mailbox,
             cancel,
             section: None,
@@ -44,6 +53,11 @@ impl Task {
 
     pub fn declaration(&self) -> &Arc<Declaration> {
         &self.declaration
+    }
+
+    /// The children its answered reads declared.
+    pub fn children(&self) -> &DeclaredChildren {
+        &self.children
     }
 
     /// The flag a section this body starts reads as `cancelled`.
@@ -64,8 +78,13 @@ impl Task {
         self.mailbox.take_posted()
     }
 
-    pub fn answer_read(&self, outcomes: Vec<Outcome<Erased>>) {
-        self.mailbox.reply(Reply::Outcomes(outcomes));
+    /// Replies to its read, which its chain records, with the children it
+    /// declared.
+    pub fn answer_read(&mut self, mut answers: Answers) {
+        answers.record_children(&mut self.children);
+        self.chain
+            .read(Arc::clone(answers.wanted()), answers.contents());
+        self.mailbox.reply(Reply::Outcomes(answers.into_outcomes()));
     }
 
     pub fn begin_section(&mut self, serial: u64) {
@@ -97,6 +116,22 @@ impl Task {
     /// cannot escape the core.
     pub fn discard(self) {
         let _ = catch_unwind(AssertUnwindSafe(move || drop(self)));
+    }
+
+    /// Discards the finished body, keeping what it was started with, the
+    /// chain its reads took it through and the steps of the children they
+    /// declared.
+    pub fn finish(self) -> (Arc<Declaration>, Chain, ChildSteps) {
+        let Self {
+            declaration,
+            chain,
+            children,
+            mailbox,
+            body,
+            ..
+        } = self;
+        let _ = catch_unwind(AssertUnwindSafe(move || drop((body, mailbox))));
+        (declaration, chain, children.into_steps())
     }
 
     /// Tells the section the body waits on, if any, that nobody wants the

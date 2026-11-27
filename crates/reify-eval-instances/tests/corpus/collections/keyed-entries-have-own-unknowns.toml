@@ -1,0 +1,29 @@
+tests = "each key of a keyed collection has its own arguments, so the set of unknowns differs per element."
+rule = "Part 5 (\"each key's entry in the member table carries that key's arguments\"); Part 6.2."
+provenance = "logic-1 L3 (taken: Part 5); logic-2 Part A row L3 (closed)."
+needs = ["instance", "collection", "constraint", "summary", "unknown", "solve-forced"]
+answer_basis = "traced. Element `\"a\"` is given `area`, so `gap` is its unknown and `gap == area / 2` forces 3 mm. Element `\"b\"` is given `gap`, so `area` is its unknown, forced to 4 mm. Each unknown is the element's own (`Vent`'s text holds the `auto`), and so is the constraint, which bears. One member table for both elements would give one of them the wrong unknowns (L1's two failure traces)."
+today = "run `keyed.ri`: both elements print as `Vent { }`; the definition-level solve fails \"infeasible\"."
+
+[candidates]
+note = "A reading in which the constraint did not bear would take 6 mm and 2 mm. Under each the constraint is violated and depended on the trial; under 3 mm and 4 mm it is satisfied."
+
+[[candidates.unknown]]
+path = "Manifold.vents[\"a\"].gap"
+values = ["6 mm", "3 mm"]
+
+[[candidates.unknown]]
+path = "Manifold.vents[\"b\"].area"
+values = ["2 mm", "4 mm"]
+
+[[expect]]
+path = "Manifold.vents[\"a\"].gap"
+value = "3 mm"
+
+[[expect]]
+path = "Manifold.vents[\"b\"].area"
+value = "4 mm"
+
+[[expect]]
+path = "Manifold/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

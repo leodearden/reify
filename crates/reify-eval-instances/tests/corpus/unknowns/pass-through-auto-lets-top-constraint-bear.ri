@@ -1,0 +1,3 @@
+structure def Beam { param len : Length = 50mm   constraint len >= 10mm   constraint len <= 100mm }
+structure def Asm  { param a_len : Length = auto   sub a : Beam { len = a_len } }
+structure def TopS { sub asm : Asm { a_len = auto }   constraint self.asm.a_len == 70mm }

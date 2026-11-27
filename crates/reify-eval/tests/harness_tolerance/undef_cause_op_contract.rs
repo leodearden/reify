@@ -15,7 +15,9 @@
 use reify_core::{DiagnosticCode, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::UndefCause;
-use reify_ir::arg_acceptance::{Acceptance, ArgSpec, accept_arg, length_spec, mass_spec};
+use reify_ir::arg_acceptance::{
+    Acceptance, ArgSpec, accept_arg, length_spec, mass_spec, pressure_spec,
+};
 use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
 
 // ── Helper: load and compile the γ fixture ────────────────────────────────────
@@ -250,19 +252,20 @@ fn g3_transparency_capture_off_is_byte_identical() {
 // MEASUREMENT behind the design — why this is a characterization floor and not a
 // reachability test of the never-overwrite gate itself:
 //
-//   `record_op_contract_failures` (crates/reify-eval/src/engine_eval.rs:4621) has
+//   `record_op_contract_failures` (crates/reify-eval/src/engine_eval.rs) has
 //   the INV-SF-1 never-overwrite half as its second gate,
-//   `if causes.contains_key(id) { continue; }` (:4637). That gate is NOT
+//   `if causes.contains_key(id) { continue; }`. That gate is NOT
 //   reachable from `.ri` source:
 //
 //     - `AwaitingSolve` / `SolveFailed` both require `det ∈ {Auto, Provisional}`,
 //       which implies `kind.is_auto()`, which implies `default_expr: None` —
 //       `build_param_value_cell_decl` hard-sets it on the auto branch
-//       (crates/reify-compiler/src/entity.rs:6307-6340, pinned by the
-//       `build_param_value_cell_decl_auto_branch_skips_compile_default` test at
-//       entity.rs:7494-7534). A `None` default_expr is skipped by
-//       `record_op_contract_failures`'s THIRD gate anyway (:4646), so those two
-//       causes can never reach the `contains_key` check.
+//       (in crates/reify-compiler/src/member_cell_decls.rs, pinned by the
+//       `build_param_value_cell_decl_auto_branch_skips_compile_default` test in
+//       the same file). A `None` default_expr is skipped by
+//       `record_op_contract_failures`'s THIRD gate anyway,
+//       `let Some(default_expr) = &decl.default_expr else { continue; }`, so
+//       those two causes can never reach the `contains_key` check.
 //     - `Unbound` is likewise a required param with no default → same third gate.
 //     - The one α cause that CAN co-occur with `Some(default_expr)` is
 //       `UserUndef` (`param u: Real = undef`), and its re-eval is a
@@ -271,12 +274,13 @@ fn g3_transparency_capture_off_is_byte_identical() {
 //
 //   Hitting the `contains_key` gate itself would require a synthetic
 //   `ValueCellDecl` injection (precedent:
-//   crates/reify-eval/tests/boundary5_engine.rs:1008-1034 pushes directly onto
+//   `evaluate_let_bindings_skips_let_cell_without_default_expr` in
+//   crates/reify-eval/tests/boundary5_engine.rs pushes directly onto
 //   `template.value_cells`) and is deliberately out of α's remit.
 //
 // Both fixtures reused here are already registered in
 // `DELIBERATELY_UNDEF_FIXTURES`
-// (crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:668-674), which is
+// (crates/reify-eval/tests/no_stale_undef_invariant_gate.rs), which is
 // why they were chosen over authoring a new `.ri`: no new fixture, no new
 // registry row, no run-all-classification.manifest row, no nextest partition
 // entry is due.
@@ -310,11 +314,11 @@ fn layer1_module() -> reify_compiler::CompiledModule {
 ///     `DiagnosticCode::OpContractViolation` — the generic code that leaf β will
 ///     replace with a specific one.
 ///
-/// When β changes `push_op_contract_failure` (crates/reify-expr/src/lib.rs:3262;
-/// call sites :646 and :4282) to carry a classified code, `x`'s code changes and
-/// this test's `x` half is expected to be retargeted by β — but the `a` half must
-/// keep holding untouched. Any collateral relabelling of an α-classified cell
-/// turns this red.
+/// When β changes `push_op_contract_failure` (crates/reify-expr/src/lib.rs, and
+/// its `OpContractViolation` callers there) to carry a classified code, `x`'s
+/// code changes and this test's `x` half is expected to be retargeted by β —
+/// but the `a` half must keep holding untouched. Any collateral relabelling of
+/// an α-classified cell turns this red.
 #[test]
 fn classified_cause_is_never_relabelled_op_contract_failed() {
     let module = op_contract_module();
@@ -497,6 +501,97 @@ fn a_length_mass_is_diagnosed_and_records_the_dimensioned_arg_cause() {
             si_value: 2.0,
             dimension: DimensionVector::MASS,
         })
+    );
+}
+
+/// Inline for the same reason as [`MASS_DIMENSION_SOURCE`]. A user struct is
+/// the `.ri`-reachable route to a wrong-dimension material field: the `prb_*`
+/// arguments are not type-checked, so `FakeMaterial`'s LENGTH `youngs_modulus`
+/// reaches the flexure reader, as does a bare geometry length.
+const FLEXURE_DIMENSION_SOURCE: &str = "structure def FakeMaterial {
+  param youngs_modulus : Length = 200mm
+}
+
+structure def FlexDim {
+  let wrong_e = prb_cantilever_beam(20mm, 5mm, 0.5mm, FakeMaterial(), point3(0mm,0mm,0mm), dir(0,1,0))
+  let bare_len = prb_cantilever_beam(0.02, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm,0mm,0mm), dir(0,1,0))
+  let right = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm,0mm,0mm), dir(0,1,0))
+}";
+
+/// A flexure ctor refusing a wrong-dimension material field or a bare geometry
+/// length is diagnosed, and the recorded cause is the SPECIFIC
+/// `DimensionedArgRejected`, not the generic `OpContractViolation` (PRD-5 I5);
+/// the correctly-spelled twin is a joint with no cause.
+#[test]
+fn a_flexure_dimension_rejection_records_the_dimensioned_arg_cause() {
+    use reify_core::Severity;
+    use reify_ir::Value;
+
+    let module = compile_source_with_stdlib(FLEXURE_DIMENSION_SOURCE);
+    let errors = collect_errors(&module.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "FlexDim must compile without errors: {errors:#?}"
+    );
+
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
+    engine.set_capture_undef_causes(true);
+    let result = engine.eval(&module);
+
+    let rejections: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimensionedArgRejected)
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    let expected = [
+        canonical_rejection(
+            Value::length(0.2),
+            &pressure_spec(),
+            "prb_cantilever_beam",
+            "material.youngs_modulus",
+        ),
+        canonical_rejection(Value::Real(0.02), &length_spec(), "prb_cantilever_beam", "length"),
+    ];
+    assert_eq!(
+        rejections.len(),
+        expected.len(),
+        "one rejection per wrong cell, got {rejections:#?}"
+    );
+    for message in &expected {
+        assert!(
+            rejections.contains(&message.as_str()),
+            "expected {message:?}, got {rejections:#?}"
+        );
+    }
+
+    let causes = engine.undef_causes();
+    for cell in ["wrong_e", "bare_len"] {
+        let id = ValueCellId::new("FlexDim", cell);
+        assert!(
+            matches!(
+                causes.get(&id),
+                Some(UndefCause::OpContractFailed {
+                    code: DiagnosticCode::DimensionedArgRejected,
+                    ..
+                })
+            ),
+            "{cell}: expected OpContractFailed {{ DimensionedArgRejected }}, got {:?}",
+            causes.get(&id)
+        );
+    }
+
+    let right = ValueCellId::new("FlexDim", "right");
+    assert!(
+        causes.get(&right).is_none(),
+        "the correctly-spelled twin records no cause"
+    );
+    assert!(
+        matches!(result.values.get(&right), Some(Value::Map(_))),
+        "right must be a joint Map, got {:?}",
+        result.values.get(&right)
     );
 }
 

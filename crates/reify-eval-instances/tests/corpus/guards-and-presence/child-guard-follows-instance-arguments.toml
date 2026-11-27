@@ -1,0 +1,34 @@
+tests = "a guard inside a child follows that instance's own arguments, not the definition's defaults; a guarded member read from the parent gives its value when present and undefined when absent; and a guarded `let` is computed from the instance's own parameters."
+rule = "Part 4 (\"A guard is read per instance\"; reading what is not there); decision 3 (3a, 3b line 3)"
+provenance = "task 7992 (with its amendment of 2026-11-19, which retires the rule that a guarded member takes the template's value); design Part 13 (task 7992 row). design Part 4; Part 13 (tasks 7992, 8414). design Part 13 row (task 7992)."
+needs = ["instance", "guard"]
+answer_basis = '''
+traced.
+`Test.s` is given `base` = 5 mm and keeps `on` = true, so `g` = 3 mm and `q` = 5 mm × 3 = 15 mm, computed from the instance's own `base` and not from the default of 2 mm.
+`Test.t` is given `on` = false, so its `g` is absent, although `Inner`'s default is true.
+`self.t.g` is a read across an instance, so it compiles (Part 4). It reads something that is not there, which gives undefined.'''
+today = "no `Test.s.g` cell exists, and `self.s.g` is rejected with \"unknown member 'g' on sub 's'\" (task 7992 record, debug binary at bc4ac07135). Since task 10015, a guarded member at an instance reads the template's value."
+
+[[expect]]
+path = "Test.s.g"
+value = "3 mm"
+
+[[expect]]
+path = "Test.s.q"
+value = "15 mm"
+
+[[expect]]
+path = "Test.t.g"
+presence = "absent"
+
+[[expect]]
+path = "Test.gs"
+value = "3 mm"
+
+[[expect]]
+path = "Test.qs"
+value = "15 mm"
+
+[[expect]]
+path = "Test.gt"
+value = "undefined"

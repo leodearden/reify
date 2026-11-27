@@ -3,28 +3,30 @@
 
 use crate::declaration::{Binding, Declaration};
 use crate::index::{Entry, Index};
-use crate::input::InputKey;
+use crate::input::{Input, InputKey};
 use crate::kinds::Kinds;
 use crate::outcome::Outcome;
 use crate::path_table::{PathId, PathTable};
 use crate::reference::Ref;
 use crate::step::Step;
 
-/// What a ref names: nothing, a snapshot input, or a node of the reader's
-/// snapshot.
+/// What a ref names: nothing, a snapshot input, a constant a declaration
+/// holds, or a node of the reader's snapshot.
 pub(crate) enum Target {
     Absent,
     Input(InputKey),
+    Constant(Input),
     Node(PathId),
 }
 
 /// The place `r` names when read by the node at `reader` whose declaration
 /// is `declaration`. A passed binding moves to the declarer, whose
-/// declaration the index holds (its answer declared the child), carrying
-/// the steps still to take; the walk ends at an input or a place. An unset
-/// binding names nothing; a snapshot input, attached or not, declares no
-/// children, so steps below one name nothing; a binding relative to the
-/// declarer names nothing on a root, which has no declarer.
+/// declaration the index holds (its answer, or its running body, declared
+/// the child), carrying the steps still to take; the walk ends at an
+/// input, a constant or a place. An unset binding names nothing; a
+/// snapshot input or a constant declares no children, so steps below one
+/// name nothing; a binding relative to the declarer names nothing on a
+/// root, which has no declarer.
 pub(crate) fn target<'a>(
     reader: PathId,
     declaration: &'a Declaration,
@@ -40,10 +42,10 @@ pub(crate) fn target<'a>(
             (Some(Binding::Input(key)), _) if steps.is_empty() => {
                 return Target::Input(key.clone());
             }
-            (Some(Binding::Attached(attached)), _) if steps.is_empty() => {
-                return Target::Input(InputKey::attached(paths.path(node), attached.clone()));
+            (Some(Binding::Constant(constant)), _) if steps.is_empty() => {
+                return Target::Constant(constant.clone());
             }
-            (None | Some(Binding::Input(_) | Binding::Attached(_)), _)
+            (None | Some(Binding::Input(_) | Binding::Constant(_)), _)
             | (Some(Binding::Declarer(_) | Binding::Passed(_)), None) => return Target::Absent,
             (Some(Binding::Declarer(place)), Some(declarer)) => {
                 let below = place.iter().chain(&steps);
@@ -51,9 +53,8 @@ pub(crate) fn target<'a>(
             }
             (Some(Binding::Passed(passed)), Some(declarer)) => {
                 declaration = index
-                    .entry(declarer)
-                    .and_then(|entry| entry.declaration.as_deref())
-                    .expect("a declarer's body ran, and its answer is indexed");
+                    .declaration(declarer)
+                    .expect("a declarer's answer or its run's first child filed its declaration");
                 steps = passed.steps().iter().chain(&steps).cloned().collect();
                 name = passed.binding_name();
                 node = declarer;

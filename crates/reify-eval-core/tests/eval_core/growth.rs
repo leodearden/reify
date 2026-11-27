@@ -3,7 +3,8 @@
 //! (G4).
 
 use reify_eval_core::{
-    Answer, Binding, Cx, Declaration, Kind, KindId, Outcome, Produced, Ref, Step, Turn,
+    Answer, Binding, Budget, Cx, Declaration, Kind, KindId, Outcome, Produced, Ref, Step, Turn,
+    Wanted,
 };
 
 use crate::toy::{self, Cell, Scope};
@@ -20,7 +21,11 @@ fn work_for_one_of(parts: usize) -> (u64, u64, u64) {
     inputs.extend(toy::root_scope("R", toy::members(cells)));
     let snapshot = core.snapshot(inputs);
 
-    let _request = core.evaluate(&snapshot, toy::demand([&toy::below("R", &["part0"])]));
+    let _request = core.evaluate(
+        &snapshot,
+        toy::demand([&toy::below("R", &["part0"])]),
+        Budget::unlimited(),
+    );
     assert_eq!(core.turn(), Turn::Idle);
     let counters = core.counters();
     (
@@ -68,13 +73,18 @@ fn a_body_that_makes_n_reads_runs_once() {
         let snapshot = core.snapshot(inputs);
         let reader = toy::below("R", &["reader"]);
 
-        let request = core.evaluate(&snapshot, toy::demand([&reader]));
+        let request = core.evaluate(&snapshot, toy::demand([&reader]), Budget::unlimited());
         assert_eq!(core.turn(), Turn::Idle);
 
         let answer = toy::the_answer(&core.take_events(), &request, &reader);
         let sum = 3 * i64::try_from(n).expect("n is small");
         assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(sum)));
-        assert_eq!(core.counters().body_runs(Cell::ID), n + 1, "n = {n}");
+        assert_eq!(
+            core.counters().body_runs(Cell::ID),
+            2,
+            "the reader, and the first part: each later part, read after it, is an identical \
+             instance found in the store (contract 4.2); n = {n}"
+        );
     }
 }
 
@@ -85,6 +95,7 @@ struct Total;
 impl Kind for Total {
     type Out = i64;
     const ID: KindId = KindId("toy.total");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let count = match cx.read::<i64>(&Ref::binding("count")).await {
@@ -92,7 +103,7 @@ impl Kind for Total {
             other => return Produced::Outcome(other),
         };
         let refs: Vec<_> = (0..count)
-            .map(|i| Ref::binding("over").step(Step::index(i)))
+            .map(|i| Wanted::from(Ref::binding("over").step(Step::index(i))))
             .collect();
         let mut sum = 0;
         for read in cx.read_all::<i64>(&refs).await {
@@ -128,7 +139,7 @@ fn a_body_that_reads_n_nodes_with_one_read_all_runs_once() {
         let snapshot = core.snapshot(inputs);
         let at = toy::below("R", &["total"]);
 
-        let request = core.evaluate(&snapshot, toy::demand([&at]));
+        let request = core.evaluate(&snapshot, toy::demand([&at]), Budget::unlimited());
         assert_eq!(core.turn(), Turn::Idle);
 
         let answer = toy::the_answer(&core.take_events(), &request, &at);

@@ -1,0 +1,33 @@
+tests = "on one sub with a use-site `auto`, a braces constraint and a purpose applied by the container: the container owns the `auto`, the braces constraint and the definition's own bear on it, and the purpose, inside the owner by path, only checks."
+rule = "seat-context rulings 1, 3 and 4; Part 6.1; Part 10; readings E34."
+provenance = "the tracer's interaction I1 (trace-braces-purposes-unknowns); the form decision 4 offers (`{ shaft_d = auto   constraint shaft_d > 15mm }`). It tests the exclusion of a purpose by path for a container that owns the unknown (tracer, contradiction C6)."
+needs = ["instance", "braces", "constraint", "summary", "unknown", "solve-forced", "purpose", "grammar-purpose"]
+answer_basis = "traced. The `auto` is written in `Holder`'s text, so `Holder` owns it, at `Holder/auto[b.t]`. `Bracket`'s `t >= 2mm` at `Holder.b` and the braces' `t <= 2mm`, a member of `Holder.b`, are inside `Holder` and bear: exactly 2 mm. The purpose instance is at `Holder/purpose[0]`, inside `Holder` by path, and is left out of the problem by path (readings E34): violated. Had it borne, no value. `Holder.b`'s argument is decided, so its `/arguments` verdict is satisfied (readings B5). Summary (readings B4): violated 1."
+note = "the member line `purpose robust(self.b)` needs grammar-purpose (readings E33). With it taken out, the source parses on main."
+
+[candidates]
+note = "3 mm meets the purpose and `Bracket`'s bound and breaks the braces' constraint (a reading in which the braces do not bear and the purpose does takes it); 1 mm meets the braces and breaks `Bracket`'s `t >= 2mm` (a reading in which the definition's constraints do not bear on a use-site `auto` takes it). The first taken is 2 mm."
+
+[[candidates.unknown]]
+path = "Holder/auto[b.t]"
+values = ["3mm", "1mm", "2mm"]
+
+[[expect]]
+path = "Holder.b.t"
+value = "2 mm"
+
+[[expect]]
+path = "Holder.b/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Holder.b/braces/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Holder/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Holder/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

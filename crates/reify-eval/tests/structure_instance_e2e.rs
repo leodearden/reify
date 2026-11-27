@@ -631,7 +631,7 @@ structure def DirectionFixture {
     let a = PointLoad(point: vertex(body, "tip"))
     // `direction` is the LAST param (ctors bind positionally), so an explicit
     // override must also supply point/force in declaration order.
-    let b = PointLoad(point: vertex(body, "tip"), force: 0.0, direction: vec3(0.0, -1.0, 0.0))
+    let b = PointLoad(point: vertex(body, "tip"), force: 0.0N, direction: vec3(0.0, -1.0, 0.0))
 }
 "#;
 

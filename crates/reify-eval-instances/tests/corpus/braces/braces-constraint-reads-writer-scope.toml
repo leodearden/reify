@@ -1,0 +1,49 @@
+tests = "a constraint in a sub's braces reads the parent through `self`; an argument that reads a parent's cell which reads the sub's own unknown is a cycle; the same dependence through a braces constraint is the solve design's."
+rule = "Part 4 (names inside the braces; \"An argument that depends on what it helps decide is a cycle\"); contract section 8 (a solve reads its arguments before its view); PRD section 5.6 (the names of the writer's scope that a constraint reads are read before the view)."
+provenance = "the tracer's interaction I2 (trace-braces-purposes-unknowns); critic-design F3 (the companion case)."
+needs = ["instance", "braces", "constraint", "unknown", "solve-forced"]
+answer_basis = "traced for `Rig` and `RigA`; open for `RigB`, owner task 10610. `Rig`: `d` is `Rig.m`'s; the braces' constraint reads `Rig.bore`, 15 mm, which no solve decides; with `d <= 15mm` the only value is 15 mm. `RigA`: `m`'s solve reads its argument `floor` before its view (contract section 8); `floor` is `self.half`, which reads `RigA.m.d`, which reads that solve: a ring, `failure cycle` on each node. `RigB`: the tracer, reading contract section 8 (only arguments before the view), reads `self.half` through the view: 5 mm under `d := 10mm`, and `d` is 10 mm. PRD section 5.6 has a solve read before its view the names of the writer's scope its constraints read, which `self.half` is; then `RigB` is a ring like `RigA`. The two documents disagree, and the solve design owns the answer."
+note = "recommended by the tracer: `RigB.m.d` 10 mm, `RigB.half` 5 mm. Under PRD section 5.6 as written: `failure cycle` at both."
+
+[candidates]
+note = "In `Rig`, 10 mm meets `Motor`'s bounds and breaks the braces' constraint, so 15 mm is the first taken. In `RigA` no candidate is tried: the solve meets the ring when it reads `floor`. `RigB`'s list is for the open rows."
+
+[[candidates.unknown]]
+path = "Rig.m.d"
+values = ["10mm", "15mm"]
+
+[[candidates.unknown]]
+path = "RigA.m.d"
+values = ["10mm"]
+
+[[candidates.unknown]]
+path = "RigB.m.d"
+values = ["5mm", "10mm"]
+
+[[expect]]
+path = "Rig.m.d"
+value = "15 mm"
+
+[[expect]]
+path = "Rig.m/braces/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "RigA.m.floor"
+failure = "cycle"
+
+[[expect]]
+path = "RigA.half"
+failure = "cycle"
+
+[[expect]]
+path = "RigA.m.d"
+failure = "cycle"
+
+[[expect]]
+path = "RigB.m.d"
+open = {}
+
+[[expect]]
+path = "RigB.half"
+open = {}

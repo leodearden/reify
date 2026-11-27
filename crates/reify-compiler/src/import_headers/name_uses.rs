@@ -470,7 +470,7 @@ impl Collector {
                 content_hash: _,
             }) => {
                 self.visit_expr(expr);
-                self.where_clause(where_clause);
+                self.where_clause(where_clause.as_ref());
             }
             MemberDecl::GuardedGroup(GuardedGroupDecl {
                 condition,
@@ -575,7 +575,7 @@ impl Collector {
         if let Some(default) = default {
             self.visit_expr(default);
         }
-        self.where_clause(where_clause);
+        self.where_clause(where_clause.as_ref());
         self.annotations(annotations);
     }
 
@@ -598,7 +598,7 @@ impl Collector {
             self.type_expr(type_expr);
         }
         self.visit_expr(value);
-        self.where_clause(where_clause);
+        self.where_clause(where_clause.as_ref());
         self.annotations(annotations);
     }
 
@@ -612,7 +612,7 @@ impl Collector {
             content_hash: _,
         } = constraint;
         self.visit_expr(expr);
-        self.where_clause(where_clause);
+        self.where_clause(where_clause.as_ref());
     }
 
     fn constraint_inst(&mut self, instance: &ConstraintInstDecl) {
@@ -627,7 +627,7 @@ impl Collector {
         for (_, arg) in args {
             self.visit_expr(arg);
         }
-        self.where_clause(where_clause);
+        self.where_clause(where_clause.as_ref());
     }
 
     fn sub(&mut self, sub: &SubDecl) {
@@ -639,7 +639,10 @@ impl Collector {
             is_collection: _,
             where_clause,
             body,
-            spec_param_overrides,
+            // Read as pairs through `guarded_spec_param_overrides`, which checks
+            // that the two lists line up.
+            spec_param_overrides: _,
+            spec_param_override_guards: _,
             keyed_members,
             is_aux: _,
             is_priv: _,
@@ -659,23 +662,31 @@ impl Collector {
         for type_arg in type_args {
             self.type_expr(type_arg);
         }
-        for (_, arg) in args.iter().chain(spec_param_overrides) {
+        for (_, arg) in args {
             self.visit_expr(arg);
         }
-        self.where_clause(where_clause);
+        for (_, value, guard) in sub.guarded_spec_param_overrides() {
+            self.visit_expr(value);
+            self.where_clause(guard);
+        }
+        self.where_clause(where_clause.as_ref());
         if let Some(body) = body {
             self.members(body);
         }
-        for KeyedSubMemberEntry {
-            key: _,
-            overrides,
-            param_overrides,
-            span: _,
-        } in keyed_members
-        {
+        for entry in keyed_members {
+            let KeyedSubMemberEntry {
+                key: _,
+                overrides,
+                // Read as pairs through `guarded_param_overrides`, which checks
+                // that the two lists line up.
+                param_overrides: _,
+                param_override_guards: _,
+                span: _,
+            } = entry;
             self.members(overrides);
-            for (_, value) in param_overrides {
+            for (_, value, guard) in entry.guarded_param_overrides() {
                 self.visit_expr(value);
+                self.where_clause(guard);
             }
         }
         if let Some(binder) = index_binder {
@@ -711,7 +722,7 @@ impl Collector {
         } in param_overrides
         {
             self.visit_expr(value);
-            self.where_clause(guard);
+            self.where_clause(guard.as_ref());
         }
         for SubDisposition {
             kind: _,
@@ -736,6 +747,7 @@ impl Collector {
             is_priv: _,
             members,
             frame_expr,
+            where_clause,
             span: _,
             content_hash: _,
         } = port;
@@ -746,6 +758,7 @@ impl Collector {
         if let Some(frame) = frame_expr {
             self.visit_expr(frame);
         }
+        self.where_clause(where_clause.as_ref());
     }
 
     fn connect(&mut self, connect: &ConnectDecl) {
@@ -802,7 +815,7 @@ impl Collector {
         }
     }
 
-    fn where_clause(&mut self, where_clause: &Option<WhereClause>) {
+    fn where_clause(&mut self, where_clause: Option<&WhereClause>) {
         if let Some(WhereClause { condition, span: _ }) = where_clause {
             self.visit_expr(condition);
         }

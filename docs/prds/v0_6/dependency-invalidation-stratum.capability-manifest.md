@@ -1,6 +1,6 @@
 # Capability manifest — dependency-invalidation-stratum
 
-PRD: `docs/prds/v0_6/dependency-invalidation-stratum.md`. Machine-readable twin: `dependency-invalidation-stratum.capability-manifest.yaml` (validated against dark-factory `shared.capability_manifest.CapabilityManifestDoc`, 12 tasks / 34 capabilities). Task ids stamped by `commit_planning` 2026-10-12: α #8673, β #8687, γ #8675, δ #8691, ε #8695, ζ #8699, η #8677, θ #8701, ι #8704, κ #8680, λ #8708, μ #8710.
+**AS-AUTHORED record: the PRD was stamped SUPERSEDED on 2026-11-26** (by the new evaluation engine, `docs/prds/evaluation-core.md` and the PRDs under capstone #10552). The capabilities below are decompose-time evidence about the old orchestration, not current claims or work to do. PRD: `docs/prds/v0_6/dependency-invalidation-stratum.md`. Machine-readable twin: `dependency-invalidation-stratum.capability-manifest.yaml` (validated against dark-factory `shared.capability_manifest.CapabilityManifestDoc`, 12 tasks / 34 capabilities). Task ids stamped by `commit_planning` 2026-10-12: α #8673, β #8687, γ #8675, δ #8691, ε #8695, ζ #8699, η #8677, θ #8701, ι #8704, κ #8680, λ #8708, μ #8710.
 
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12). Cite-by-symbol; re-locate lines at implementation time.
 

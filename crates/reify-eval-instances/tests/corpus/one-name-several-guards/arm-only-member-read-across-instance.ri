@@ -1,0 +1,16 @@
+enum HeadType { Hex, Socket }
+structure def HexHead    { param across : Length = 10mm }
+structure def SocketHead { param across : Length = 8mm   param socket_depth : Length = 4mm }
+structure def Bolt {
+    param head_type : HeadType = HeadType.Hex
+    match head_type {
+        Hex => sub head : HexHead,
+        Socket => sub head : SocketHead
+    }
+}
+structure def Pair {
+    sub h : Bolt
+    sub s : Bolt { head_type = HeadType.Socket }
+    let ds = self.s.head.socket_depth
+    let dh = self.h.head.socket_depth
+}

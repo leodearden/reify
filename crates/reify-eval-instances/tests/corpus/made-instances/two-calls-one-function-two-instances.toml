@@ -1,0 +1,13 @@
+tests = "two calls of one function in one cell make two distinct instances and open two distinct values."
+rule = "rule F (a made instance is named \"by the chain of call sites and iteration indices\"; an opened value in mid-expression is `open` \"with such a chain\"); rule B; decision 12 (two declarations present at once is a failure, which this must not become)."
+provenance = "logic-2 N14 (taken: rule F's chain of call sites, after contract 7.1)."
+needs = ["instance", "value", "made", "open", "summary", "paths"]
+answer_basis = "traced. Both constructor calls are the one call in `mk`'s body. Kept apart by the chain from `both`'s expression, they are two instances at 1 mm and 2 mm, both violated, and two opened values give 40 and 80 mm². Collapsed to one step, they would be two declarations at one path, a failure. The text of the two steps is rule F's to settle, so no made path is pinned."
+
+[[expect]]
+path = "Asm.both"
+value = "120 mm^2"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 2, undetermined = 0, failed = 0 }

@@ -1,0 +1,25 @@
+tests = "a purpose applied under a guard is absent, with nothing counted, when the guard is false, and present and counted when it holds."
+rule = "Part 4 (\"`where` means presence for every member kind\"); Part 10 (an applied purpose is a member of the definition it is written in); readings C16 and E33; readings A (a purpose applied under a guard keeps its position when it is absent)"
+provenance = "readings C16 (the form it names, `purpose p(self.fan) where needs_fan`); brief item 7."
+needs = ["instance", "guard", "constraint", "summary", "purpose", "grammar-purpose", "roots"]
+answer_basis = "traced. `Fan` is used by both, so the roots are `CaseOff` and `CaseOn`. In `CaseOff`, `needs_fan` is false: `fan` is absent and so is the purpose instance, which keeps position 0; no verdict, nothing counted. In `CaseOn` it is true: `fan.d` is 40 mm, and `40mm < 30mm` is violated, counted in `CaseOn`'s summary (readings B4)."
+note = "the two member lines `purpose quiet(self.fan) where needs_fan` need grammar-purpose (readings E33). With them taken out, the source parses on main. The same line without its guard compiles and is undetermined where the sub is absent (readings C16): `guarded-own-sub-as-purpose-subject-undetermined-when-absent`."
+
+[[expect]]
+roots = ["CaseOff", "CaseOn"]
+
+[[expect]]
+path = "CaseOff/purpose[0]"
+presence = "absent"
+
+[[expect]]
+path = "CaseOff/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }
+
+[[expect]]
+path = "CaseOn/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "CaseOn/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

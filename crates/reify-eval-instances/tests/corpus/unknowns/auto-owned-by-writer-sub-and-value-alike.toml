@@ -1,0 +1,29 @@
+tests = "An `auto` belongs to the instance whose definition's text contains it, so a constraint above that instance only checks it, for a sub as for a value."
+rule = "decision 1; Part 6.1; ruling 4 of `seat-context.md`"
+provenance = "design Part 14 decision 1 (model); Part 6.1. language-1 L10; claims-3 probes d1.ri and d1b.ri; second-design trace of contract Example 5. logic-2 Part C; logic-3 holds-up (55 mm, violated)."
+needs = ["instance", "constraint", "unknown", "made", "open", "roots", "solve-real"]
+answer_basis = "stated: decision 1, \"55 mm, and the constraint is violated\" for both. Trace: the `auto` is in `Asm`'s text; `Beam`'s bounds are inside the `Asm` instance and bear; middle of [10, 100] is 55 mm. The forced form, which runs without a real solver, is `parent-constraint-only-checks-forced-child-auto`."
+today = "neither path compiles on the old binary (design decision 1)."
+
+[[expect]]
+roots = ["TopS", "TopV"]
+
+[[expect]]
+path = "TopS.asm.a.len"
+value = "55 mm"
+
+[[expect]]
+path = "TopS/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "TopV.asm/made[0].a.len"
+value = "55 mm"
+
+[[expect]]
+path = "TopV.asm/open.a.len"
+value = "55 mm"
+
+[[expect]]
+path = "TopV/constraint[0]"
+verdict = "violated"

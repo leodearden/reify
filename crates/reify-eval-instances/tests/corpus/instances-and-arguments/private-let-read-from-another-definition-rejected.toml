@@ -1,0 +1,14 @@
+tests = "a `let` that is not `pub` cannot be read from another definition's text, through a sub or through a value; a `pub let` can."
+rule = "spec 7.4 and 8.3 (\"`let` bindings and constraints are private (unless marked `pub`)\"); PRD D13 item 14, ruled by Leo on 2026-11-26; readings E38."
+provenance = "Leo's ruling on the PRD's D13 item 14. Draft 3 had left today's behaviour as it is."
+needs = ["compile-error"]
+answer_basis = "stated: the spec's rule, which Leo ruled is to be enforced. `area` is a private `let` of `Plate`. `a` reads it through the sub and `b` through a value: each is a compile error that names the `let` and its definition. `w` reads a `pub let` and is no error."
+today = "run `priv1.ri`: compiles; `Asm.a = 0.00012 m^2`, `Asm.b = 0.00008 m^2`."
+
+[[expect]]
+compile_error = "`a` reads `area`, a `let` of `Plate` that is not `pub`"
+code = "PrivateLetReadFromAnotherDefinition"
+
+[[expect]]
+compile_error = "`b` reads `area`, a `let` of `Plate` that is not `pub`"
+code = "PrivateLetReadFromAnotherDefinition"

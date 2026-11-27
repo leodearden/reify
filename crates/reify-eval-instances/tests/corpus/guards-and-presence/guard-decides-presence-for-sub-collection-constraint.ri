@@ -1,0 +1,16 @@
+structure def Plate { param t : Length = 5mm }
+structure def Bar { param length : Length = 100mm }
+structure def Asm {
+    param use_plate : Bool = true
+    param use_list : Bool = false
+    sub thin : Plate where use_plate { t = 1mm }
+    constraint self.thin.t >= 2mm where use_plate
+    sub xs : List<Bar> where use_list
+    constraint xs.count == 2 where use_list
+}
+structure def Top {
+    sub on : Asm
+    sub off : Asm { use_plate = false   use_list = true }
+    sub unk : Asm { use_plate = undef }
+    let n = self.on.xs.count
+}

@@ -1,0 +1,19 @@
+tests = "a guard may read a value another instance's solve decides, without a cycle."
+rule = "Part 4 (\"A guard may read anything a cell may read, except what it guards. That includes a solved value\"); decision 12."
+provenance = "logic-1 holds-up \"A guard that reads another instance's solved value: no cycle\"."
+needs = ["instance", "guard", "constraint", "unknown", "solve-forced"]
+answer_basis = "traced. `a.t` is `a`'s unknown, forced to 4 mm by its two bounds. `extra`'s guard reads it after that solve: 4 mm > 3 mm, so `extra` is present. Nothing `a`'s solve reads depends on `extra`. Under the candidates (readings E35): at 3 mm `Asm.a/constraint[0]` (`t >= 4mm`) is violated and read the trial, so 3 mm is rejected; a solver that took it would make the guard false and `extra` absent. 4 mm violates nothing."
+
+[candidates]
+
+[[candidates.unknown]]
+path = "Asm.a.t"
+values = ["3 mm", "4 mm"]
+
+[[expect]]
+path = "Asm.a.t"
+value = "4 mm"
+
+[[expect]]
+path = "Asm.extra"
+presence = "present"

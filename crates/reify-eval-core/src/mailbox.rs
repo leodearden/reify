@@ -11,8 +11,8 @@ use std::task::{Context, Poll};
 
 use crate::job::Product;
 use crate::outcome::{Erased, Outcome};
-use crate::reference::Ref;
 use crate::section::SectionParts;
+use crate::wanted::Wanted;
 
 pub(crate) type SectionJob = Box<dyn FnOnce(&mut dyn Any, SectionParts) -> Product + Send>;
 
@@ -24,8 +24,8 @@ pub(crate) struct SectionAsk {
 }
 
 pub(crate) enum Ask {
-    /// The outcomes at each ref, in order, in one reply.
-    Read(Vec<Ref>),
+    /// The outcome of each item, in order, in one reply.
+    Read(Vec<Wanted>),
     Exclusive(SectionAsk),
 }
 

@@ -1,0 +1,16 @@
+structure def Fan {
+    param d : Length = 40mm
+}
+purpose quiet(subject : Structure) {
+    constraint subject.d < 30mm
+}
+structure def CaseOff {
+    param needs_fan : Bool = false
+    sub fan : Fan where needs_fan
+    purpose quiet(self.fan) where needs_fan
+}
+structure def CaseOn {
+    param needs_fan : Bool = true
+    sub fan : Fan where needs_fan
+    purpose quiet(self.fan) where needs_fan
+}

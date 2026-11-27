@@ -57,13 +57,30 @@
 #     nested run_all.sh prints `FAILED <names>` and may print slot/clock
 #     sentinels — same hazard as ambient_isolation_check_one's FAIL branch).
 #
-#     Accepted blind spots (the single place they are listed): keys the probe
-#     baseline itself carries (PATH, HOME, TMPDIR and the fixture knobs it
-#     sets); value rewrites of a baseline key; exports conditional on an
-#     inbound var the minimal baseline lacks; and run_all.sh's --scope
-#     host-infra and legacy all-serial paths, which are not probed. OLDPWD
-#     surfaces only if run_all.sh `cd`s in its own shell — and is then a real
-#     injection, since bash exports OLDPWD to children after a cd.
+#   run_all_stripped_env_keys <target> <candidate_keys>
+#
+#     Derives BEHAVIOURALLY which of <candidate_keys> (newline-separated
+#     names) <target> removes before a member it spawns can see them — the
+#     proof behind run-all-ambient-vars.manifest's `strip` rows. Runs <target>
+#     against the same one-member fixture and minimal baseline as
+#     run_all_injected_env_keys, with every candidate also set to one sentinel
+#     value, and reports the candidates absent from the member's env dump.
+#
+#     stdout: the stripped candidate NAMES, sorted and unique, one per line;
+#     rc 0. A candidate that is a probe-baseline key: rc 1, one stderr line
+#     naming it, and <target> is never spawned. If the member never ran: rc 1
+#     with run_all_injected_env_keys's diagnostic.
+#
+#   Accepted blind spots of both probes (the single place they are listed):
+#   keys the probe baseline itself carries (PATH, HOME, TMPDIR and the fixture
+#   knobs it sets), which the injection probe cannot see and the strip probe
+#   refuses as candidates; value rewrites of a baseline key; exports, and
+#   strips, conditional on an inbound var or value the probe does not supply;
+#   a strip of a key nobody named as a candidate (the ledger then records it,
+#   conservatively, as reaching the pool); and run_all.sh's --scope host-infra
+#   and legacy all-serial paths, which are not probed. OLDPWD surfaces only if
+#   run_all.sh `cd`s in its own shell — and is then a real injection, since
+#   bash exports OLDPWD to children after a cd.
 #
 # Designed to be sourced, not executed directly:
 #   source "$(dirname "${BASH_SOURCE[0]}")/run_all_ambient_isolation_lib.sh"
@@ -155,11 +172,33 @@ ambient_isolation_check_one() {
     return 1
 }
 
-# run_all_injected_env_keys <target>
-run_all_injected_env_keys() {
-    local _target="$1"
-    local _scratch
-    _scratch="$(mktemp -d "${TMPDIR:-/tmp}/reify-ambient-probe.XXXXXX")" || return 1
+readonly _RUN_ALL_AMBIENT_STRIP_SENTINEL=reify-ambient-strip-probe
+
+# _ambient_probe_baseline <scratch> <array_name> — fills <array_name> with the
+# minimal `env -i` baseline both probes spawn under.
+_ambient_probe_baseline() {
+    local -n _probe_baseline_out="$2"
+    # REIFY_RUN_ALL_POOL_LOCK is MANDATORY: the default host-global lock would
+    # contend with the outer pool the caller itself holds a slot in.
+    _probe_baseline_out=(
+        PATH="${PATH:-/usr/bin:/bin}"
+        HOME="${HOME:-}"
+        TMPDIR="${TMPDIR:-/tmp}"
+        RUN_ALL_CLASSIFICATION_MANIFEST="$1/classification.manifest"
+        REIFY_RUN_ALL_POOL_LOCK="$1/pool.lock"
+        REIFY_RUN_ALL_POOL_CONCURRENCY=1
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1
+        REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE=1
+    )
+}
+
+# _ambient_probe_via_runner <target> <scratch> [KEY=VAL ...] — writes the
+# one-member fixture under <scratch>, spawns <target> on it under the baseline
+# plus the given assignments, and leaves the member's env dump at
+# <scratch>/member.env; rc 1 with the never-ran diagnostic if there is none.
+_ambient_probe_via_runner() {
+    local _target="$1" _scratch="$2"
+    shift 2
 
     # The probe member dumps its env next to the fixture dir, addressed
     # relative to its own location, so the baseline needs no carrier var
@@ -171,30 +210,32 @@ env -0 > "$(dirname "${BASH_SOURCE[0]}")/../member.env"
 SH
     echo "test_ambient_env_probe.sh pool" > "$_scratch/classification.manifest"
 
-    # REIFY_RUN_ALL_POOL_LOCK is MANDATORY: the default host-global lock would
-    # contend with the outer pool the caller itself holds a slot in.
-    local -a _baseline=(
-        PATH="${PATH:-/usr/bin:/bin}"
-        HOME="${HOME:-}"
-        TMPDIR="${TMPDIR:-/tmp}"
-        RUN_ALL_CLASSIFICATION_MANIFEST="$_scratch/classification.manifest"
-        REIFY_RUN_ALL_POOL_LOCK="$_scratch/pool.lock"
-        REIFY_RUN_ALL_POOL_CONCURRENCY=1
-        REIFY_RUN_ALL_POOL_PSI_DISABLE=1
-        REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE=1
-    )
-
+    local -a _baseline=()
+    _ambient_probe_baseline "$_scratch" _baseline
     local _rc=0
-    env -i "${_baseline[@]}" bash "$_target" "$_scratch/infra" > "$_scratch/runner.log" 2>&1 || _rc=$?
+    env -i "${_baseline[@]}" "$@" bash "$_target" "$_scratch/infra" > "$_scratch/runner.log" 2>&1 || _rc=$?
 
     if [ ! -s "$_scratch/member.env" ]; then
-        echo "run_all_injected_env_keys: the probe member never ran under $_target [rc=$_rc]; runner log follows" >&2
+        echo "${FUNCNAME[1]}: the probe member never ran under $_target [rc=$_rc]; runner log follows" >&2
         sed 's/^/  | /' "$_scratch/runner.log" >&2
+        return 1
+    fi
+}
+
+# run_all_injected_env_keys <target>
+run_all_injected_env_keys() {
+    local _target="$1"
+    local _scratch
+    _scratch="$(mktemp -d "${TMPDIR:-/tmp}/reify-ambient-probe.XXXXXX")" || return 1
+
+    if ! _ambient_probe_via_runner "$_target" "$_scratch"; then
         rm -rf "$_scratch"
         return 1
     fi
     mv "$_scratch/member.env" "$_scratch/via_runner.env"
 
+    local -a _baseline=()
+    _ambient_probe_baseline "$_scratch" _baseline
     env -i "${_baseline[@]}" bash "$_scratch/infra/test_ambient_env_probe.sh" > /dev/null 2>&1
     if [ ! -s "$_scratch/member.env" ]; then
         echo "run_all_injected_env_keys: the direct-spawn control member produced no env dump" >&2
@@ -215,5 +256,43 @@ SH
     done < "$_scratch/via_runner.env" | sort -u
 
     rm -rf "$_scratch"
+    return 0
+}
+
+# run_all_stripped_env_keys <target> <candidate_keys>
+run_all_stripped_env_keys() {
+    local _target="$1" _candidates="$2"
+    local _scratch
+    _scratch="$(mktemp -d "${TMPDIR:-/tmp}/reify-ambient-probe.XXXXXX")" || return 1
+
+    local -a _baseline=() _assignments=() _wanted=()
+    local -A _baseline_keys=() _seen=()
+    local _entry _key
+    _ambient_probe_baseline "$_scratch" _baseline
+    for _entry in "${_baseline[@]}"; do _baseline_keys["${_entry%%=*}"]=1; done
+
+    while IFS= read -r _key; do
+        [ -n "$_key" ] || continue
+        if [ -n "${_baseline_keys["$_key"]:-}" ]; then
+            echo "run_all_stripped_env_keys: candidate $_key is a probe-baseline key, which the probe cannot set to a sentinel" >&2
+            rm -rf "$_scratch"
+            return 1
+        fi
+        _assignments+=("$_key=$_RUN_ALL_AMBIENT_STRIP_SENTINEL")
+        _wanted+=("$_key")
+    done <<< "$_candidates"
+
+    if ! _ambient_probe_via_runner "$_target" "$_scratch" "${_assignments[@]}"; then
+        rm -rf "$_scratch"
+        return 1
+    fi
+    while IFS= read -r -d '' _entry; do
+        _seen["${_entry%%=*}"]=1
+    done < "$_scratch/member.env"
+    rm -rf "$_scratch"
+
+    for _key in "${_wanted[@]}"; do
+        [ -n "${_seen["$_key"]:-}" ] || printf '%s\n' "$_key"
+    done | sort -u
     return 0
 }

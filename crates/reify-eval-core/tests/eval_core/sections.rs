@@ -6,11 +6,11 @@ use std::any::type_name;
 use std::thread;
 
 use reify_eval_core::{
-    Answer, Builder, Cx, Declaration, Event, Held, Kind, KindId, Outcome, OutsideFailure, Path,
-    Produced, Release, ResourceDeath, Root, Turn,
+    Answer, Budget, Builder, Cx, Declaration, Event, Held, Kind, KindId, Outcome, OutsideFailure,
+    Path, Produced, Release, ResourceDeath, Root, Turn,
 };
 
-use crate::toy::{self, BoxHandle, BoxShape, ToyKernel, Watch};
+use crate::toy::{self, BoxHandle, BoxShape, Cell, ToyKernel, Watch};
 
 #[test]
 fn a_second_body_runs_to_completion_while_a_first_waits_on_a_section_still_running() {
@@ -24,11 +24,11 @@ fn a_second_body_runs_to_completion_while_a_first_waits_on_a_section_still_runni
         toy::root("total", toy::cell(&["a", "b"])),
     ]);
 
-    let first = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let first = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
 
-    let second = core.evaluate(&snapshot, toy::roots(&["total"]));
+    let second = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     let events = core.take_events();
     let total = toy::the_answer(&events, &second, &toy::at("total"));
@@ -55,7 +55,7 @@ fn a_section_for_a_resource_nobody_added_is_pending_with_that_failure() {
         toy::root("box", toy::shape("side")),
     ]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
     core.run();
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("box"));
@@ -73,7 +73,7 @@ fn the_core_can_be_moved_to_another_thread_mid_evaluation() {
         toy::named("side", 3_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
 
     let driver = thread::spawn(move || {
@@ -96,8 +96,8 @@ fn a_section_s_progress_notes_reach_the_host_while_it_still_runs() {
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let first = core.evaluate(&snapshot, toy::roots(&["box"]));
-    let second = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let first = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
+    let second = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
 
     keeper.let_one_through();
@@ -137,7 +137,7 @@ fn a_section_sees_cancelled_when_its_request_is_ended_without_waiting() {
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
 
@@ -155,6 +155,7 @@ struct Fragile;
 impl Kind for Fragile {
     type Out = i64;
     const ID: KindId = KindId("toy.fragile");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let made = cx
@@ -190,7 +191,7 @@ fn a_section_that_panics_ends_its_node_pending_with_a_failure_outside_the_inputs
         toy::root("total", toy::cell(&["a", "b"])),
     ]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["fragile"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["fragile"]), Budget::unlimited());
     core.run();
     assert_section_panicked(toy::pending(toy::the_answer(
         &core.take_events(),
@@ -203,7 +204,7 @@ fn a_section_that_panics_ends_its_node_pending_with_a_failure_outside_the_inputs
     core.run();
     core.drain();
 
-    let later = core.evaluate(&snapshot, toy::roots(&["total"]));
+    let later = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
     core.run();
     let total = toy::the_answer(&core.take_events(), &later, &toy::at("total"));
     assert_eq!(total.downcast::<i64>(), Answer::Final(Outcome::of(3)));
@@ -225,7 +226,11 @@ fn after_a_section_panics_its_resource_is_dead_and_later_sections_for_it_fail_th
         },
     };
 
-    let request = core.evaluate(&snapshot, toy::roots(&["fragile", "shape"]));
+    let request = core.evaluate(
+        &snapshot,
+        toy::roots(&["fragile", "shape"]),
+        Budget::unlimited(),
+    );
     assert_eq!(
         core.turn(),
         Turn::SectionsRunning(2),
@@ -243,7 +248,7 @@ fn after_a_section_panics_its_resource_is_dead_and_later_sections_for_it_fail_th
         dead
     );
 
-    let later = core.evaluate(&snapshot, toy::roots(&["shape"]));
+    let later = core.evaluate(&snapshot, toy::roots(&["shape"]), Budget::unlimited());
     core.run();
     assert_eq!(
         toy::pending(toy::the_answer(
@@ -265,7 +270,7 @@ fn a_release_for_a_dead_resource_does_not_hang_the_drain() {
         toy::root("fragile", Declaration::new(Fragile::ID)),
         toy::root("shape", toy::shape("side")),
     ]);
-    let made = core.evaluate(&snapshot, toy::roots(&["shape"]));
+    let made = core.evaluate(&snapshot, toy::roots(&["shape"]), Budget::unlimited());
     core.run();
     let kept = core.take_events();
     assert_eq!(
@@ -273,7 +278,7 @@ fn a_release_for_a_dead_resource_does_not_hang_the_drain() {
         8
     );
 
-    let broken = core.evaluate(&snapshot, toy::roots(&["fragile"]));
+    let broken = core.evaluate(&snapshot, toy::roots(&["fragile"]), Budget::unlimited());
     core.run();
     assert_section_panicked(toy::pending(toy::the_answer(
         &core.take_events(),
@@ -296,6 +301,7 @@ struct OnUnmade;
 impl Kind for OnUnmade {
     type Out = i64;
     const ID: KindId = KindId("toy.on_unmade");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let made = cx.exclusive(|_: &mut Unmade, _| 1_i64).await;
@@ -309,7 +315,7 @@ fn a_section_on_a_resource_whose_making_panicked_is_pending_with_that_panic() {
     core.add_resource(|| -> Unmade { panic!("the resource could not be made") });
     let snapshot = core.snapshot([toy::root("doomed", Declaration::new(OnUnmade::ID))]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["doomed"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["doomed"]), Budget::unlimited());
     core.run();
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("doomed"));
@@ -341,6 +347,7 @@ struct MakeShard;
 impl Kind for MakeShard {
     type Out = Held<Brittle, Shard>;
     const ID: KindId = KindId("toy.make_shard");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Self::Out> {
         let shard = cx
@@ -350,27 +357,45 @@ impl Kind for MakeShard {
     }
 }
 
+/// Makes a shard in `Brittle`, lets it go, and answers 1.
+struct ThrowShard;
+
+impl Kind for ThrowShard {
+    type Out = i64;
+    const ID: KindId = KindId("toy.throw_shard");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let shard = cx
+            .exclusive(|_: &mut Brittle, section| section.hold(Shard))
+            .await;
+        drop(shard);
+        Produced::Outcome(Outcome::of(1))
+    }
+}
+
 #[test]
 fn after_a_release_panics_its_resource_is_dead_and_later_sections_name_that_panic() {
     let mut core = Builder::new()
         .kind::<MakeShard>()
-        .expect("one kind")
+        .and_then(|builder| builder.kind::<ThrowShard>())
+        .expect("distinct kinds")
         .build();
     core.add_resource(|| Brittle);
-    let inputs = || [toy::root("shard", Declaration::new(MakeShard::ID))];
-    let snapshot = core.snapshot(inputs());
+    let snapshot = core.snapshot([
+        toy::root("thrown", Declaration::new(ThrowShard::ID)),
+        toy::root("shard", Declaration::new(MakeShard::ID)),
+    ]);
 
-    let first = core.evaluate(&snapshot, toy::roots(&["shard"]));
+    let first = core.evaluate(&snapshot, toy::roots(&["thrown"]), Budget::unlimited());
     core.run();
     let events = core.take_events();
-    let made = toy::the_answer(&events, &first, &toy::at("shard"));
+    let made = toy::the_answer(&events, &first, &toy::at("thrown"));
     assert!(matches!(made, Answer::Final(Outcome::Value(_))), "{made:?}");
     core.end(first);
-    drop((made, events, snapshot));
     core.drain();
 
-    let snapshot = core.snapshot(inputs());
-    let second = core.evaluate(&snapshot, toy::roots(&["shard"]));
+    let second = core.evaluate(&snapshot, toy::roots(&["shard"]), Budget::unlimited());
     core.run();
     let answer = toy::the_answer(&core.take_events(), &second, &toy::at("shard"));
     let dead = OutsideFailure::ResourceDead {
@@ -380,5 +405,37 @@ fn after_a_release_panics_its_resource_is_dead_and_later_sections_name_that_pani
         },
     };
     assert_eq!(toy::pending(answer), dead);
+    core.drain();
+}
+
+#[test]
+fn a_body_never_observes_an_unready_read() {
+    let watch = Watch::default();
+    let (mut core, keeper) = toy::gated(toy::with_every_kind(), &watch);
+    let mut inputs = vec![toy::named("side", 2_i64), toy::named("one", 1_i64)];
+    inputs.extend(toy::root_scope(
+        "R",
+        toy::members([
+            ("s", toy::shape("side")),
+            ("m", toy::measure(toy::sibling(&["s"]))),
+            (
+                "c",
+                toy::cell_over([toy::sibling(&["m"]), toy::input("one")]),
+            ),
+        ]),
+    ));
+    let snapshot = core.snapshot(inputs);
+    let c = toy::below("R", &["c"]);
+
+    let request = core.evaluate(&snapshot, toy::demand([&c]), Budget::unlimited());
+    assert_eq!(core.turn(), Turn::SectionsRunning(1));
+    keeper.entered();
+    assert!(toy::answers(&core.take_events(), request.id()).is_empty());
+
+    keeper.open();
+    core.run();
+    let value = toy::the_value::<i64>(&core.take_events(), &request, &c);
+    assert_eq!(*value, 8 + 1);
+    assert_eq!(core.counters().body_runs(Cell::ID), 1);
     core.drain();
 }

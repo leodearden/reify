@@ -4,7 +4,14 @@
 
 use std::any::Any;
 
-/// A failure that follows from the inputs.
+use crate::description::Description;
+use crate::hash::Encoder;
+use crate::kind_id::KindId;
+use crate::reference::Ref;
+use crate::step::Step;
+
+/// A failure that follows from the inputs. None names a path (contract
+/// 5.4), so equal failures at two places have one content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     /// A read asked for one type and the value read is of another.
@@ -14,6 +21,85 @@ pub enum Failure {
     },
     /// A body made a second request before the first was answered (O2).
     TwoRequestsAtOnce,
+    /// A reader's answer: what it read at `at` failed. The chain to the
+    /// cause is the recorded reads (contract 9).
+    BlockedBy { at: Ref },
+    /// A failure a body states in its kind's own terms, by a code the kind
+    /// defines and the core never interprets.
+    OfKind { kind: KindId, code: &'static str },
+    /// A failure a body states in its kind's own terms, by a code as
+    /// `OfKind` does, with a description of a type the kind chooses.
+    Described {
+        kind: KindId,
+        code: &'static str,
+        description: Description,
+    },
+    /// The node is on a ring of waits, each node on it needing the next
+    /// one's answer (contract 7.7). It names and counts no place, so every
+    /// node on the ring, wherever the ring was entered, has this one value.
+    /// A node on the ring is answered in the snapshot's index only, and
+    /// nothing is filed in the store for it; a reader off the ring that
+    /// answers this failure as its own is filed like any other result.
+    Cycle,
+    /// The path's node is more steps below its root than the snapshot's
+    /// depth setting, `limit`, allows (contract 7.6). It names no path, so
+    /// the first path too deep on a chain and every path below it have this
+    /// one value. A path is given it in the snapshot's index only, and
+    /// nothing is filed in the store for it.
+    TooDeep { limit: u64 },
+    /// The node declares more children than the snapshot's children
+    /// setting, `limit`, allows (contract 7.6): the steps its run declared
+    /// and the steps its value declares, a step declared both ways once. It
+    /// names no path. The node is given it in the snapshot's index only,
+    /// while the store keeps the value as its body produced it, so another
+    /// snapshot's setting may accept the value. A child its value declares
+    /// answers it too; a child its run declared was answered first, and
+    /// keeps that answer.
+    TooManyChildren { limit: u64 },
+    /// A run declared two different declarations at `step` below its own
+    /// place (contract 7.1). It names no path.
+    ConflictingChild { step: Step },
+}
+
+impl Failure {
+    pub(crate) fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Failure::WrongType { expected, found } => {
+                encoder.tag("failure.wrong_type").text(expected).text(found);
+            }
+            Failure::TwoRequestsAtOnce => {
+                encoder.tag("failure.two_requests_at_once");
+            }
+            Failure::BlockedBy { at } => {
+                encoder.tag("failure.blocked_by");
+                at.encode(encoder);
+            }
+            Failure::OfKind { kind, code } => {
+                encoder.tag("failure.of_kind").text(kind.0).text(code);
+            }
+            Failure::Described {
+                kind,
+                code,
+                description,
+            } => {
+                encoder.tag("failure.described").text(kind.0).text(code);
+                description.encode(encoder);
+            }
+            Failure::Cycle => {
+                encoder.tag("failure.cycle");
+            }
+            Failure::TooDeep { limit } => {
+                encoder.tag("failure.too_deep").number(*limit);
+            }
+            Failure::TooManyChildren { limit } => {
+                encoder.tag("failure.too_many_children").number(*limit);
+            }
+            Failure::ConflictingChild { step } => {
+                encoder.tag("failure.conflicting_child");
+                step.encode(encoder);
+            }
+        }
+    }
 }
 
 /// A failure outside the inputs: a fault of the core's setup or of a kind's

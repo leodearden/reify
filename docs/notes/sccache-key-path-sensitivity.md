@@ -83,7 +83,8 @@ hashes the member names. Most of the workspace depends on one of those three.
     that runs at the canonical path starts a private sccache server on the unix socket
     `<CANON>/target/.reify-sccache.<pid>.sock`, whatever `CARGO_TARGET_DIR` or `--target-dir` names,
     reaching the WebDAV store through a loopback relay, or a local fallback cache when the store is
-    unreachable.
+    unreachable. `scripts/canon_store.py` is the store link: the probe that decides whether the store
+    is reachable, that loopback relay, and the watchdog that cuts it when the store goes away.
   - The guard `scripts/canon-bin/guard/sccache` sends `-march`/`-mtune`/`-mcpu=native` and
     `target-cpu=native` compiles around the cache. It also hides `CARGO_INCREMENTAL`, `CARGO_TERM_*` and
     `CARGO_LOG` from sccache's key, so registry crates key the same under `shared` and `mixed`. cargo

@@ -74,13 +74,6 @@ reify-build-utils.workspace = true
 
 [features]
 test-instrumentation = []
-# unified-dag (task 4357 δ): originally gated the production activation of
-# `run_unified_pass` via `BuildScheduler::from_env`. As of Stage-4 (#4362),
-# `from_env` no longer uses a cfg gate — it delegates to `from_env_value()`
-# unconditionally, making UnifiedDag the default and `legacy` the kill-switch.
-# This feature is now VESTIGIAL: it no longer affects `from_env` behavior and
-# has no remaining active cfg users. Pending Stage-5 removal (#4727).
-unified-dag = []
 
 [dev-dependencies]
 reify-ast.workspace = true

@@ -1,0 +1,9 @@
+structure def Peg  { param w : Length = 10mm }
+structure def Pair {
+    param with_c : Bool = false
+    sub a : Peg
+    sub b : Peg
+    sub c : Peg where with_c
+    pub let n = self.children.count
+}
+structure def Rig { let p = Pair()   let k = p.n   sub q : Pair { with_c = true } }

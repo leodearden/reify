@@ -1,0 +1,37 @@
+tests = "two `auto`s written at the use sites of two siblings are unknowns of the parent, decided together by the parent's constraints and both children's bounds, and the children's bounds are checked on the instances."
+rule = "contract Example 5; Part 12 (Example 5); Part 6.1; Part 6.2; decision 1."
+provenance = "contract Part B Example 5; design Part 12 \"Example 5\". second-design trace Example 5."
+needs = ["instance", "constraint", "summary", "unknown", "solve-forced"]
+answer_basis = "traced. Both unknowns belong to `Asm`, at `Asm/auto[a.len]` and `Asm/auto[b.len]`; `a.len + b.len = 120 mm` and `a.len − b.len = 20 mm` force 70 mm and 50 mm. Both lie in [10 mm, 100 mm], so all six constraints are satisfied. That the children's bounds bear, not just get checked, is shown by `child-bounds-make-use-site-solve-unsatisfiable`."
+today = "with the two constants changed to 200 mm and 100 mm the solve returned 150 mm against the bound of 100 mm, so `Beam`'s bounds were not applied to the instance (contract Example 5, run)."
+
+[candidates]
+note = "(60 mm, 60 mm) meets every constraint but `Asm/constraint[1]`, which a reading in which that constraint only checks would take. Tried as pairs in order, or as every combination in order, the first taken is (70 mm, 50 mm)."
+
+[[candidates.unknown]]
+path = "Asm/auto[a.len]"
+values = ["60mm", "70mm"]
+
+[[candidates.unknown]]
+path = "Asm/auto[b.len]"
+values = ["60mm", "50mm"]
+
+[[expect]]
+path = "Asm.a.len"
+value = "70 mm"
+
+[[expect]]
+path = "Asm.b.len"
+value = "50 mm"
+
+[[expect]]
+path = "Asm.a/constraint[1]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

@@ -1,0 +1,2 @@
+structure def Plate { param t : Length = 3mm }
+structure def Asm   { let c = Plate() }

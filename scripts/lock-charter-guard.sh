@@ -97,15 +97,35 @@
 #   real while it lasted, which is the point of the discipline recorded below,
 #   not a reason to relax it.
 #
-#   STATUS 2026-10-15 (#9058) — EXTENSION vector: α LEADS at 61.  α added `tsv`
+#   STATUS 2026-10-15 (#9058), SUPERSEDED 2026-11-26 (#10618, below) —
+#   EXTENSION vector AT TIME OF WRITING: α LEADS at 61.  α added `tsv`
 #   (reify-evidenced: tests/infra/affected-crates-direct-sets.tsv, landed by
 #   #8662) as the repair for a RED Cycle 10 corpus alarm on main.  Measured at
 #   DF main bbf3a231bb: neither γ copy named below carries `tsv`.  The γ mirror
-#   is dark_factory:6992.  CONSEQUENCE until it lands: a `.tsv` path is
+#   is dark_factory:6992.  CONSEQUENCE while that held: a `.tsv` path was
 #   declarable in a lock charter at α but REJECTed at the γ submit_task
-#   backstop, and once this widening reaches reify main γ's Tier-2 drift guard
-#   (described below) reds — the live DF main-red window this block warns
+#   backstop, and once this widening reached reify main γ's Tier-2 drift guard
+#   (described below) went red — the live DF main-red window this block warns
 #   about, open again.
+#
+#   STATUS 2026-11-26 (#10618) — EXTENSION vector: α LEADS at 62.  First, the
+#   61-entry lead above is CLOSED: γ mirrored `tsv` in dark_factory:6992
+#   (dark-factory commits 9fa908f58b and fb0077644f).  Measured at DF main
+#   792d69ef1e by parsing FILE_EXTENSIONS out of both γ copies named below and
+#   diffing them against this script's --list-extensions output: 61 entries
+#   each, set-identical with α's vector before this task, so the `.tsv`
+#   consequence above is DISCHARGED.  Then α added `stderr`: trybuild reads a
+#   must-not-compile case's expected compiler output only from `<case>.stderr`,
+#   so #10554's must_not_compile/*.stderr files cannot be renamed (Leo's ruling,
+#   esc-10554-4).  Unlike `tsv` and `tombstones`, this widening lands AHEAD of
+#   its evidence rather than repairing a RED Cycle 10 alarm: measured on reify
+#   main 2026-11-26, no tracked file ends in `.stderr` yet.  The same DF main
+#   measurement shows `stderr` is the one α entry neither γ copy carries.  The γ
+#   mirror is dark_factory:11872.  CONSEQUENCE until it lands: a `.stderr` path
+#   is declarable in a lock charter at α but REJECTed at the γ submit_task
+#   backstop; once this widening reaches reify main γ's Tier-2 drift guard
+#   (described below) reds; and once #10554's .stderr files reach reify main,
+#   DF's corpus->allowlist guard reds as well.
 #
 #   STATUS 2026-07-31 (#5890), SUPERSEDED 2026-08-27 (#6856, below) —
 #   EXTENSIONLESS vector AT TIME OF WRITING: α LEADS, γ LAGS.  This
@@ -228,6 +248,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # tests/infra/affected-crates-direct-sets.tsv (chosen deliberately, so not renamed), which
 # Cycle 10's live-corpus alarm flagged RED on main.  The γ mirror is dark_factory:6992 — see
 # the header status note.
+# Widened 61 -> 62 on 2026-11-26 (#10618): `stderr` — trybuild reads expected compiler output
+# only from `<case>.stderr`, so #10554's must_not_compile/*.stderr files cannot be renamed
+# (Leo's ruling, esc-10554-4).  The γ mirror is dark_factory:11872 — see the header status note.
 # A LIVE ALARM NOW GUARDS THIS LIST: Cycle 10 of tests/infra/test_lock_charter_guard.sh
 # sweeps the tracked corpus and goes RED if a tracked reify extension is missing here —
 # the standing signal a pin inside this repo (Cycle 4's CANONICAL_EXTS) cannot give, since
@@ -237,7 +260,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # and is deliberately not restated here — follow it rather than guessing, because this is
 # a SHARED α/γ vector and a unilateral α widening re-opens the seam divergence noted above.
 # ---------------------------------------------------------------------------
-_EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer tombstones toml ts tsv tsx txt typed yaml yml"
+_EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh stderr step stl svg template timer tombstones toml ts tsv tsx txt typed yaml yml"
 
 # ---------------------------------------------------------------------------
 # Canonical extensionless-basename allowlist (C-P1 clause (ii) — PRD §11 Q2;

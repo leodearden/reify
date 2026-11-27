@@ -42,10 +42,14 @@ pub enum Event {
     },
 }
 
-/// Why the core ended a request.
+/// Why the core ended a request. The core ends a request only when its
+/// paths budget runs out; a ring of waits, which would leave a request
+/// waiting for ever, answers "cycle" at every node of it instead (contract
+/// 7.7) and ends no request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestError {
-    /// No body could run, and the paths the request wanted wait on the
-    /// bodies at `waiting`, in path order.
-    NothingCanRun { waiting: Vec<Path> },
+    /// The request needed more paths resolved than its budget, `budget`,
+    /// allows (contract 7.6). Nothing is stored for it: work only this
+    /// request needed is dropped, and the answers it was told stay final.
+    PathsBudgetExhausted { budget: u64 },
 }

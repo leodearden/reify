@@ -1,0 +1,30 @@
+tests = "A `forall` block that declares constraints gives one verdict per element, also when the count is an expression, while a quantifier inside an expression gives one verdict."
+rule = "Part 5; decision 12 (`forall`, ruled \"Your rec LGTM\")"
+provenance = "design Part 5; Part 14 decision 12. examples/keyed_forall.ri (keyed form). language-1 L21."
+needs = ["instance", "collection", "constraint", "summary"]
+answer_basis = "traced. Count 2 * 2 = 4 elements, each w = 2 mm. The count constraint is not a verdict and takes no position (decisions A), so the block is `constraint[0]` and the expression form `constraint[1]`. The block gives four verdicts `2mm > 5mm`, `constraint[0][0]` to `[0][3]`, all violated; the expression form gives one, violated. Five in all."
+today = "`count == n*2` gives no per-element verdicts (design Part 5)."
+
+[[expect]]
+path = "Asm.vents[3]"
+presence = "present"
+
+[[expect]]
+path = "Asm.vents[4]"
+presence = "absent"
+
+[[expect]]
+path = "Asm/constraint[0][0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/constraint[0][3]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/constraint[1]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 5, undetermined = 0, failed = 0 }

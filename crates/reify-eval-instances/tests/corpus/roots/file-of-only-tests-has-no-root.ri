@@ -1,0 +1,2 @@
+@test
+structure def TestNothing { constraint 1mm < 2mm }

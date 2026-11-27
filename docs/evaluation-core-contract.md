@@ -69,7 +69,7 @@ A node is a **path**, a **recipe** and **bindings**.
 
 - The **path** is a root followed by steps: `root / bracket / holes / [2] / diameter`.
 - The **recipe** is the node's kind, the version of that kind's code, and the versions of any engine outside the language that the kind calls. It is hashed. It contains no path, no name of a definition and no source text.
-- The **bindings** name the node's inputs. Each is: a place relative to the node that declared this one, which is that node's own place or one of its own bindings, followed by steps down; a constant; a snapshot input; or a snapshot input attached to this node's own path. The declaring node does not read a place by binding a child to it. Whoever declares a node sets its bindings. A body cannot see its bindings except by reading through them, and reading a binding that was not set answers "absent".
+- The **bindings** name the node's inputs. Each is: a place relative to the node that declared this one, which is that node's own place or one of its own bindings, followed by steps down; a constant; or a snapshot input. No input is attached to a path. The declaring node does not read a place by binding a child to it. Whoever declares a node sets its bindings. A body cannot see its bindings except by reading through them, and reading a binding that was not set answers "absent".
 
 A node's source (an expression, a constraint body, an operation list) is not in the recipe. It is a snapshot input the node reads through a binding. That makes a source edit and a value edit the same event.
 
@@ -183,7 +183,7 @@ A read waits until its answer is ready. The body is suspended, holding only its 
 A snapshot is an immutable map from input key to value. The inputs:
 
 - **Source.** One input per unit of compiled source. A unit is one thing that becomes one node's source: a member's default or body, a constraint's expression, a geometry operation list, each argument where an instance is declared, its guard, its placement, a function body. A definition's list of members is a unit of its own, so changing a literal does not change the list, and a declaring scope binds an argument without reading it.
-- **Settings** that change results: which purposes are active and on what, tolerance classes, the default solver, which kernels and outside tools are available and their versions, and the limits of 7.6.
+- **Settings** that change results: tolerance classes, the default solver, which kernels and outside tools are available and their versions, and the limits of 7.6. Which purposes are applied, and to what, is not a setting: a purpose is applied in source (Example 9).
 - **Imported files**, by content.
 - **Roots.** One input per root: its declaration, which names a definition and carries no arguments (7.5).
 
@@ -257,6 +257,8 @@ Three properties follow from this one routine.
 ### 4.3 How demand reaches elaboration
 
 Resolving a path reads the parent's result, which reads its parent's, up to the root. Each is an ordinary node evaluation, found in the store if an identical instance was elaborated before. Asking for `root / frame / legs / [3] / foot / area` elaborates the root, the frame, the collection, its element 3 and the foot. Nothing beside them.
+
+A path below a node whose answer is a failure answers that failure.
 
 ### 4.4 After a change
 
@@ -395,7 +397,7 @@ To keep an instance's elaboration from depending on values, each value-controlle
 - a collection is a node whose result declares its elements, and which reads the count;
 - declarations with one name under mutually exclusive guards (the arms of a `match`) are one such node, which reads the guards and chooses the declaration, so the name has one path.
 
-An instance then reads only its own presence guards, the source of its definition, and the settings attached to its path. The instance that contains a guarded member reads no guard. This is a choice for the instance kinds. The core permits either.
+An instance then reads only its own presence guards and the source of its definition. The instance that contains a guarded member reads no guard. This is a choice for the instance kinds. The core permits either.
 
 ### 7.4 Removal
 
@@ -451,7 +453,8 @@ This follows the direction of 2026-11-19 as task #10296 records it: key the node
 - **Each written `auto` is one decision, made where it is written.**
 - **Written in a definition**, it is decided inside each instance of that definition, by the constraints inside that instance. That is the same for a sub and for a structure value. A constraint outside is checked against the result and cannot change it; its verdict names the unknown it could not reach.
 - **Written at the use site**, it is the creator's decision: it belongs to the instance of the definition whose text contains it. Every constraint inside that instance whose verdict depends on the result, through any chain of reads, bears on it. A constraint outside it is checked against the result and cannot change it.
-- **What counts as inside an instance**: the constraints of its definition and of everything below it; a constraint written in the braces after a sub, which is a member of that sub's instance; and the constraints of a purpose attached to it (Example 9).
+- **What counts as inside an instance**: the constraints of its definition and of everything below it, and a constraint written in the braces after a sub, which is a member of that sub's instance.
+- **A purpose only checks.** An applied purpose sits inside the applying instance by path, but its constraints are verdicts against the result and are never part of a solve's problem. A purpose holds no objective (Example 9).
 - In Leo's words: "let and sub should behave the same way (in how they handle auto and constraints). Objectives will probably have to differ."
 
 **How groups are formed** is the job of ordinary nodes: what unknowns exist below a scope, which constraints bear on which, which groups live here. Three rules bind them. They are what lets the core give answers that do not depend on order.
@@ -702,7 +705,7 @@ Uses: waiting, a child declared by a body, `previous`, freshness, `progress`.
 
 Uses: `edit`, demand priorities.
 
-## Example 9. A purpose being activated
+## Example 9. A purpose being applied
 
 ```
 structure def Bracket { param t : Length = 5mm   constraint t > 1mm }
@@ -710,13 +713,15 @@ purpose thin_enough(subject : Structure) { constraint subject.t < 4mm }
 ```
 (checked)
 
-Which purposes are active, and on what, is a setting, so it is a snapshot input. Activating one is `current.edit(...)`. The setting is attached to a path: the lowest scope that contains everything the purpose is bound to. That scope reads the setting and declares one more child, the purpose's scope, with each of the purpose's parameters bound to a place below. The children it already had are untouched, because their declarations did not change.
+A purpose is a predicate: it checks that a design is fit for something. It is declared once and applied in source, by one line in the definition that holds its subject. The form of that line is for the PRD of the instance kinds. A session's toggle, or `check --purpose`, is the uncommitted form of adding that line, as a slider is of editing a literal (Example 8).
 
-The purpose's constraint is then an ordinary node. It appears in the summary, and the planning nodes see it, so a purpose's constraints and its `minimize` can take part in solving. Today a purpose's objective is recorded and never read, activation writes into the installed graph in place, and neither the GUI nor any agent tool can activate one.
+Applying a purpose therefore changes one source input: that definition's list of members. Its instance runs again and declares one more child, the purpose's instance, with each of the purpose's parameters bound to a place below. The children it already had are untouched, because their declarations did not change.
+
+The purpose's constraints are then ordinary nodes, and their verdicts appear in that instance's summary. No solve reads them: a purpose only checks, and an objective written in a purpose is a compile error that says to write it in the definition. Today a purpose's objective is recorded and never read, activation writes into the installed graph in place, and neither the GUI nor any agent tool can activate one.
 
 A purpose over two things in different roots, or over a constraint, needs more than this example shows. That is for the instance design.
 
-Uses: a snapshot input attached to a path, a result that declares children.
+Uses: `edit`, a result that declares children.
 
 ## Example 10. An edit to one literal in the source
 
@@ -812,8 +817,9 @@ Also ruled in discussion:
 
 - **Structure values are closed** (Example 11, option B). Leo first: "I think so. I'm finding it a bit slippery to reason out". Then, after the three options were set out: "Yes". His hunch on the way: `let c = Plate()` followed by `sub d = Widget(c)` "should be semantically identical to" `sub d = Widget(Plate())`; and on a version of option C limited to a constructor that is the whole right-hand side: "Absolutely not - confusingly inconsistent."
 - **A sub and a value handle `auto` and constraints the same way** (section 8, "Who decides an unknown"). Leo: "let and sub should behave the same way (in how they handle auto and constraints). Objectives will probably have to differ."
-- **Who owns an `auto`, what a structure value carries, and what is not there** were ruled in the session that designed the instance kinds, each "LGTM" to that design's recommendation (2026-11-25): an `auto` belongs to the instance of the definition whose text contains it, and only a constraint inside that instance bears on it (section 8); a structure value is its type's name and arguments, its parameters, and every value decided at or below its instance (5.4, with the exception this makes in 5.3); a guarded member reads its own guard first and is absent under a false one (7.3, Example 3). Later the same day he ruled there that a constraint written in the braces after a sub, and a purpose's constraints, bear on the instance's own `auto`: "this is what aligns best with the purpose of the braces on a sub: customizing the instance that is being created." How objectives travel, and how groups are formed when unknowns have different owners, are still the solve design's.
-- **The source is the sole definition of a design.** Asked in the same session, on 2026-11-26, whether a root's declaration could carry a value for a root's required parameter, Leo: "No. This adds a semantically critical value that lives outside the source. The source must remain the canonical sole definition of the design. If the source can't represent it we either improve the expressive power of the source (judiciously - the bar for expanding the language should be high to prevent accretion) or we refuse it." So a root's declaration names a definition and carries no arguments (7.5). The same day he agreed that editing a literal in a constructor call inside an expression is not refused ("I don't see why this should be refused"), and settled which parameters get a direct control (Example 8). Open with him on that date: which purposes are active is a setting, and a purpose's constraints bear on its subject's own `auto`, so an active purpose changes solved values from outside the source. Example 9 and the purpose clause of section 8 may change with his answer.
+- **Who owns an `auto`, what a structure value carries, and what is not there** were ruled in the session that designed the instance kinds, each "LGTM" to that design's recommendation (2026-11-25): an `auto` belongs to the instance of the definition whose text contains it, and only a constraint inside that instance bears on it (section 8); a structure value is its type's name and arguments, its parameters, and every value decided at or below its instance (5.4, with the exception this makes in 5.3); a guarded member reads its own guard first and is absent under a false one (7.3, Example 3). Later the same day he ruled there that a constraint written in the braces after a sub, and a purpose's constraints, bear on the instance's own `auto`: "this is what aligns best with the purpose of the braces on a sub: customizing the instance that is being created." He reversed the purpose half the next day (below); the braces half stands. How objectives travel, and how groups are formed when unknowns have different owners, are still the solve design's.
+- **The source is the sole definition of a design.** Asked in the same session, on 2026-11-26, whether a root's declaration could carry a value for a root's required parameter, Leo: "No. This adds a semantically critical value that lives outside the source. The source must remain the canonical sole definition of the design. If the source can't represent it we either improve the expressive power of the source (judiciously - the bar for expanding the language should be high to prevent accretion) or we refuse it." So a root's declaration names a definition and carries no arguments (7.5). The same day he agreed that editing a literal in a constructor call inside an expression is not refused ("I don't see why this should be refused"), and settled which parameters get a direct control (Example 8). That principle collided with purposes as this contract had them: which purposes were active was a session setting, and a purpose's constraints bore on its subject's own `auto`, so an active purpose changed solved values from outside the source. The same day he reversed the purpose half of the ruling of the day before. A purpose only checks: "the purpose is a predicate that checks that a design is fit for a particular purpose." An objective written in a purpose is a compile error. A purpose is declared, then applied in source: "a declare then apply pattern (similar to the declare then instantiate for structures), so that the source can express application." (Section 8, 3.1, Example 9.) With purposes applied in source, none of Reify's kinds read an input attached to a node's own path, a kind of binding that 2.1 had offered and 7.3 had mentioned, and one that let a session change an answer at a place from outside the source. Asked the same day, in the session that wrote the core's PRD, whether to remove it from the core, Leo: "do delete it". (2.1, 7.3.)
+- **A path below a failed node answers that failure** (4.3). The leaf of the core's PRD that built path resolution chose this and recorded it only in the code. The instance kinds rely on it: a guarded member whose guard is undefined answers the failure "presence undetermined" (7.3), and whatever reads below it must be given that failure and its cause, not "absent", which is what it reads under a false guard. Asked on 2026-11-26 whether the contract should say so, together with one other question, Leo: "yes to both".
 - **The next step is the PRD for the core crate**, with the three fragile mechanisms built and tested first, authored by a separate session run as a team. Leo: "/spawn (fable, x-high) (/team (/prd this))".
 
 Also agreed in discussion:
@@ -837,7 +843,7 @@ One consequence of Decision 13, given 5.2: a result can be persisted together wi
 - **The geometry design:** what `self.a.body` means inside a parent operation when `a` has a placement; how to name "that bit" of a shape. Leo sees the second as the representational layer of a problem that concerns him at the UX layer, geometry selectors, and has no further contribution yet.
 - **The instance design:**
   - what the roots are; whether a definition is evaluated on its own; guards per instance; what the GUI shows for an instance; purposes over more than one subject;
-  - following from the ruling on values: that a `connect` endpoint and a purpose's subject must be places, since both compile between values today; that equality of values and of geometry is by content, where the spec now says "identity" and "same evaluation graph node"; that a child declared for a value reads no setting attached to a path, or the value's members would depend on where it is held;
+  - following from the ruling on values: that a `connect` endpoint and a purpose's subject must be places, since both compile between values today; that equality of values and of geometry is by content, where the spec now says "identity" and "same evaluation graph node" (a third point, that a child declared for a value reads no setting attached to a path, fell away on 2026-11-26, when the input attached to a path was removed);
   - that a definition's constraints become checked on values, at the 150 call sites the census found.
 
 ---
@@ -900,3 +906,6 @@ The text as landed includes the sentences approved with the PRD on 2026-11-25. T
 | Date | Section | Change | Forced by | Task |
 |---|---|---|---|---|
 | 2026-11-26 | 7.5, 3.1 | Added: a root's declaration names its definition and carries no arguments. Nothing was removed | Leo's ruling of that date, recorded in Part C: the source is the sole definition of a design | none (a docs commit) |
+| 2026-11-26 | 8, 3.1 | Section 8: removed "and the constraints of a purpose attached to it" from what counts as inside an instance; added that a purpose only checks, its constraints are never part of a solve's problem, and it holds no objective. 3.1: removed "which purposes are active and on what" from the settings; added that a purpose is applied in source | Leo's ruling of that date, recorded in Part C: a purpose only checks and is applied in source | none (a docs commit) |
+| 2026-11-26 | 2.1, 7.3 | 2.1: removed "or a snapshot input attached to this node's own path" from the kinds of binding; added "No input is attached to a path." 7.3: "An instance then reads only its own presence guards, the source of its definition, and the settings attached to its path" became "An instance then reads only its own presence guards and the source of its definition." | Leo's ruling of that date, recorded in Part C: "do delete it" | #10617 removes the kind from the crate |
+| 2026-11-26 | 4.3 | Added: "A path below a node whose answer is a failure answers that failure." Nothing was removed | Leo's ruling of that date, recorded in Part C. The crate already behaved so; the instance kinds rely on it | #10621 pins it with a test |

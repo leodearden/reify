@@ -6,7 +6,7 @@ use std::future::{Future, pending, poll_fn};
 use std::pin::pin;
 
 use reify_eval_core::{
-    Answer, Binding, Builder, Cx, Declaration, Failure, InputKey, Kind, KindId, Outcome,
+    Answer, Binding, Budget, Builder, Cx, Declaration, Failure, InputKey, Kind, KindId, Outcome,
     OutsideFailure, Produced, Ref, Turn,
 };
 
@@ -29,6 +29,7 @@ struct Impatient;
 impl Kind for Impatient {
     type Out = i64;
     const ID: KindId = KindId("toy.impatient");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         Produced::Outcome(two_reads_at_once(cx).await)
@@ -43,7 +44,7 @@ fn a_body_that_makes_two_requests_at_once_ends_with_a_failure() {
         .build();
     let snapshot = core.snapshot([toy::root("hasty", Declaration::new(Impatient::ID))]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["hasty"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["hasty"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("hasty"));
@@ -65,6 +66,7 @@ struct ImpatientHolder;
 impl Kind for ImpatientHolder {
     type Out = i64;
     const ID: KindId = KindId("toy.impatient_holder");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let _fuse = Fuse;
@@ -80,7 +82,7 @@ fn a_panic_from_what_a_body_holds_as_its_failed_node_drops_it_does_not_reach_the
         .build();
     let snapshot = core.snapshot([toy::root("hasty", Declaration::new(ImpatientHolder::ID))]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["hasty"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["hasty"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("hasty"));
@@ -93,6 +95,7 @@ struct Rogue;
 impl Kind for Rogue {
     type Out = i64;
     const ID: KindId = KindId("toy.rogue");
+    const VERSION: u32 = 1;
 
     async fn run(_: &Cx) -> Produced<i64> {
         pending().await
@@ -104,7 +107,7 @@ fn a_body_that_waits_on_something_other_than_the_core_is_pending_with_that_failu
     let mut core = Builder::new().kind::<Rogue>().expect("one kind").build();
     let snapshot = core.snapshot([toy::root("astray", Declaration::new(Rogue::ID))]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["astray"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["astray"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("astray"));
@@ -117,6 +120,7 @@ struct Panicking;
 impl Kind for Panicking {
     type Out = i64;
     const ID: KindId = KindId("toy.panicking");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let _ = cx.read::<i64>(&Ref::binding("0")).await;
@@ -139,7 +143,7 @@ fn a_body_that_panics_is_pending_with_a_failure_outside_the_inputs_and_the_next_
         toy::root("total", toy::cell(&["a"])),
     ]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["broken"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["broken"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("broken"));
@@ -151,7 +155,7 @@ fn a_body_that_panics_is_pending_with_a_failure_outside_the_inputs_and_the_next_
     }
     assert_eq!(core.turn(), Turn::Idle);
 
-    let later = core.evaluate(&snapshot, toy::roots(&["total"]));
+    let later = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &later, &toy::at("total"));
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
@@ -164,6 +168,7 @@ struct Exhausted;
 impl Kind for Exhausted {
     type Out = i64;
     const ID: KindId = KindId("toy.exhausted");
+    const VERSION: u32 = 1;
 
     async fn run(_: &Cx) -> Produced<i64> {
         Produced::Outside(OutsideFailure::OutOfMemory { resource: "toy" })
@@ -178,7 +183,7 @@ fn a_body_whose_own_work_fails_outside_the_inputs_is_reported_pending() {
         .build();
     let snapshot = core.snapshot([toy::root("spent", Declaration::new(Exhausted::ID))]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["spent"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["spent"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("spent"));

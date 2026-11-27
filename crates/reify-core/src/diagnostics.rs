@@ -5058,6 +5058,23 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Warning.
     ImportRequiresFileBackedBuffer,
+    /// Origin: `crates/reify-stdlib/src/trajectory/trampoline.rs::ShapeInputFault::to_error`
+    /// (the `UncoveredJoint` arm), task #6941.
+    ///
+    /// Emitted when a TOTS-arm profile joint has no `actuator_limits`
+    /// `JointLimit` bounding it: the field is absent, the list is empty, or the
+    /// only limits are on other joints. The solver never substitutes a default
+    /// bound.
+    ///
+    /// Canonical message: `"<builtin>: actuator_limits has no entry for profile
+    /// joint <j>; a TOTS shaper solves only the joints an actuator limit
+    /// bounds"`.
+    ///
+    /// Severity: Error.
+    ///
+    /// Distinct from [`Self::DimensionedArgRejected`]: a missing bound, not a
+    /// wrong-dimension field (one code per rejection reason).
+    TotsJointUncovered,
     /// Origins: `crates/reify-compiler/src/conformance/sub_component_validation.rs`
     /// at check time and the `reify-eval` evaluation-graph build at eval time
     /// (task #5523, PRD resolution-unification boundary #15; PRD prose
@@ -5103,6 +5120,270 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Warning.
     ModuleDeclMissing,
+    /// Origin: the existing compile, `reify-compiler`, at a `purpose Name(args)`
+    /// member line (docs/prds/instances-on-the-core.md, decision D5).
+    ///
+    /// Emitted when a source applies a purpose. The parser is shared, so the
+    /// line parses for the existing compile too, which does not check it; an
+    /// error, not a warning, so a file that applies a purpose cannot pass
+    /// `check` with the purpose unchecked.
+    ///
+    /// Canonical message: ``"applying purpose `<name>` needs the new evaluation
+    /// engine, and this compile does not check it"``.
+    ///
+    /// Severity: Error.
+    PurposeApplicationNeedsNewEngine,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7).
+    ///
+    /// Emitted when a `minimize` or `maximize` is written inside a purpose's
+    /// body: a purpose decides nothing.
+    ///
+    /// Canonical message: ``"an objective inside purpose `<purpose>`; write it in
+    /// the definition"``.
+    ///
+    /// Severity: Error.
+    ObjectiveInPurpose,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decision D13 item 22).
+    ///
+    /// Emitted when an `auto` is written inside a purpose's body: like an
+    /// objective, it would make the purpose decide something.
+    ///
+    /// Canonical message: ``"`auto` inside purpose `<purpose>`; write it in the
+    /// definition"``.
+    ///
+    /// Severity: Error.
+    AutoInPurpose,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7; design 15.2).
+    ///
+    /// Emitted at a purpose's declaration for a parameter of kind Constraint
+    /// or Field.
+    ///
+    /// Canonical message: ``"a purpose's parameter may not be of kind <kind>"``.
+    ///
+    /// Severity: Error.
+    PurposeParameterKindRefused,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decisions D2 and D10(e)).
+    ///
+    /// Emitted when the argument to a purpose's subject parameter does not
+    /// name an instance: a value held in a cell, a whole collection, or an
+    /// element whose index or key is not a literal. A subject that is not
+    /// there to be named is `StructureMemberNotFound`.
+    ///
+    /// Canonical message: ``"a purpose's subject must name an instance (`self`,
+    /// or a sub or element below it), not a value held in a cell; write `sub
+    /// <name> : <Structure>`"``.
+    ///
+    /// Severity: Error.
+    PurposeSubjectNotAnInstance,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decision D2; decision D13 item 23).
+    ///
+    /// Emitted when a `purpose Name(args)` line is written in a sub's braces,
+    /// in a purpose's body or in a trait. In the braces `self` is the parent,
+    /// so nothing there names the sub's instance; the message says to write
+    /// the line in the parent with the sub as its subject.
+    ///
+    /// Canonical message: ``"a purpose applied in the braces of `<sub>`; write
+    /// `purpose <name>(self.<sub>)` in `<Parent>`"``.
+    ///
+    /// Severity: Error.
+    PurposeApplicationMisplaced,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decision D9).
+    ///
+    /// Emitted when a `purpose Name(args)` line names no purpose in scope. A
+    /// subject that is not there to be named is `StructureMemberNotFound`.
+    ///
+    /// Canonical message: ``"unknown purpose `<name>`"``.
+    ///
+    /// Severity: Error.
+    UnknownPurpose,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decision D9).
+    ///
+    /// Emitted when a `purpose Name(args)` line gives no argument for a
+    /// parameter of the purpose that has no default. A subject that is not
+    /// there to be named is `StructureMemberNotFound`.
+    ///
+    /// Canonical message: ``"purpose `<name>` is applied without its parameter
+    /// `<parameter>`"``.
+    ///
+    /// Severity: Error.
+    PurposeArgumentMissing,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decision D9).
+    ///
+    /// Emitted when a `purpose Name(args)` line gives an argument the purpose
+    /// has no parameter for. A subject that is not there to be named is
+    /// `StructureMemberNotFound`.
+    ///
+    /// Canonical message: ``"purpose `<name>` has no parameter `<parameter>`"``.
+    ///
+    /// Severity: Error.
+    PurposeArgumentUnknown,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7; design decision 9).
+    ///
+    /// Emitted when an end of a `connect` is not a place: a value held in a
+    /// cell rather than a port of this instance or of one of its subs or
+    /// elements.
+    ///
+    /// Canonical message: ``"a connect end must be a port of this instance or of
+    /// one of its subs or elements; `<end>` is a value held in a cell, write it
+    /// as a sub"``.
+    ///
+    /// Severity: Error.
+    ConnectEndNotAPlace,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7).
+    ///
+    /// Emitted when a guard's condition reads the very member it guards. A
+    /// guard that reads some other guarded member compiles (decision D13
+    /// item 5).
+    ///
+    /// Canonical message: ``"the guard of `<member>` reads `<member>`"``.
+    ///
+    /// Severity: Error.
+    GuardReadsGuardedMember,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7; rule E; decision D13
+    /// item 6).
+    ///
+    /// Emitted when one name is declared, under different guards, as
+    /// different kinds of member: a collection and a single sub, or a `let`
+    /// and a sub. Two declarations of one kind present at once are a failure
+    /// at run time, not this error.
+    ///
+    /// Canonical message: ``"`<name>` is declared as a <kind> and as a <kind>;
+    /// declarations of one name must give the same kind of member"``.
+    ///
+    /// Severity: Error.
+    OneNameDifferentMemberKinds,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7; design decision 10).
+    ///
+    /// Emitted when a collection's count reads the collection's own elements,
+    /// which exist only once the count is known.
+    ///
+    /// Canonical message: ``"the count of `<collection>` reads its own elements;
+    /// write `let proto = <Structure>()` and read `proto.<member>`"``.
+    ///
+    /// Severity: Error.
+    CollectionCountReadsOwnElements,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7; design 6.3 and
+    /// design decision 5).
+    ///
+    /// Emitted when an `auto` is written where it is not evaluated exactly
+    /// once: in an arm of an `if` or a `match`, a lambda, a function body or a
+    /// quantifier's body. An `auto` passed as a function-call argument is
+    /// `AutoNotAtBindingSite`.
+    ///
+    /// Canonical message: ``"`auto` inside <place>; <fix>"``, e.g. ``"`auto`
+    /// inside a function body; write `let u : Length = auto` outside it and
+    /// pass `u` in"``.
+    ///
+    /// Severity: Error.
+    AutoNotEvaluatedOnce,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7; decision D13 item 21).
+    ///
+    /// Emitted for `let x : T = auto` written in a sub's braces, and for an
+    /// `auto` as a constructor argument in a member written there. The `auto`
+    /// is in the parent's text and the member would be the sub's, so it has
+    /// no single owner.
+    ///
+    /// Canonical message: ``"`auto` in a `let` in the braces of `<sub>`; write
+    /// `let <name> : <Type> = auto` in `<Parent>` and pass it"``.
+    ///
+    /// Severity: Error.
+    AutoInSubBraces,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7, the table of what a
+    /// sub's braces may hold).
+    ///
+    /// Emitted for a `fn`, a `meta`, a `match` with declarations or a
+    /// `sketch` written in a sub's braces. A `param`, `port` or `sub` there is
+    /// `SpecializationForbiddenDecl`, which covers only those three.
+    ///
+    /// Canonical message: ``"a `<form>` cannot be written in the braces of
+    /// `<sub>`"``.
+    ///
+    /// Severity: Error.
+    MemberFormForbiddenInBraces,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decision D10(f)).
+    ///
+    /// Emitted when a `let` written in a sub's braces is read from anywhere
+    /// but the other members written in those braces.
+    ///
+    /// Canonical message: ``"`<name>` is a `let` written in the braces of
+    /// `<sub>` and can be read only there; write the `let` in `<Parent>`"``.
+    ///
+    /// Severity: Error.
+    BracesLetReadFromOutside,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decision D10(f)).
+    ///
+    /// Emitted when a `let` written in a sub's braces repeats the name of a
+    /// member of the sub's definition. The message names both declarations.
+    ///
+    /// Canonical message: ``"`<name>` is declared twice for `<sub>`, by
+    /// `<Structure>` and in the braces of `<sub>`"``.
+    ///
+    /// Severity: Error.
+    BracesLetRepeatsDefinitionMember,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, section 5.7; decision D13 item 14).
+    ///
+    /// Emitted when a `let` that is not `pub` is read from another
+    /// definition's text: through a sub, through a value, from a sub's braces
+    /// or from a purpose's body, which are all another definition's text.
+    ///
+    /// Canonical message: ``"`<reader>` reads `<name>`, a `let` of
+    /// `<Structure>` that is not `pub`"``.
+    ///
+    /// Severity: Error.
+    PrivateLetReadFromAnotherDefinition,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decision D13 item 2).
+    ///
+    /// Emitted when no count constraint (`xs.count == n`) gives a
+    /// collection's count.
+    ///
+    /// Canonical message: ``"nothing gives the count of `<collection>`; write
+    /// `constraint self.<collection>.count == <n>`"``.
+    ///
+    /// Severity: Error.
+    CollectionCountHasNoSource,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, decision D13 item 2).
+    ///
+    /// Emitted when more than one count constraint (`xs.count == n`) present
+    /// at once gives a collection's count.
+    ///
+    /// Canonical message: ``"the count of `<collection>` is given by more than
+    /// one count constraint; keep one"``.
+    ///
+    /// Severity: Error.
+    CollectionCountHasSeveralSources,
+    /// Origin: the second output, `reify-eval-source`
+    /// (docs/prds/instances-on-the-core.md, design 6.3).
+    ///
+    /// Emitted for `let x = auto` with no declared type. The existing compile
+    /// reports the same error with no code, in
+    /// `crates/reify-compiler/src/member_cell_decls.rs::resolve_auto_let_cell_type`,
+    /// and that site is not changed.
+    ///
+    /// Canonical message: ``"`let <name> = auto` needs a type, as in `let
+    /// <name> : Length = auto`"``.
+    ///
+    /// Severity: Error.
+    UntypedAutoLet,
 }
 
 /// A diagnostic message with location and optional labels.

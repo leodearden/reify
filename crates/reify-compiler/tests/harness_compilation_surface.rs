@@ -46,6 +46,8 @@ mod meta_compile_tests;
 mod pragma_compile_tests;
 #[path = "harness_compilation_surface/purpose_compile_tests.rs"]
 mod purpose_compile_tests;
+#[path = "harness_compilation_surface/source_unit_mode_tests.rs"]
+mod source_unit_mode_tests;
 #[path = "harness_compilation_surface/test_marker_compile_tests.rs"]
 mod test_marker_compile_tests;
 #[path = "harness_compilation_surface/unresolved_function_corpus_sweep.rs"]

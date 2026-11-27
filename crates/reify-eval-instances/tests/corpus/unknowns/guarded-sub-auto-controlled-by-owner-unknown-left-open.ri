@@ -1,0 +1,6 @@
+structure def Beam { param len : Length   constraint len >= 10mm   constraint len <= 10mm }
+structure def Asm {
+    let x : Length = auto
+    constraint x == 20mm
+    sub b : Beam where x > 15mm { len = auto }
+}

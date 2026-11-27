@@ -1,0 +1,3 @@
+structure def Sizing { param n : Int   constraint n >= 3 }
+structure def P { param v : Length = 1mm }
+structure def Asm { sub extra : P where Sizing(n: 2).n > 1 }

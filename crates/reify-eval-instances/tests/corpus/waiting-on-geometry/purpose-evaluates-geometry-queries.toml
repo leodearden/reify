@@ -1,0 +1,22 @@
+tests = "a purpose's constraint can evaluate a geometry query over its subject's geometry member, and over a geometry `let` of the purpose's own, like any constraint."
+rule = "Part 10; Part 2 (a cell is one unit of source evaluated in a scope); decisions E36"
+provenance = "task 10273 (both of its measured shapes)"
+needs = ["instance", "constraint", "purpose", "grammar-purpose", "geometry"]
+answer_basis = '''
+traced for `purpose[0]`; open for `purpose[1]` and the summary.
+`Holder.p.b` is a 10 mm cube, whose volume is 1000 mm³ > 1 mm³, so purpose[0]'s constraint is satisfied. A volume needs the geometry kinds (task 10611).
+purpose[1]'s `let b` builds geometry inside the purpose's body. Decisions E36 does not pin whether the compile error for that shape (task 10037's purpose-body arm; task 10273's `PurposeGeometryUnrealizable`, by task 10037's amendment) survives, so its verdict and `Holder/summary` are open.'''
+today = "both shapes are INDETERMINATE: \"operator undefined for these operand kinds: GeometryHandle\" and \"undefined inputs: purpose:review@P.__let_b\" (task 10273 record, built at 23a721d574)."
+note = "open question, owner task 10611: is a geometry `let` inside a purpose's body a compile error, or a cell of the purpose instance that is evaluated like any other? If it is evaluated, `Holder/purpose[1]/constraint[0]` is satisfied and `Holder/summary` is `summary violated 0 undetermined 0 failed 0`."
+
+[[expect]]
+path = "Holder/purpose[0]/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Holder/purpose[1]/constraint[0]"
+open = { owner = 10611 }
+
+[[expect]]
+path = "Holder/summary"
+open = { owner = 10611 }

@@ -542,6 +542,191 @@ fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
     }
 }
 
+// ─── geometry lets carried by a let-constructed ctor (task 10352) ─────────────
+
+const GEOMETRY_LET_CTOR_SRC: &str = r#"
+module test.geometry_let_ctor
+
+structure def Beam {
+    param len : Length = 1000mm
+    let body = box(len, 100mm, 100mm)
+    let tip = vertex(body, "tip")
+}
+
+structure def Holder {
+    let b = Beam()
+}
+"#;
+
+/// A let-constructed ctor carries its template's geometry let as a
+/// `CtorGeometryLet` naming the let's realization and that realization's op
+/// args, while the geometry let itself stays out of `lets`.
+#[test]
+fn let_constructed_ctor_carries_template_geometry_let() {
+    let module = reify_test_support::parse_and_compile_with_stdlib(GEOMETRY_LET_CTOR_SRC);
+    let template = |name: &str| {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no template {name}"))
+    };
+    let body_realization = template("Beam")
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("body"))
+        .expect("Beam's `body` realization");
+    let holder_b = template("Holder")
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "b")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("Holder.b default");
+
+    let CompiledExprKind::StructureInstanceCtor {
+        lets,
+        geometry_lets,
+        ..
+    } = &holder_b.kind
+    else {
+        panic!("Holder.b must lower to a StructureInstanceCtor, got {holder_b:?}");
+    };
+
+    let members: Vec<&str> = geometry_lets.iter().map(|g| g.member.as_str()).collect();
+    assert_eq!(members, ["body"]);
+    let body = &geometry_lets[0];
+    assert_eq!(body.realization, body_realization.id);
+
+    let hashed = |args: &mut dyn Iterator<Item = &(String, CompiledExpr)>| {
+        args.map(|(name, e)| (name.clone(), e.content_hash))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        hashed(&mut body.upstream_args.iter()),
+        hashed(&mut body_realization.operations.iter().flat_map(|op| op.args())),
+        "upstream_args must be the `body` realization's op args"
+    );
+
+    let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(let_names.contains(&"tip"), "lets: {let_names:?}");
+    assert!(!let_names.contains(&"body"), "lets: {let_names:?}");
+}
+
+const GEOMETRY_LIST_LET_CTOR_SRC: &str = r#"
+module test.geometry_list_let_ctor
+
+structure def Rack {
+    param len : Length = 1000mm
+    let body = box(len, 100mm, 100mm)
+    let parts = [box(len, 1mm, 1mm), box(2mm, len, 2mm)]
+}
+
+structure def Shelf {
+    let r = Rack()
+}
+"#;
+
+/// A geometry-list let is backed by one list-bound realization per element and
+/// by no realization named after the let itself, so a let-constructed ctor
+/// carries no `CtorGeometryLet` for it: only the single geometry let `body`.
+#[test]
+fn let_constructed_ctor_carries_no_geometry_list_let() {
+    let module = reify_test_support::parse_and_compile_with_stdlib(GEOMETRY_LIST_LET_CTOR_SRC);
+    let template = |name: &str| {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no template {name}"))
+    };
+    let list_bound: Vec<&str> = template("Rack")
+        .realizations
+        .iter()
+        .filter(|r| {
+            r.list_binding
+                .as_ref()
+                .is_some_and(|b| b.list_name == "parts")
+        })
+        .filter_map(|r| r.name.as_deref())
+        .collect();
+    assert_eq!(
+        list_bound,
+        ["parts#0", "parts#1"],
+        "premise: `parts` lowers to one list-bound realization per element"
+    );
+    let shelf_r = template("Shelf")
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "r")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("Shelf.r default");
+
+    let CompiledExprKind::StructureInstanceCtor { geometry_lets, .. } = &shelf_r.kind else {
+        panic!("Shelf.r must lower to a StructureInstanceCtor, got {shelf_r:?}");
+    };
+    let members: Vec<&str> = geometry_lets.iter().map(|g| g.member.as_str()).collect();
+    assert_eq!(members, ["body"]);
+}
+
+const GEOMETRY_ALIAS_LET_CTOR_SRC: &str = r#"
+module test.geometry_alias_let_ctor
+
+structure def H {
+    param w : Length = 1mm
+    let base = box(w, w, w)
+    let shifted = base
+    let t = vertex(shifted, "tip")
+}
+
+structure def Asm {
+    let p = H()
+}
+"#;
+
+/// A geometry let that only aliases a sibling geometry let has a realization of
+/// its own, but template and `sub` scope disagree on which realization the
+/// alias names, so a let-constructed ctor carries no `CtorGeometryLet` for it.
+#[test]
+fn let_constructed_ctor_carries_no_geometry_alias() {
+    let module = reify_test_support::parse_and_compile_with_stdlib(GEOMETRY_ALIAS_LET_CTOR_SRC);
+    let template = |name: &str| {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no template {name}"))
+    };
+    let shifted = template("H")
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "shifted")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("H.shifted default");
+    assert!(
+        matches!(&shifted.kind, CompiledExprKind::ValueRef(id) if *id == ValueCellId::new("H", "base")),
+        "premise: the alias lowers to a bare read of `base`, got {shifted:?}"
+    );
+    assert!(
+        template("H")
+            .realizations
+            .iter()
+            .any(|r| r.name.as_deref() == Some("shifted")),
+        "premise: the alias has a realization of its own"
+    );
+    let asm_p = template("Asm")
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "p")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("Asm.p default");
+
+    let CompiledExprKind::StructureInstanceCtor { geometry_lets, .. } = &asm_p.kind else {
+        panic!("Asm.p must lower to a StructureInstanceCtor, got {asm_p:?}");
+    };
+    let members: Vec<&str> = geometry_lets.iter().map(|g| g.member.as_str()).collect();
+    assert_eq!(members, ["base"]);
+}
+
 // ─── fn-call param default through a fn-returned ctor ─────────────────────────
 
 /// A structure-def param default that calls a SAME-MODULE fn, consumed through a

@@ -1,131 +1,50 @@
 //! The order check (PRD 5.5 item 4): a fresh core asked for the paths a
 //! session answered, one path per request and in the reverse of the order
-//! the session first answered them, gives the same answers. It needs no
-//! interpreter and knows nothing of the toy kinds: a caller hands it core
-//! inputs, core paths and how to observe an answer.
+//! the session first answered them, gives the same answers.
 
-use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-use reify_eval_core::{
-    Answer, Core, Demand, Erased, Event, Input, InputKey, Path, RequestError, RequestId,
-};
+use reify_eval_core::{Answer, Core, Erased, Input, InputKey};
 
-/// What a session first observed at `path` of snapshot `snapshot`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Answered<O> {
-    pub snapshot: usize,
-    pub path: Path,
-    pub seen: O,
-}
+use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
 
-/// Where the fresh core's answers differ from the session's.
-#[derive(Debug, Clone, PartialEq)]
-pub enum OrderMismatch<O> {
-    /// The fresh core answered `path` otherwise.
-    Differs {
-        snapshot: usize,
-        path: Path,
-        session: O,
-        fresh: O,
-    },
-    /// The fresh core told no answer at `path`: it ended the request with
-    /// `ended`, or left it with neither.
-    Unanswered {
-        snapshot: usize,
-        path: Path,
-        ended: Option<RequestError>,
-    },
-}
-
-/// Asks a fresh core for each of `answered` alone, latest first, on the
-/// snapshot made from that index's inputs in `snapshots`; how many answers
-/// it compared, or the first that differs.
+/// Asks `core`, fresh, for each of `answered` alone, latest first; how
+/// many answers it compared, or the first that differs.
 pub fn order_check<O: PartialEq + Debug + Clone>(
-    make_core: &dyn Fn() -> Core,
+    core: Core,
     snapshots: &[Vec<(InputKey, Input)>],
     answered: &[Answered<O>],
     observe: impl Fn(Answer<Erased>) -> O,
-) -> Result<usize, OrderMismatch<O>> {
-    let mut core = make_core();
-    let mut made = BTreeMap::new();
-    for first in answered.iter().rev() {
-        let snapshot = made
-            .entry(first.snapshot)
-            .or_insert_with(|| core.snapshot(snapshots[first.snapshot].clone()));
-        let request = core.evaluate(snapshot, Demand::of([first.path.clone()]));
-        core.run();
-        let told = told(core.take_events(), request.id(), &first.path);
-        core.end(request);
-        let fresh = match told {
-            Ok(answer) => observe(answer),
-            Err(ended) => {
-                return Err(OrderMismatch::Unanswered {
-                    snapshot: first.snapshot,
-                    path: first.path.clone(),
-                    ended,
-                });
-            }
-        };
-        if fresh != first.seen {
-            return Err(OrderMismatch::Differs {
-                snapshot: first.snapshot,
-                path: first.path.clone(),
-                session: first.seen.clone(),
-                fresh,
-            });
-        }
-    }
-    core.drain();
-    Ok(answered.len())
-}
-
-/// The answer `request` was told at `at` among `events`; failing that, the
-/// error the core ended it with, if it did.
-fn told(
-    events: Vec<Event>,
-    request: RequestId,
-    at: &Path,
-) -> Result<Answer<Erased>, Option<RequestError>> {
-    let mut ended = None;
-    for event in events {
-        match event {
-            Event::Answered {
-                request: to,
-                path,
-                answer,
-                ..
-            } if to == request && path == *at => return Ok(answer),
-            Event::Ended {
-                request: to, error, ..
-            } if to == request => ended = Some(error),
-            _ => {}
-        }
-    }
-    Err(ended)
+) -> Result<usize, FreshMismatch<O>> {
+    fresh_check(core, Order::Reverse, snapshots, answered, observe)
 }
 
 mod tests {
     use reify_eval_core::{
-        Answer, Builder, Core, Cx, Declaration, Demand, Erased, Input, InputKey, Kind, KindId,
-        Outcome, Path, Produced, RequestError, Root,
+        Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, Erased, Input, InputKey,
+        Kind, KindId, Outcome, Path, Produced, Ref, Root,
     };
 
-    use super::{Answered, OrderMismatch, order_check};
-    use crate::toy;
+    use super::super::fresh::{Answered, FreshMismatch};
+    use super::order_check;
+    use crate::toy::{self, BoxShape, ToyKernel, Watch};
 
     /// A resource that counts the sections run on it.
     struct Turns(u64);
 
-    /// How many sections its resource ran before its own: it depends on
-    /// the order of requests on purpose (it breaks O1).
+    /// Reads its binding "tag", so that turnstiles of different tags are
+    /// different results in the store, then answers how many sections its
+    /// resource ran before its own: it depends on the order of requests on
+    /// purpose (it breaks O1).
     struct Turnstile;
 
     impl Kind for Turnstile {
         type Out = u64;
         const ID: KindId = KindId("test.turnstile");
+        const VERSION: u32 = 1;
 
         async fn run(cx: &Cx) -> Produced<u64> {
+            let _ = cx.read::<i64>(&Ref::binding("tag")).await;
             let before = cx
                 .exclusive(|turns: &mut Turns, _| {
                     turns.0 += 1;
@@ -153,23 +72,22 @@ mod tests {
         answer.downcast()
     }
 
+    /// Root `name`, a turnstile tagged with the input `name`, which holds
+    /// `tag`.
+    fn turnstile(name: &str, tag: i64) -> [(InputKey, Input); 2] {
+        let declaration =
+            Declaration::new(Turnstile::ID).bind("tag", Binding::Input(InputKey::named(name)));
+        [toy::named(name, tag), toy::root(name, declaration)]
+    }
+
     #[test]
     fn a_kind_whose_answer_depends_on_the_order_of_requests_is_caught() {
-        let inputs = vec![
-            (
-                InputKey::root("a"),
-                Input::of(Declaration::new(Turnstile::ID)),
-            ),
-            (
-                InputKey::root("b"),
-                Input::of(Declaration::new(Turnstile::ID)),
-            ),
-        ];
+        let inputs = [turnstile("a", 1), turnstile("b", 2)].concat();
         let mut core = turnstile_core();
         let snapshot = core.snapshot(inputs.clone());
         let mut answered = Vec::new();
         for name in ["a", "b"] {
-            let request = core.evaluate(&snapshot, Demand::of([at(name)]));
+            let request = core.evaluate(&snapshot, Demand::of([at(name)]), Budget::unlimited());
             core.run();
             let events = core.take_events();
             answered.push(Answered {
@@ -187,10 +105,98 @@ mod tests {
             seen,
             [Answer::Final(Outcome::of(0)), Answer::Final(Outcome::of(1))]
         );
-        let found = order_check(&turnstile_core, &[inputs], &answered, turns);
-        let expected = OrderMismatch::Differs {
+        let found = order_check(turnstile_core(), &[inputs], &answered, turns);
+        let expected = FreshMismatch::Differs {
             snapshot: 0,
             path: at("b"),
+            session: Answer::Final(Outcome::of(1)),
+            fresh: Answer::Final(Outcome::of(0)),
+        };
+        assert_eq!(found, Err(expected));
+    }
+
+    /// Marks, in the toy kernel, the shape it reads at "shape", and
+    /// answers 1: it changes what it read (it breaks O6).
+    struct Marks;
+
+    impl Kind for Marks {
+        type Out = i64;
+        const ID: KindId = KindId("test.marks");
+        const VERSION: u32 = 1;
+
+        async fn run(cx: &Cx) -> Produced<i64> {
+            let Outcome::Value(shape) = cx.read::<BoxShape>(&Ref::binding("shape")).await else {
+                return Produced::Outcome(Outcome::Absent);
+            };
+            cx.exclusive(move |kernel: &mut ToyKernel, _| kernel.mark(shape.handle.0))
+                .await;
+            Produced::Outcome(Outcome::of(1))
+        }
+    }
+
+    /// 1 if the shape it reads at "shape" is marked in the toy kernel,
+    /// else 0.
+    struct Examines;
+
+    impl Kind for Examines {
+        type Out = i64;
+        const ID: KindId = KindId("test.examines");
+        const VERSION: u32 = 1;
+
+        async fn run(cx: &Cx) -> Produced<i64> {
+            let Outcome::Value(shape) = cx.read::<BoxShape>(&Ref::binding("shape")).await else {
+                return Produced::Outcome(Outcome::Absent);
+            };
+            let marked = cx
+                .exclusive(move |kernel: &mut ToyKernel, _| kernel.is_marked(shape.handle.0))
+                .await;
+            Produced::Outcome(Outcome::of(i64::from(marked)))
+        }
+    }
+
+    fn marking_core() -> Core {
+        let builder = toy::with_every_kind()
+            .kind::<Marks>()
+            .and_then(|builder| builder.kind::<Examines>())
+            .expect("distinct kinds");
+        toy::ungated(builder, &Watch::default())
+    }
+
+    #[test]
+    fn order_check_detects_result_mutated_through_exclusive_resource() {
+        let reads_s = |kind| Declaration::new(kind).bind("shape", toy::sibling(&["s"]));
+        let mut inputs = vec![toy::named("side", 2_i64)];
+        inputs.extend(toy::root_scope(
+            "R",
+            toy::members([
+                ("s", toy::shape("side")),
+                ("f", reads_s(Marks::ID)),
+                ("e", reads_s(Examines::ID)),
+            ]),
+        ));
+        let mut core = marking_core();
+        let snapshot = core.snapshot(inputs.clone());
+        let mut answered = Vec::new();
+        for name in ["f", "e"] {
+            let at = toy::below("R", &[name]);
+            let request = core.evaluate(&snapshot, Demand::of([at.clone()]), Budget::unlimited());
+            core.run();
+            let events = core.take_events();
+            answered.push(Answered {
+                snapshot: 0,
+                seen: toy::the_answer(&events, &request, &at).downcast::<i64>(),
+                path: at,
+            });
+            core.end(request);
+        }
+        core.drain();
+
+        let found = order_check(marking_core(), &[inputs], &answered, |answer| {
+            answer.downcast::<i64>()
+        });
+        let expected = FreshMismatch::Differs {
+            snapshot: 0,
+            path: toy::below("R", &["e"]),
             session: Answer::Final(Outcome::of(1)),
             fresh: Answer::Final(Outcome::of(0)),
         };
@@ -210,32 +216,9 @@ mod tests {
             path: at(name),
             seen: Answer::Final(Outcome::of(sum)),
         });
-        let make_core = || toy::with_cell().build();
-        let found = order_check(&make_core, &[inputs], &answered, |answer| {
+        let found = order_check(toy::with_cell().build(), &[inputs], &answered, |answer| {
             answer.downcast::<i64>()
         });
         assert_eq!(found, Ok(2));
-    }
-
-    #[test]
-    fn a_fresh_core_that_ends_the_request_is_reported_with_its_error() {
-        let below_itself = toy::cell_over([toy::sibling(&["a", "x"])]);
-        let inputs = toy::root_scope("r", toy::members([("a", below_itself)])).to_vec();
-        let a = toy::below("r", &["a"]);
-        let answered = [Answered {
-            snapshot: 0,
-            path: a.clone(),
-            seen: Answer::Final(Outcome::of(0_i64)),
-        }];
-        let make_core = || toy::with_scope().build();
-        let found = order_check(&make_core, &[inputs], &answered, |answer| {
-            answer.downcast::<i64>()
-        });
-        let expected = OrderMismatch::Unanswered {
-            snapshot: 0,
-            path: a.clone(),
-            ended: Some(RequestError::NothingCanRun { waiting: vec![a] }),
-        };
-        assert_eq!(found, Err(expected));
     }
 }

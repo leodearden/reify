@@ -1,0 +1,25 @@
+tests = "a sub and a constructor call of the same definition with equal arguments in one parent each give their own answer at their own path, and the value made equals the sub's as-value."
+rule = "Part 7.2; Part 7.4 (equality by content); decision 6; contract Example 11"
+provenance = "task 9489 (with a scalar field in place of its geometry field `g: body`. The faithful geometry version is task 10611's)"
+needs = ["instance", "value", "made"]
+answer_basis = '''
+traced.
+`Plate.s_b` is a sub with g = 4 mm. `Plate.h_body` makes `Plate.h_body/made[0]` with g = 4 mm, and its value is `H2{g: 4 mm}`.
+The sub's as-value carries the same type and parameters, so it is equal by content. Equal content shares stored work and changes no answer.'''
+today = "`Plate.h_body` is undefined when the parent also has a sub of the same type, in the geometry form (task 9489 record)."
+
+[[expect]]
+path = "Plate.s_b.g"
+value = "4 mm"
+
+[[expect]]
+path = "Plate.h_body"
+value = "H2{g: 4 mm}"
+
+[[expect]]
+path = "Plate.h_body/made[0].g"
+value = "4 mm"
+
+[[expect]]
+path = "Plate.s_b/as-value"
+value = "H2{g: 4 mm}"

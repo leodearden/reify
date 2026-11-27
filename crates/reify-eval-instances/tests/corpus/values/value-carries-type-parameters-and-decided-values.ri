@@ -1,0 +1,12 @@
+structure def Plate { param t : Length = auto   constraint t >= 3mm   minimize t }
+structure def A { param v : Length = 1mm }
+structure def B { param v : Length = 1mm }
+structure def Outer { sub inner : Plate }
+structure def Top {
+    let c = Plate()
+    let d = Plate(t: 3mm)
+    let k = set{c, d}.count
+    let a = A()
+    let b = B()
+    let o = Outer()
+}

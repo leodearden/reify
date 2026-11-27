@@ -7,9 +7,11 @@ use std::pin::Pin;
 
 use crate::cx::Cx;
 use crate::declaration::Declaration;
+use crate::hash::Hash128;
 use crate::kind::Kind;
 use crate::outcome::Erased;
 use crate::produced::Produced;
+use crate::recipe::Recipe;
 use crate::step::Step;
 
 pub(crate) type Body = Pin<Box<dyn Future<Output = Produced<Erased>> + Send>>;
@@ -17,8 +19,19 @@ pub(crate) type Body = Pin<Box<dyn Future<Output = Produced<Erased>> + Send>>;
 pub(crate) trait ErasedKind: Send + Sync {
     fn start(&self, cx: Cx) -> Body;
 
+    /// The kind and the version of its body.
+    fn recipe(&self) -> Recipe;
+
+    /// The content of `out`, a value this kind produced, if it is hashed
+    /// by value.
+    fn content(&self, out: &Erased) -> Option<Hash128>;
+
     /// What `out`, a value this kind produced, declares at `step`.
     fn declares(&self, out: &Erased, step: &Step) -> Option<Declaration>;
+
+    /// The steps at which `out`, a value this kind produced, declares
+    /// children.
+    fn steps<'a>(&self, out: &'a Erased) -> Box<dyn Iterator<Item = Step> + 'a>;
 }
 
 pub(crate) struct Of<K>(PhantomData<fn() -> K>);
@@ -34,11 +47,28 @@ impl<K: Kind> ErasedKind for Of<K> {
         Box::pin(async move { K::run(&cx).await.erase() })
     }
 
-    fn declares(&self, out: &Erased, step: &Step) -> Option<Declaration> {
-        let out: &dyn Any = out;
-        let out = out
-            .downcast_ref::<K::Out>()
-            .expect("a node's value is its kind's Out");
-        K::declares(out, step)
+    fn recipe(&self) -> Recipe {
+        Recipe {
+            kind: K::ID,
+            version: K::VERSION,
+        }
     }
+
+    fn content(&self, out: &Erased) -> Option<Hash128> {
+        K::content(typed::<K>(out))
+    }
+
+    fn declares(&self, out: &Erased, step: &Step) -> Option<Declaration> {
+        K::declares(typed::<K>(out), step)
+    }
+
+    fn steps<'a>(&self, out: &'a Erased) -> Box<dyn Iterator<Item = Step> + 'a> {
+        Box::new(K::steps(typed::<K>(out)))
+    }
+}
+
+fn typed<K: Kind>(out: &Erased) -> &K::Out {
+    let out: &dyn Any = out;
+    out.downcast_ref::<K::Out>()
+        .expect("a node's value is its kind's Out")
 }

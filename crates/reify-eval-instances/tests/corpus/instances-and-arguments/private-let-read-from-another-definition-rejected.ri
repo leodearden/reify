@@ -1,0 +1,12 @@
+structure def Plate {
+    param t : Length = 3mm
+    let area = t * 40mm
+    pub let width = 40mm
+}
+structure def Asm {
+    sub p : Plate
+    let a = self.p.area
+    let c = Plate(t: 2mm)
+    let b = c.area
+    let w = self.p.width
+}

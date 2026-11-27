@@ -1,0 +1,51 @@
+tests = "after an edit to the definition's default (edit 1), and then an edit that adds an argument at one use (edit 2), each instance reads its own argument or the default, its `let` follows in the instance's scope, and every answer equals a fresh evaluation of the edited text."
+rule = "contract Examples 8 and 10; Part 12 (Examples 8 and 10); Part 13 row 9; decisions B9 (each edit applies to the text the one before it left)."
+provenance = "contract Part B Examples 8 and 10; design Part 12 \"Example 8\", \"Example 10\"; design Part 13 row \"A warm edit evaluates instance cells in the definition's scope (9818, 10081)\". `Peg`'s body is dropped from Example 6's `Peg` so that no geometry is needed. The edits were reordered after trace-structure found that, applied in sequence, the earlier order hid the default edit from `b` (finding 1.2)."
+needs = ["instance", "edits"]
+answer_basis = "traced. Edit 1 changes `Peg`'s default to `12mm`: `b` has no argument, so `b.w` = 12 mm and `b.area` = 144 mm²; `a` has an argument and never reads the default (Part 12, Example 10), so `a.w` = 10 mm and `a.area` = 100 mm². Edit 2, applied to the text edit 1 left, replaces `sub b : Peg` by `sub b : Peg { w = 22mm }`: `b.w` = 22 mm, `b.area` = 484 mm², `a` untouched at 10 mm."
+today = "a warm edit evaluates instance cells in the definition's scope (tasks 9818, 10081; design Part 13, report)."
+not_pinned = "The gesture, its refusals and its preview are the session's (task 10551)."
+
+[[edits]]
+definition = "Peg"
+replace = "param w : Length = 10mm"
+by = "param w : Length = 12mm"
+
+[[edits]]
+definition = "Pair"
+replace = "sub b : Peg"
+by = "sub b : Peg { w = 22mm }"
+
+[[expect]]
+path = "Pair.b.w"
+value = "10 mm"
+
+[[expect]]
+path = "Pair.b.w"
+after_edit = 1
+value = "12 mm"
+
+[[expect]]
+path = "Pair.b.area"
+after_edit = 1
+value = "144 mm^2"
+
+[[expect]]
+path = "Pair.a.area"
+after_edit = 1
+value = "100 mm^2"
+
+[[expect]]
+path = "Pair.b.w"
+after_edit = 2
+value = "22 mm"
+
+[[expect]]
+path = "Pair.b.area"
+after_edit = 2
+value = "484 mm^2"
+
+[[expect]]
+path = "Pair.a.w"
+after_edit = 2
+value = "10 mm"

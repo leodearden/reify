@@ -1,0 +1,18 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+    pub let w = 40mm
+}
+fn mk(t : Length) -> Plate { Plate(t: t) }
+fn five(x : Length) -> Length { 5mm }
+structure def AsmA {
+    param u : Length
+    let d = Plate(t: u)
+    let w = d.w
+}
+structure def AsmB {
+    param u : Length
+    let d = mk(u)
+    let w = d.w
+    let k = five(u)
+}

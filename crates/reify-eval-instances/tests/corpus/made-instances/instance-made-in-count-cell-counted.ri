@@ -1,0 +1,11 @@
+structure def Vent {
+    param area : Length = 1mm
+}
+structure def Sizing {
+    param n : Int
+    constraint n >= 3
+}
+structure def Asm {
+    sub vents : List<Vent>
+    constraint vents.count == Sizing(n: 2).n
+}

@@ -1,0 +1,21 @@
+structure def FlatnessCallout : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Geometry = box(1mm, 1mm, 1mm)
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+structure def Cube {
+    pub let part = box(10mm, 10mm, 10mm)
+    pub let measured = translate(part, 0.5mm, 0mm, 0mm)
+}
+purpose inspected(subject : Structure) {
+    constraint Conforms(
+        tolerance: FlatnessCallout(feature: subject.part, tolerance_value: 0.1mm),
+        actual: subject.measured,
+        measured_deviation: 0mm,
+        feature_departure: 0mm
+    )
+}
+structure def Holder {
+    sub c : Cube
+    purpose inspected(self.c)
+}

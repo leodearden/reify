@@ -1,0 +1,6 @@
+structure def Asm {
+    param w : Length = 1mm
+    constraint w >= 2mm
+    let x : Length = auto
+    constraint x == 20mm
+}

@@ -1,0 +1,10 @@
+tests = "in a sub's braces a bare name that is a private `let` of the sub's definition is a compile error; it does not fall through to the parent's member of that name."
+rule = "spec 7.4 and 8.3; PRD D13 item 14, ruled by Leo on 2026-11-26; readings E38 (the braces are the declarer's text: the lead's reading of the ruling) and C20 (a bare name is the instance's own member before it is the declarer's)."
+provenance = "Leo's ruling on the PRD's D13 item 14."
+needs = ["compile-error", "braces"]
+answer_basis = "stated: readings E38. Bare `area` is no `let` of the braces and is a member `Plate` declares, so it is the plate's, and not `Asm`'s 9 mm. It is a `let` without `pub`, and the braces are written by `Asm`. If the name fell through to `Asm.area`, adding a private `let` to a definition would change what its users' braces mean."
+today = "run `priv2.ri`: compiles; the constraint in the braces is dropped."
+
+[[expect]]
+compile_error = "the constraint in the braces of `p` reads `area`, a `let` of `Plate` that is not `pub`; the parent's member is `self.area`"
+code = "PrivateLetReadFromAnotherDefinition"

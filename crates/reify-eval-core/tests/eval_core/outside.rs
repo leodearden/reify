@@ -3,7 +3,8 @@
 //! point 13).
 
 use reify_eval_core::{
-    Answer, Core, Cx, Declaration, Kind, KindId, Outcome, OutsideFailure, Produced, Snapshot, Turn,
+    Answer, Budget, Core, Cx, Declaration, Kind, KindId, Outcome, OutsideFailure, Produced,
+    Snapshot, Turn,
 };
 
 use crate::toy::{self, BoxShape, Cell, Pair, Scope, Shape, Watch};
@@ -16,6 +17,7 @@ struct Spent;
 impl Kind for Spent {
     type Out = i64;
     const ID: KindId = KindId("toy.spent");
+    const VERSION: u32 = 1;
 
     async fn run(_: &Cx) -> Produced<i64> {
         Produced::Outside(SPENT)
@@ -187,13 +189,13 @@ fn work_only_a_reader_dropped_for_a_failure_outside_the_inputs_awaited_is_droppe
     let snapshot = core.snapshot(inputs);
     let [pair, slow] = ["pair", "slow"].map(|name| toy::below("R", &[name]));
 
-    let first = core.evaluate(&snapshot, toy::demand([&pair]));
+    let first = core.evaluate(&snapshot, toy::demand([&pair]), Budget::unlimited());
     core.drain();
     let answer = toy::the_answer(&core.take_events(), &first, &pair);
     assert_eq!(toy::pending(answer), SPENT);
     assert_eq!(core.counters().body_runs(Shape::ID), 1);
 
-    let second = core.evaluate(&snapshot, toy::demand([&slow]));
+    let second = core.evaluate(&snapshot, toy::demand([&slow]), Budget::unlimited());
     core.run();
     let events = core.take_events();
     assert_eq!(

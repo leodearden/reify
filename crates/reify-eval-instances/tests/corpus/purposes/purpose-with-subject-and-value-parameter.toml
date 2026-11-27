@@ -1,0 +1,22 @@
+tests = "a purpose with a subject and a value parameter, applied with positional and with named arguments, binds the subject to a place and the value as an argument, and each application gives its own verdict."
+rule = "Part 10; readings C18 (a parameter whose declared type is a structure, a trait or `Structure` is a subject; any other is a value; PRD D10(e), ruled by Leo on 2026-11-26 as recommended); readings B5 (the value parameters of an applied purpose have an `/arguments` verdict); readings E33 (arguments as in a constructor call)"
+provenance = "PRD D10(e); brief item 10."
+needs = ["instance", "constraint", "summary", "purpose", "grammar-purpose"]
+answer_basis = "traced. `subject : Structure` is a subject, bound to `Asm.b`; `limit : Length` is a value. `purpose[0]`: 5 mm < 4 mm, violated. `purpose[1]`: 5 mm < 6 mm, satisfied. `limit` is defined in both, so `purpose[0]`'s argument verdict is satisfied. Counted (readings B4): violated 1."
+note = "the two member lines `purpose thin_below(...)` need grammar-purpose (readings E33). With them taken out, the source parses on main. Which parameters are subjects is PRD D10(e) as ruled (readings C18): by the declared type; `self.b` names an instance and `4mm` and `6mm` are values."
+
+[[expect]]
+path = "Asm/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/purpose[1]/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/purpose[0]/arguments"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

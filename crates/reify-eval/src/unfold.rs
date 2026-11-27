@@ -213,7 +213,9 @@ pub(crate) fn unfold_recursive_sub<'t>(
     // ONE `@optimized`-name index for this recursion LEVEL's two phase calls.
     // It is not threaded across levels: `unfold_recursive_sub` is `pub(crate)`
     // and called from `engine_eval.rs`, so adding a parameter to the recursive
-    // entry point needs the hoist tracked by #7267.
+    // entry point needs a hoist into that caller (recorded in #7267), which is
+    // not being done in this code: the old evaluation orchestration is being
+    // replaced (docs/notes/old-evaluation-core-hold.md).
     let optimized_names = OptimizedNameIndex::new(functions);
 
     // Phase 1 (top-down): Set params for next_entity so the next recursion level

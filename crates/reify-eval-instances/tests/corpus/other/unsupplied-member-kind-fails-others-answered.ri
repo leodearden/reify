@@ -1,0 +1,7 @@
+structure def Block {
+    param w : Length = 10mm
+    let body = box(w, w, w)
+    let half = w / 2
+    constraint w > 5mm
+    constraint volume(body) > 1mm^3
+}

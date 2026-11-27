@@ -1,0 +1,18 @@
+tests = "an instance read as a value, when one of its parameters is of undetermined presence, is still a value: it carries that parameter as undefined, and nothing that reads it fails."
+rule = "readings E31; Part 7.1 (\"The value still exists\"); ruling 5 of `seat-context.md` (reading something that is not there gives undefined); readings E28 and B4."
+provenance = "tracer report `critics/trace-presence-and-values.md`, counter-example N1 and its gap G9; readings E31, which answers it."
+needs = ["instance", "guard", "value", "summary"]
+answer_basis = "traced. `c` is given `u = undef`, so its guard `u` is undefined and `Top.c.rpm` is `presence-undetermined` (readings E28). `w` is present, 2 mm. `Top.e` reads `c` as a value: it carries `u` as undefined (its value is undefined), `w` as 2 mm and `rpm`, whose presence is undetermined, as undefined (readings E31). It is a value, not `failure blocked`. Summary (readings B4): one undetermined for `rpm`'s presence; `c`'s `/arguments` is satisfied, because the explicit `undef` does not make it undetermined (readings B5); nothing failed. A reading under which the value were blocked by `rpm` would give `failed 1` or more."
+note = "`undef` in the expected value marks a field whose value is undefined; it is the Reify literal for an undefined value. If the runner's comparison of values cannot express a field that is undefined, the lead should say how such a field is written; the summary row alone still tells this reading from the blocked one."
+
+[[expect]]
+path = "Top.c.rpm"
+presence = "undetermined"
+
+[[expect]]
+path = "Top.e"
+value = "Case{u: undef, w: 2 mm, rpm: undef}"
+
+[[expect]]
+path = "Top/summary"
+summary = { violated = 0, undetermined = 1, failed = 0 }

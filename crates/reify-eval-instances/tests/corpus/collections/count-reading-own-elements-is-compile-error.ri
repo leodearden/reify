@@ -1,0 +1,6 @@
+structure def Bolt { param rated_load : Force = 10kN }
+structure def Rack {
+    param load : Force = 35kN
+    sub bolts : List<Bolt>
+    constraint bolts.count == ceil(load / bolts[0].rated_load)
+}

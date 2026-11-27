@@ -1,0 +1,10 @@
+structure def Plate {
+    param t : Real = 1.0
+}
+structure def Asm {
+    let x = y * 2.0
+    let y = x * 2.0
+    sub p : Plate {
+        t = x
+    }
+}

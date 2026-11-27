@@ -84,7 +84,8 @@ pub fn make_param(name: &str, span: SourceSpan) -> MemberDecl {
 /// Build a `MemberDecl::Port` with the given `name` and `span`.
 ///
 /// `direction` is `None`; `type_name` is `"SomePort"`; `members` and
-/// `frame_expr` are empty/`None`; `content_hash` is [`dummy_hash()`].
+/// `frame_expr` and `where_clause` are empty/`None`; `content_hash` is
+/// [`dummy_hash()`].
 pub fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
     MemberDecl::Port(PortDecl {
         name: name.to_string(),
@@ -93,6 +94,7 @@ pub fn make_port(name: &str, span: SourceSpan) -> MemberDecl {
         is_priv: false,
         members: Vec::new(),
         frame_expr: None,
+        where_clause: None,
         span,
         content_hash: dummy_hash(),
     })
@@ -112,6 +114,7 @@ pub fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
         where_clause: None,
         body: None,
         spec_param_overrides: Vec::new(),
+        spec_param_override_guards: Vec::new(),
         keyed_members: Vec::new(),
         is_aux: false,
         is_priv: false,
@@ -139,6 +142,7 @@ pub fn make_sub_with_body(name: &str, span: SourceSpan, body: Vec<MemberDecl>) -
         where_clause: None,
         body: Some(body),
         spec_param_overrides: Vec::new(),
+        spec_param_override_guards: Vec::new(),
         keyed_members: Vec::new(),
         is_aux: false,
         is_priv: false,

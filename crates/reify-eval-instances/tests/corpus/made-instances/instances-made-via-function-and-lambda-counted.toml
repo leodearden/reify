@@ -1,0 +1,18 @@
+tests = "instances made inside a user function, and inside a lambda applied by a built-in, are counted by the summary of the instance whose cell called them; making a lambda makes nothing."
+rule = "rule B (a unit of source may make instances if it holds \"a call to a user function, a subexpression of function type\"); decision 7."
+provenance = "logic-1 L13 (taken: \"a call to any user function\"); logic-2 N1(b) (taken: \"a subexpression of function type\"). language-1 L15."
+needs = ["instance", "value", "made", "open", "summary"]
+answer_basis = "traced. `d`'s unit calls `mk`: one `Plate` at 1 mm, violated. `ps`'s unit holds `f`, of function type: `generate` applies it for `i` 0 and 1, making `Plate`s at 0 mm and 1 mm, both violated. `f`'s own cell only makes a lambda. `Asm`'s summary reads `d`'s and `ps`'s lists."
+today = "run `made.ri`: `Asm.d = Plate { t: 0.001 m }`, `Asm.ps = [Plate { t: 0 m }, Plate { t: 0.001 m }]`; `check` reports one indeterminate verdict, `Plate#constraint[0]` at the definition's own missing default, and none of these three."
+
+[[expect]]
+path = "Asm.d/open.t"
+value = "1 mm"
+
+[[expect]]
+path = "Asm.f/made[0]"
+presence = "absent"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 3, undetermined = 0, failed = 0 }

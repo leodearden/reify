@@ -11,45 +11,177 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
-    Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Event, Failure, Held, Input,
-    InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request,
-    RequestId, Root, Section, Snapshot, Step, Turn, Value,
+    Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, Description, DuplicateKind,
+    Erased, Event, Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Link, Outcome,
+    OutsideFailure, Path, Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot,
+    Space, Step, StepKey, Turn, Value, Wanted,
 };
+
+/// The content a test gives the core for one of its values: a hash of
+/// everything a reader can see of it (O7). The core tags it with the
+/// value's type, so two types may hash the same bytes.
+pub trait Contented {
+    fn content(&self) -> Hash128;
+}
+
+impl Contented for i64 {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(&self.to_le_bytes())
+    }
+}
+
+impl Contented for bool {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(&[u8::from(*self)])
+    }
+}
+
+impl Contented for u64 {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(&self.to_le_bytes())
+    }
+}
+
+impl Contented for String {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(self.as_bytes())
+    }
+}
+
+impl Contented for Declaration {
+    fn content(&self) -> Hash128 {
+        Declaration::content(self)
+    }
+}
+
+/// A test's own encoding of a step: its space, then a tag and the name,
+/// the index or the chain's links.
+pub fn step_bytes(step: &Step) -> Vec<u8> {
+    let space = match step.space() {
+        Space::Default => b"d".to_vec(),
+        Space::Named(name) => [b"s", &name.len().to_le_bytes()[..], name.as_bytes()].concat(),
+    };
+    let key = match step.key() {
+        StepKey::Name(name) => [b"n", &name.len().to_le_bytes()[..], name.as_bytes()].concat(),
+        StepKey::Index(index) => [b"i", &index.to_le_bytes()[..]].concat(),
+        StepKey::Chain(links) => {
+            let mut bytes = [&b"c"[..], &links.len().to_le_bytes()].concat();
+            for link in links.iter() {
+                let (tag, number) = match link {
+                    Link::Site(site) => (b's', site),
+                    Link::Iteration(index) => (b't', index),
+                };
+                bytes.push(tag);
+                bytes.extend_from_slice(&number.to_le_bytes());
+            }
+            bytes
+        }
+    };
+    [space, key].concat()
+}
+
+impl Contented for Members {
+    fn content(&self) -> Hash128 {
+        let bytes: Vec<u8> = self
+            .0
+            .iter()
+            .flat_map(|(step, declaration)| {
+                [
+                    step_bytes(step),
+                    declaration.content().as_u128().to_le_bytes().to_vec(),
+                ]
+                .concat()
+            })
+            .collect();
+        Hash128::of_bytes(&bytes)
+    }
+}
+
+impl Contented for Elements {
+    fn content(&self) -> Hash128 {
+        let count = self.count.to_le_bytes();
+        let element = self.element.content().as_u128().to_le_bytes();
+        Hash128::of_bytes(&[&count[..], &element[..]].concat())
+    }
+}
+
+/// `value` as a snapshot input, with its content.
+pub fn input_of<T: Value + Contented>(value: T) -> Input {
+    let content = value.content();
+    Input::of(value, content)
+}
 
 /// Adds the i64s bound at "0", "1", … until a binding reads absent. Then,
 /// if "pick" reads an i64 i, adds the i64 at "from"/[i], a ref computed
-/// from an answer; absent there, or at a negative i, the cell is absent. A
-/// read that fails ends the body with that failure as its outcome.
+/// from an answer; absent there, or at a negative i, the cell is absent.
+/// Then, if "divisor" reads an i64, divides the sum by it, truncating; zero
+/// is the cell's own failure, `DIVISION_BY_ZERO`. A read that fails ends
+/// the body: a wrong type is its answer, whether its own read found the
+/// wrong type or what it read had (a body cannot tell the two apart), and
+/// any other failure makes it blocked by the ref it read.
 pub struct Cell;
+
+/// What a cell's read of an i64 at `r` gives it: the value, or none where
+/// it reads absent; a failure is the cell's answer.
+async fn read_term(cx: &Cx, r: &Ref) -> Result<Option<i64>, Failure> {
+    match cx.read::<i64>(r).await {
+        Outcome::Value(value) => Ok(Some(*value)),
+        Outcome::Absent => Ok(None),
+        Outcome::Failure(wrong @ Failure::WrongType { .. }) => Err(wrong),
+        Outcome::Failure(_) => Err(Failure::BlockedBy { at: r.clone() }),
+    }
+}
+
+/// The i64s bound at "0", "1", … until a binding reads absent; a failure
+/// is the reader's answer, as `read_term` gives it.
+async fn terms(cx: &Cx) -> Result<Vec<i64>, Failure> {
+    let mut terms = Vec::new();
+    for index in 0_u32.. {
+        match read_term(cx, &Ref::binding(index.to_string())).await? {
+            Some(value) => terms.push(value),
+            None => break,
+        }
+    }
+    Ok(terms)
+}
+
+/// A cell's sum, with the picked element; none where the cell is absent.
+async fn sum(cx: &Cx) -> Result<Option<i64>, Failure> {
+    let sum: i64 = terms(cx).await?.into_iter().sum();
+    let Some(pick) = read_term(cx, &Ref::binding("pick")).await? else {
+        return Ok(Some(sum));
+    };
+    let Ok(pick) = u64::try_from(pick) else {
+        return Ok(None);
+    };
+    let from = Ref::binding("from").step(Step::index(pick));
+    Ok(read_term(cx, &from).await?.map(|value| sum + value))
+}
 
 impl Kind for Cell {
     type Out = i64;
     const ID: KindId = KindId("toy.cell");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
-        let mut sum = 0;
-        for index in 0_u32.. {
-            match cx.read::<i64>(&Ref::binding(index.to_string())).await {
-                Outcome::Value(value) => sum += *value,
-                Outcome::Absent => break,
-                Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
-            }
-        }
-        let pick = match cx.read::<i64>(&Ref::binding("pick")).await {
-            Outcome::Value(pick) => u64::try_from(*pick).ok(),
-            Outcome::Absent => return Produced::Outcome(Outcome::of(sum)),
-            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+        let sum = match sum(cx).await {
+            Ok(Some(sum)) => sum,
+            Ok(None) => return Produced::Outcome(Outcome::Absent),
+            Err(failure) => return Produced::Outcome(Outcome::Failure(failure)),
         };
-        let Some(pick) = pick else {
-            return Produced::Outcome(Outcome::Absent);
-        };
-        match cx
-            .read::<i64>(&Ref::binding("from").step(Step::index(pick)))
-            .await
-        {
-            Outcome::Value(value) => Produced::Outcome(Outcome::of(sum + *value)),
-            other => Produced::Outcome(other),
-        }
+        Produced::Outcome(match read_term(cx, &Ref::binding("divisor")).await {
+            Ok(None) => Outcome::of(sum),
+            Ok(Some(0)) => Outcome::Failure(Failure::OfKind {
+                kind: Self::ID,
+                code: DIVISION_BY_ZERO,
+            }),
+            Ok(Some(divisor)) => Outcome::of(sum / divisor),
+            Err(failure) => Outcome::Failure(failure),
+        })
+    }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(out.content())
     }
 }
 
@@ -59,9 +191,10 @@ pub struct Pair;
 impl Kind for Pair {
     type Out = i64;
     const ID: KindId = KindId("toy.pair");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
-        let refs = [Ref::binding("0"), Ref::binding("1")];
+        let refs = [Ref::binding("0"), Ref::binding("1")].map(Wanted::from);
         let mut sum = 0;
         for read in cx.read_all::<i64>(&refs).await {
             match read {
@@ -70,6 +203,10 @@ impl Kind for Pair {
             }
         }
         Produced::Outcome(Outcome::of(sum))
+    }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(out.content())
     }
 }
 
@@ -83,9 +220,188 @@ pub fn cell_over(terms: impl IntoIterator<Item = Binding>) -> Declaration {
         })
 }
 
+/// The space the steps of a call's children are in.
+pub const CALL_SPACE: Space = Space::Named("toy.call");
+
+/// The code of a call's failure when a child it declared failed: it is
+/// blocked by its child, whose step its description holds.
+pub const CHILD_FAILED: &str = "blocked by its child";
+
+/// One site of a call: where it declares children, and what each is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallSite {
+    /// The call sites from the call's own expression to this one.
+    pub sites: Vec<u64>,
+    /// Whether the site declares a child per term, at the term's index,
+    /// or one child.
+    pub each: bool,
+    /// What the site's one child is given beside the call's sum.
+    pub offset: i64,
+    /// The callee's binding the argument is bound at.
+    pub argument: String,
+    pub callee: Declaration,
+}
+
+/// A call's sites, in the order it declares their children.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Calls(pub Vec<CallSite>);
+
+impl Contented for Calls {
+    fn content(&self) -> Hash128 {
+        let mut bytes = self.0.len().to_le_bytes().to_vec();
+        for site in &self.0 {
+            bytes.extend_from_slice(&site.sites.len().to_le_bytes());
+            for number in &site.sites {
+                bytes.extend_from_slice(&number.to_le_bytes());
+            }
+            bytes.push(u8::from(site.each));
+            bytes.extend_from_slice(&site.offset.to_le_bytes());
+            bytes.extend_from_slice(&site.argument.len().to_le_bytes());
+            bytes.extend_from_slice(site.argument.as_bytes());
+            bytes.extend_from_slice(&site.callee.content().as_u128().to_le_bytes());
+        }
+        Hash128::of_bytes(&bytes)
+    }
+}
+
+impl CallSite {
+    /// The step and the argument of each child the site declares, for a
+    /// call whose terms are `terms` and whose sum is `sum`.
+    fn children(&self, terms: &[i64], sum: i64) -> Vec<(Step, i64)> {
+        let sites = self.sites.iter().copied().map(Link::Site);
+        if !self.each {
+            return vec![(Step::chain(CALL_SPACE, sites), sum + self.offset)];
+        }
+        (0_u64..)
+            .zip(terms)
+            .map(|(index, term)| {
+                let links = sites.clone().chain([Link::Iteration(index)]);
+                (Step::chain(CALL_SPACE, links), *term)
+            })
+            .collect()
+    }
+
+    /// The declaration of a child given `argument`: the callee, with the
+    /// argument bound as a constant.
+    fn child(&self, argument: i64) -> Declaration {
+        let constant = Binding::Constant(input_of(argument));
+        self.callee.clone().bind(self.argument.as_str(), constant)
+    }
+}
+
+/// Reads its terms "0", "1", … as i64 until one reads absent, with the
+/// cell's rule for a read that fails. Then "when", if bound: false declares
+/// nothing and answers the sum; absent counts as true; any other outcome
+/// is its answer. Then "calls": absent declares nothing and answers the
+/// sum; any other outcome but `Calls` is its answer. Then, for each site
+/// in order, it declares the site's children with `cx.child`, one request
+/// at a time: with `each` false one child at the chain of the site's
+/// numbers as `Link::Site`, given the sum plus `offset`; with `each` true
+/// one child per term i at that chain then `Link::Iteration(i)`, given
+/// term i. A child is the callee with `argument` bound to what it is given,
+/// as a constant. It answers the sum plus each child's i64: a child that
+/// answers absent adds nothing, a child's wrong type is its answer, and any
+/// other failure of a child makes it blocked by that child
+/// (`blocked_by_child`).
+pub struct Call;
+
+impl Kind for Call {
+    type Out = i64;
+    const ID: KindId = KindId("toy.call");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        Produced::Outcome(match called(cx).await {
+            Ok(total) => Outcome::of(total),
+            Err(failure) => Outcome::Failure(failure),
+        })
+    }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(out.content())
+    }
+}
+
+/// A call's sum with what its children add, or its failure.
+async fn called(cx: &Cx) -> Result<i64, Failure> {
+    let terms = terms(cx).await?;
+    let sum: i64 = terms.iter().sum();
+    match cx.read::<bool>(&Ref::binding("when")).await {
+        Outcome::Value(holds) if !*holds => return Ok(sum),
+        Outcome::Value(_) | Outcome::Absent => {}
+        Outcome::Failure(failure) => return Err(failure),
+    }
+    let calls = match cx.read::<Calls>(&Ref::binding("calls")).await {
+        Outcome::Value(calls) => calls,
+        Outcome::Absent => return Ok(sum),
+        Outcome::Failure(failure) => return Err(failure),
+    };
+    let mut total = sum;
+    for site in &calls.0 {
+        for (step, argument) in site.children(&terms, sum) {
+            match cx.child::<i64>(step.clone(), site.child(argument)).await {
+                Outcome::Value(value) => total += *value,
+                Outcome::Absent => {}
+                Outcome::Failure(wrong @ Failure::WrongType { .. }) => return Err(wrong),
+                Outcome::Failure(_) => return Err(blocked_by_child(step)),
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// A call's failure when its child at `step` failed.
+pub fn blocked_by_child(step: Step) -> Failure {
+    let content = Hash128::of_bytes(&step_bytes(&step));
+    Failure::Described {
+        kind: Call::ID,
+        code: CHILD_FAILED,
+        description: Description::of(step, content),
+    }
+}
+
+/// A call adding what `terms` name, bound at "0", "1", … in order, whose
+/// sites are what `calls` names.
+pub fn call(terms: impl IntoIterator<Item = Binding>, calls: Binding) -> Declaration {
+    let call = Declaration::new(Call::ID).bind("calls", calls);
+    terms
+        .into_iter()
+        .enumerate()
+        .fold(call, |call, (index, term)| {
+            call.bind(index.to_string(), term)
+        })
+}
+
+/// A call site at the chain `sites` declaring `callee`, its argument bound
+/// at "0".
+pub fn site(sites: &[u64], each: bool, offset: i64, callee: Declaration) -> CallSite {
+    CallSite {
+        sites: sites.to_vec(),
+        each,
+        offset,
+        argument: String::from("0"),
+        callee,
+    }
+}
+
+/// The step of a call's child: the chain of `sites`, then the iteration
+/// index `each` if the site loops.
+pub fn call_step(sites: &[u64], each: Option<u64>) -> Step {
+    let sites = sites.iter().copied().map(Link::Site);
+    Step::chain(CALL_SPACE, sites.chain(each.map(Link::Iteration)))
+}
+
 /// A cell over the host-named inputs `names`, bound at "0", "1", … in order.
 pub fn cell(names: &[&str]) -> Declaration {
     cell_over(names.iter().map(|name| input(name)))
+}
+
+/// The code of the toy cell's failure when its divisor is zero.
+pub const DIVISION_BY_ZERO: &str = "division by zero";
+
+/// `cell`, its sum divided by what `divisor` names.
+pub fn divided(cell: Declaration, divisor: Binding) -> Declaration {
+    cell.bind("divisor", divisor)
 }
 
 /// A binding to the host-named input `name`.
@@ -113,7 +429,7 @@ pub fn with_cell() -> Builder {
 }
 
 /// What a scope declares: a declaration at each step.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Members(pub BTreeMap<Step, Declaration>);
 
 /// Members, each at a named step.
@@ -126,46 +442,41 @@ pub fn members<'a>(named: impl IntoIterator<Item = (&'a str, Declaration)>) -> M
     )
 }
 
-/// The members at binding "members", with those at binding "extra" added;
-/// with no extra members, what "members" read, not a copy.
+/// The members at binding "members".
 async fn read_members(cx: &Cx) -> Outcome<Members> {
-    let refs = [Ref::binding("members"), Ref::binding("extra")];
-    let [members, extra] = <[_; 2]>::try_from(cx.read_all::<Members>(&refs).await)
-        .expect("a read gives an outcome per ref");
-    match (members, extra) {
-        (Outcome::Value(members), Outcome::Value(extra)) => {
-            let mut all = (*members).clone();
-            all.0.extend(extra.0.clone());
-            Outcome::of(all)
-        }
-        (Outcome::Value(members), Outcome::Absent) => Outcome::Value(members),
-        (Outcome::Value(_), failed) | (failed, _) => failed,
-    }
+    cx.read::<Members>(&Ref::binding("members")).await
 }
 
-/// Declares the members it reads at binding "members", and those of the
-/// input "extra" attached to its own path; its value is those members.
+/// Declares the members it reads at binding "members", and nothing else
+/// (PRD 5.4); its value is those members.
 pub struct Scope;
 
 impl Kind for Scope {
     type Out = Members;
     const ID: KindId = KindId("toy.scope");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Members> {
         Produced::Outcome(read_members(cx).await)
     }
 
+    fn content(out: &Members) -> Option<Hash128> {
+        Some(out.content())
+    }
+
     fn declares(out: &Members, step: &Step) -> Option<Declaration> {
         out.0.get(step).cloned()
     }
+
+    fn steps(out: &Members) -> impl Iterator<Item = Step> {
+        out.0.keys().cloned()
+    }
 }
 
-/// A scope whose members are the host-named input `members`, with any
-/// members in the input "extra" attached to its path.
+/// A scope whose members are the host-named input `members`, and nothing
+/// else.
 pub fn scope(members: &str) -> Declaration {
-    Declaration::new(Scope::ID)
-        .bind("members", input(members))
-        .bind("extra", Binding::Attached("extra".into()))
+    Declaration::new(Scope::ID).bind("members", input(members))
 }
 
 /// Reads the bool at "condition" first: false makes it absent, true makes
@@ -175,6 +486,7 @@ pub struct Guard;
 impl Kind for Guard {
     type Out = Members;
     const ID: KindId = KindId("toy.guard");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Members> {
         match cx.read::<bool>(&Ref::binding("condition")).await {
@@ -185,8 +497,16 @@ impl Kind for Guard {
         }
     }
 
+    fn content(out: &Members) -> Option<Hash128> {
+        Some(out.content())
+    }
+
     fn declares(out: &Members, step: &Step) -> Option<Declaration> {
         out.0.get(step).cloned()
+    }
+
+    fn steps(out: &Members) -> impl Iterator<Item = Step> {
+        out.0.keys().cloned()
     }
 }
 
@@ -198,6 +518,7 @@ pub fn guard(condition: Binding, members: &str) -> Declaration {
 }
 
 /// How many elements a collection has, and what each is.
+#[derive(Debug, PartialEq)]
 pub struct Elements {
     pub count: u64,
     pub element: Declaration,
@@ -210,6 +531,7 @@ pub struct Collection;
 impl Kind for Collection {
     type Out = Elements;
     const ID: KindId = KindId("toy.collection");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Elements> {
         let count = match cx.read::<i64>(&Ref::binding("count")).await {
@@ -227,11 +549,21 @@ impl Kind for Collection {
         }
     }
 
+    fn content(out: &Elements) -> Option<Hash128> {
+        Some(out.content())
+    }
+
     fn declares(out: &Elements, step: &Step) -> Option<Declaration> {
-        match step {
-            Step::Index(index) if *index < out.count => Some(out.element.clone()),
+        match (step.space(), step.key()) {
+            (Space::Default, StepKey::Index(index)) if *index < out.count => {
+                Some(out.element.clone())
+            }
             _ => None,
         }
+    }
+
+    fn steps(out: &Elements) -> impl Iterator<Item = Step> {
+        (0..out.count).map(Step::index)
     }
 }
 
@@ -247,7 +579,7 @@ pub fn collection(count: Binding, element: Binding) -> Declaration {
 pub fn root_scope(name: &str, members: Members) -> [(InputKey, Input); 2] {
     let input = format!("{name}.members");
     [
-        (InputKey::named(input.as_str()), Input::of(members)),
+        (InputKey::named(input.as_str()), input_of(members)),
         root(name, scope(&input)),
     ]
 }
@@ -255,6 +587,13 @@ pub fn root_scope(name: &str, members: Members) -> [(InputKey, Input); 2] {
 pub fn with_scope() -> Builder {
     with_cell()
         .kind::<Scope>()
+        .expect("toy kind ids are distinct")
+}
+
+/// A builder with cells, scopes and calls.
+pub fn with_calls() -> Builder {
+    with_scope()
+        .kind::<Call>()
         .expect("toy kind ids are distinct")
 }
 
@@ -274,6 +613,7 @@ pub struct BoxHandle(pub u32);
 impl Release<ToyKernel> for BoxHandle {
     fn release(self, kernel: &mut ToyKernel) {
         kernel.boxes.remove(&self.0);
+        kernel.marked.remove(&self.0);
         kernel.watch.live_boxes.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -285,12 +625,21 @@ pub struct BoxShape {
     pub built_on: ThreadId,
 }
 
+/// A box is its description: the handle and the thread are where it
+/// lives (contract 5.4).
+impl PartialEq for BoxShape {
+    fn eq(&self, other: &Self) -> bool {
+        self.volume == other.volume
+    }
+}
+
 /// Makes a box on the toy kernel from the side length bound at "side".
 pub struct Shape;
 
 impl Kind for Shape {
     type Out = BoxShape;
     const ID: KindId = KindId("toy.shape");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<BoxShape> {
         let side = match cx.read::<i64>(&Ref::binding("side")).await {
@@ -314,9 +663,64 @@ pub fn shape(side: &str) -> Declaration {
     Declaration::new(Shape::ID).bind("side", Binding::Input(InputKey::named(side)))
 }
 
+/// Reads the box at "shape" and measures it in a section on the toy
+/// kernel: its volume as the kernel keeps it.
+pub struct Measure;
+
+impl Kind for Measure {
+    type Out = i64;
+    const ID: KindId = KindId("toy.measure");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let shape = match cx.read::<BoxShape>(&Ref::binding("shape")).await {
+            Outcome::Value(shape) => shape,
+            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+            Outcome::Absent => return Produced::Outcome(Outcome::Absent),
+        };
+        let volume = cx
+            .exclusive(move |kernel: &mut ToyKernel, _| kernel.measure(shape.handle.0))
+            .await;
+        Produced::Outcome(Outcome::of(volume))
+    }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(out.content())
+    }
+}
+
+/// A measure of the box `shape` names.
+pub fn measure(shape: Binding) -> Declaration {
+    Declaration::new(Measure::ID).bind("shape", shape)
+}
+
 pub fn with_toys() -> Builder {
     with_cell()
         .kind::<Shape>()
+        .and_then(|builder| builder.kind::<Measure>())
+        .expect("toy kind ids are distinct")
+}
+
+/// How a kind is registered on a builder.
+pub type Register = fn(Builder) -> Result<Builder, DuplicateKind>;
+
+/// Every PRD toy kind built so far (PRD 5.4), with its registration: the
+/// one list `with_every_kind` registers and the two-places table must
+/// cover. A kind added here needs a two-places entry.
+pub const TOY_KINDS: [(KindId, Register); 7] = [
+    (Cell::ID, Builder::kind::<Cell>),
+    (Scope::ID, Builder::kind::<Scope>),
+    (Guard::ID, Builder::kind::<Guard>),
+    (Collection::ID, Builder::kind::<Collection>),
+    (Shape::ID, Builder::kind::<Shape>),
+    (Measure::ID, Builder::kind::<Measure>),
+    (Call::ID, Builder::kind::<Call>),
+];
+
+pub fn with_every_kind() -> Builder {
+    TOY_KINDS
+        .iter()
+        .try_fold(Builder::new(), |builder, (_, register)| register(builder))
         .expect("toy kind ids are distinct")
 }
 
@@ -438,7 +842,9 @@ impl GateKeeper {
 }
 
 pub struct ToyKernel {
-    boxes: BTreeSet<u32>,
+    /// The volume of each live box, by handle.
+    boxes: BTreeMap<u32, i64>,
+    marked: BTreeSet<u32>,
     made: u32,
     watch: Watch,
     gate: Option<Gate>,
@@ -465,7 +871,7 @@ impl ToyKernel {
             self.watch.saw_cancelled.store(true, Ordering::SeqCst);
         }
         self.made += 1;
-        self.boxes.insert(self.made);
+        self.boxes.insert(self.made, side * side * side);
         self.watch.live_boxes.fetch_add(1, Ordering::SeqCst);
         self.watch
             .sides_in_order
@@ -474,13 +880,27 @@ impl ToyKernel {
             .push(side);
         (section.hold(BoxHandle(self.made)), thread::current().id())
     }
+
+    /// The volume of the live box `handle`.
+    pub fn measure(&self, handle: u32) -> i64 {
+        *self.boxes.get(&handle).expect("a held box is live")
+    }
+
+    pub fn mark(&mut self, handle: u32) {
+        self.marked.insert(handle);
+    }
+
+    pub fn is_marked(&self, handle: u32) -> bool {
+        self.marked.contains(&handle)
+    }
 }
 
 fn with_kernel(builder: Builder, watch: &Watch, gate: Option<Gate>) -> Core {
     let mut core = builder.build();
     let watch = watch.clone();
     core.add_resource(move || ToyKernel {
-        boxes: BTreeSet::new(),
+        boxes: BTreeMap::new(),
+        marked: BTreeSet::new(),
         made: 0,
         watch,
         gate,
@@ -529,13 +949,18 @@ pub fn core() -> Core {
 }
 
 /// The input that declares root `name`.
-pub fn root<T: Value>(name: &str, declaration: T) -> (InputKey, Input) {
-    (InputKey::root(name), Input::of(declaration))
+pub fn root<T: Value + Contented>(name: &str, declaration: T) -> (InputKey, Input) {
+    (InputKey::root(name), input_of(declaration))
 }
 
 /// The host-named input `name`.
-pub fn named<T: Value>(name: &str, value: T) -> (InputKey, Input) {
-    (InputKey::named(name), Input::of(value))
+pub fn named<T: Value + Contented>(name: &str, value: T) -> (InputKey, Input) {
+    (InputKey::named(name), input_of(value))
+}
+
+/// The snapshot's setting of `limit` (contract 7.6).
+pub fn limit(limit: Limit, value: u64) -> (InputKey, Input) {
+    (InputKey::Limit(limit), input_of(value))
 }
 
 /// The path of root `name`.
@@ -567,7 +992,18 @@ pub fn evaluate_to_idle(
     snapshot: &Snapshot,
     paths: &[&Path],
 ) -> (Request, Vec<Event>) {
-    let request = core.evaluate(snapshot, demand(paths.iter().copied()));
+    evaluate_within(core, snapshot, paths, Budget::unlimited())
+}
+
+/// A fresh request for `paths` on `snapshot` under `budget`, run to idle,
+/// and the events of that turn.
+pub fn evaluate_within(
+    core: &mut Core,
+    snapshot: &Snapshot,
+    paths: &[&Path],
+    budget: Budget,
+) -> (Request, Vec<Event>) {
+    let request = core.evaluate(snapshot, demand(paths.iter().copied()), budget);
     assert_eq!(core.turn(), Turn::Idle);
     (request, core.take_events())
 }

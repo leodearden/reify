@@ -1,0 +1,16 @@
+tests = "two collections whose counts each read the other's element compile and are reported by the core as a cycle."
+rule = "Part 5 (\"A count may read anything except its own elements\"; only the direct case is a compile error); decision 10; decisions A (a count constraint is the source of the count cell `/count`) and B2."
+provenance = "logic-1 L19 (taken in Part 4's wording for guards; Part 5 states only the direct case)."
+needs = ["compile-error", "instance", "collection"]
+answer_basis = "traced. `xs`'s count cell reads `ys[0]`, which needs `ys`'s count cell, which reads `xs[0]`, which needs `xs`'s count cell. Neither count reads its own elements, so the compile rule (leaf ι) does not fire. The failure is at the count cells (decisions B2). Both constraints are count constraints, so neither has a `constraint[k]` path. The core's cycle detection (core task 10558) is a prerequisite of leaf ε₁, so it is built before this entry runs."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm/count[xs]"
+failure = "cycle"
+
+[[expect]]
+path = "Asm/count[ys]"
+failure = "cycle"

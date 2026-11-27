@@ -1,0 +1,8 @@
+tests = "a definition named only as a parameter's type, or only as a type argument in a member's type, is used and is not a root."
+rule = "rule D (first bullet: \"as the type of a member\" and \"as a type argument\"); decisions D24."
+provenance = "logic-2 N17(d) (under draft 2 the data definition became the only root; moot cause removed: draft 5 has no default-parameter bullet); logic-3 R13 (`M6` in `Joint<M6>` became a root; taken: type arguments count). design rule D; logic-3 R13. logic-3 R13 (M6 in Joint<M6>)."
+needs = ["roots"]
+answer_basis = "traced. `Beam` names `Stock` as `mat`'s type and `M6` as a type argument in `fasteners`' type, so both are used. `Beam` is used by nothing: the only root."
+
+[[expect]]
+roots = ["Beam"]

@@ -1,0 +1,11 @@
+structure def Vent {
+    param area : Length = auto
+    param gap : Length = auto
+    constraint gap == area / 2
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "a" => { area = 6mm }
+        "b" => { gap = 2mm }
+    }
+}

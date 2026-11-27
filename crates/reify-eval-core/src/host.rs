@@ -1,6 +1,7 @@
 //! The core as a host drives it: snapshots in, requests opened and ended,
 //! events out. One thread drives it at a time, through `&mut self`.
 
+use crate::budget::Budget;
 use crate::counters::Counters;
 use crate::demand::Demand;
 use crate::event::Event;
@@ -8,6 +9,7 @@ use crate::executor::{Executor, Turn};
 use crate::input::{Input, InputKey};
 use crate::requests::Request;
 use crate::snapshot::Snapshot;
+use crate::store::{Store, StoredResult};
 
 pub struct Core {
     executor: Executor,
@@ -23,13 +25,18 @@ impl Core {
     }
 
     /// Opens a request on `snapshot` for the answers at the paths `demand`
-    /// names.
+    /// names, which may spend `budget` (contract 7.6). Each path the core
+    /// resolves is charged to every live request whose demand needs it. A
+    /// request that needs more paths than its budget allows is ended, told
+    /// as one `Event::Ended` with `RequestError::PathsBudgetExhausted`, and
+    /// the work no other live request waits on is dropped.
     ///
     /// # Panics
     ///
-    /// If another core made `snapshot`.
-    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand) -> Request {
-        self.executor.evaluate(snapshot, demand)
+    /// If another core made `snapshot`, or if a limit setting of `snapshot`
+    /// is not a u64.
+    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand, budget: Budget) -> Request {
+        self.executor.evaluate(snapshot, demand, budget)
     }
 
     /// Ends `request`, dropping every node in progress that no live request
@@ -51,8 +58,9 @@ impl Core {
     }
 
     /// Runs every body that is ready until none is. Never blocks. If then no
-    /// section is running either, each live request that still wants a path
-    /// is ended with `RequestError::NothingCanRun`.
+    /// section is running either, every ring of waits is answered "cycle"
+    /// (contract 7.7) and what that makes ready is run, until no body is
+    /// ready and no ring is left.
     pub fn turn(&mut self) -> Turn {
         self.executor.turn()
     }
@@ -86,5 +94,20 @@ impl Core {
 
     pub fn counters(&self) -> &Counters {
         self.executor.counters()
+    }
+
+    /// The core's results, as a store another core can be built on
+    /// (`Builder::on_store`); the core is gone. A result that holds a thing
+    /// inside a resource stays good only beside this core's resource, which
+    /// goes with it.
+    pub fn into_store(self) -> Store {
+        self.executor.into_store()
+    }
+
+    /// A new store holding each result `keep` accepts, with what leads to
+    /// it, sharing those results with this core, which is left as it was.
+    /// `keep` sees every stored result once.
+    pub fn selected_store(&self, keep: impl FnMut(&StoredResult) -> bool) -> Store {
+        self.executor.selected_store(keep)
     }
 }

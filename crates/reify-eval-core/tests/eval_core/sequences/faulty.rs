@@ -3,13 +3,14 @@
 //! the shrinker can remove nothing more, and printed as a test whose text
 //! is the committed printed_faulty_cell.rs.
 
-use reify_eval_core::{Builder, Core, Cx, Hash128, Kind, KindId, Outcome, Produced};
+use reify_eval_core::{Builder, Core, Cx, Hash128, Kind, KindId, Outcome, Produced, Store};
 
 use super::case::Case;
 use super::generator::{Features, GATE_EVENTS, GATE_SEEDS, generate};
+use super::mismatch::MismatchKind;
 use super::print::{Expectation, print_test};
 use super::reduce::{candidates, size};
-use super::session::{MismatchKind, check, toy_core};
+use super::session::{check, toy_core};
 use super::shrink::shrink;
 use crate::toy;
 
@@ -20,6 +21,7 @@ struct FaultyCell;
 impl Kind for FaultyCell {
     type Out = i64;
     const ID: KindId = toy::Cell::ID;
+    const VERSION: u32 = toy::Cell::VERSION;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         match <toy::Cell as Kind>::run(cx).await {
@@ -39,13 +41,14 @@ fn hashes_to_a_tenth(value: i64) -> bool {
 
 /// A core with the faulty cell in the toy cell's place: the only builder
 /// that registers it, so no other test sees it.
-fn faulty_core() -> Core {
+fn faulty_core(store: Store) -> Core {
     Builder::new()
         .kind::<FaultyCell>()
         .and_then(|builder| builder.kind::<toy::Scope>())
         .and_then(|builder| builder.kind::<toy::Guard>())
         .and_then(|builder| builder.kind::<toy::Collection>())
         .expect("the kind ids are distinct")
+        .on_store(store)
         .build()
 }
 

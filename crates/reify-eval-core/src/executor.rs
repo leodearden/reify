@@ -1,6 +1,9 @@
 //! The executor: works out the paths a request demands and runs every body
 //! that is ready, on the thread that calls it. What one answer sets off is
-//! worked through a queue, never by recursion.
+//! worked through a queue, never by recursion. At rest, with no body ready
+//! and no section running, every node in progress awaits another, so a
+//! request still waiting waits on a ring; each ring is broken by the rule of
+//! `cycle` (contract 7.7), and the work goes on.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem;
@@ -9,9 +12,13 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::answer::Answer;
+use crate::budget::Budget;
+use crate::content::Content;
 use crate::core_id::CoreId;
 use crate::counters::Counters;
+use crate::cycle;
 use crate::declaration::Declaration;
+use crate::declared_children::Conflict;
 use crate::demand::Demand;
 use crate::event::{Event, RequestError, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
@@ -19,7 +26,10 @@ use crate::finish;
 use crate::index::{self, Entry, Indexes, NodeKey};
 use crate::input::{Input, InputKey};
 use crate::job::Report;
+use crate::key::Key;
 use crate::kinds::Kinds;
+use crate::limit_check;
+use crate::lookup::Lookup;
 use crate::mailbox::{Ask, Posted};
 use crate::outcome::{Erased, Outcome};
 use crate::path::Path;
@@ -32,7 +42,8 @@ use crate::resolve::declaration_of;
 use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
-use crate::snapshot::{Snapshot, SnapshotId};
+use crate::snapshot::{Snapshot, SnapshotId, SnapshotTokens};
+use crate::store::{Store, Stored, StoredResult};
 use crate::task::Task;
 use crate::waits::Waits;
 
@@ -56,13 +67,17 @@ pub(crate) struct Executor {
     core: CoreId,
     kinds: Kinds,
     paths: PathTable,
+    snapshots: Arc<SnapshotTokens>,
     indexes: Indexes,
+    store: Store,
+    /// The nodes following the store for a result filed for them.
+    lookups: BTreeMap<NodeKey, Lookup>,
     tasks: BTreeMap<NodeKey, Task>,
     /// The paths waiting on their parent's answer.
     resolving: BTreeSet<NodeKey>,
     waits: Waits,
-    /// The read each body waiting on its reads has outstanding, kept until
-    /// every node it awaits is answered and dropped with its body.
+    /// The read each body or lookup waiting on its reads has outstanding,
+    /// kept until every node it awaits is answered and dropped with it.
     readings: BTreeMap<NodeKey, Reading>,
     ready: ReadyQueue<NodeKey>,
     requests: Requests,
@@ -73,13 +88,16 @@ pub(crate) struct Executor {
 }
 
 impl Executor {
-    pub fn new(kinds: Kinds) -> Self {
+    pub fn new(kinds: Kinds, store: Store) -> Self {
         let core = CoreId::fresh();
         Self {
             core,
             kinds,
             paths: PathTable::default(),
+            snapshots: Arc::default(),
             indexes: Indexes::default(),
+            store,
+            lookups: BTreeMap::new(),
             tasks: BTreeMap::new(),
             resolving: BTreeSet::new(),
             waits: Waits::default(),
@@ -98,14 +116,14 @@ impl Executor {
     }
 
     pub fn snapshot(&mut self, inputs: impl IntoIterator<Item = (InputKey, Input)>) -> Snapshot {
-        Snapshot::new(self.core, inputs)
+        Snapshot::new(self.core, &self.snapshots, inputs)
     }
 
-    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand) -> Request {
+    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand, budget: Budget) -> Request {
         self.core.refuse_foreign(snapshot.id().core, "a snapshot");
         self.prune();
         self.indexes.open(snapshot);
-        let request = self.requests.open(snapshot.id());
+        let request = self.requests.open(snapshot.id(), budget);
         for path in demand.into_paths() {
             self.demand(request.id(), snapshot.id(), &path);
         }
@@ -128,25 +146,30 @@ impl Executor {
     }
 
     /// Takes in what resource threads have reported, without blocking, then
-    /// runs every ready body until none is ready, then ends the requests
-    /// nothing can now serve. A finished section is delivered only by `wait`
-    /// or `drain`, so what a turn does to bodies depends on the order of the
-    /// host's calls alone.
+    /// runs every ready body until none is ready. If then no section is
+    /// running, breaks the rings of waits and runs what that makes ready,
+    /// until no ring is left. A finished section is delivered only by
+    /// `wait` or `drain`, so what a turn does to bodies depends on the order
+    /// of the host's calls alone.
     pub fn turn(&mut self) -> Turn {
         self.prune();
         while let Some(report) = self.resources.try_receive() {
             self.take_in(report);
         }
-        while let Some(key) = self.ready.pop() {
-            self.advance(key);
-        }
-        match self.in_flight.running() {
-            0 => {
-                self.end_stuck();
-                Turn::Idle
+        loop {
+            while let Some(key) = self.ready.pop() {
+                self.advance(key);
             }
-            running => Turn::SectionsRunning(running),
+            let running = self.in_flight.running();
+            if running > 0 {
+                return Turn::SectionsRunning(running);
+            }
+            if !self.break_rings() {
+                break;
+            }
         }
+        self.refuse_stuck();
+        Turn::Idle
     }
 
     /// Blocks until one running section is delivered, then takes a turn.
@@ -182,16 +205,28 @@ impl Executor {
         &self.counters
     }
 
-    /// Drops the index of each snapshot that is no longer live: no clone of
-    /// it is held and no live request is on it (contract 4.4).
+    /// The store, taken out before the rest of the executor is dropped.
+    pub fn into_store(mut self) -> Store {
+        mem::take(&mut self.store)
+    }
+
+    pub fn selected_store(&self, keep: impl FnMut(&StoredResult) -> bool) -> Store {
+        self.store.selected(keep)
+    }
+
+    /// Drops the index of each snapshot that is no longer live: the host
+    /// holds it in no value and no live request is on it (contract 4.4).
     ///
     /// # Panics
     ///
     /// If a node in progress is on such a snapshot: work on a snapshot
     /// keeps its index.
     fn prune(&mut self) {
-        let requests = &self.requests;
-        let dropped = self.indexes.prune(|snapshot| requests.any_on(snapshot));
+        let (requests, snapshots) = (&self.requests, &self.snapshots);
+        snapshots.forget_unheld();
+        let dropped = self
+            .indexes
+            .prune(|snapshot| snapshots.is_held(snapshot) || requests.any_on(snapshot));
         if let Some(key) = self
             .nodes_in_progress()
             .find(|key| dropped.contains(&key.snapshot))
@@ -201,8 +236,12 @@ impl Executor {
     }
 
     /// Tells a path already answered in the snapshot at once; otherwise
-    /// the request wants it until it is answered.
+    /// the request wants it until it is answered. A request its budget has
+    /// ended is told nothing more.
     fn demand(&mut self, request: RequestId, snapshot: SnapshotId, path: &Path) {
+        if !self.requests.is_live(request) {
+            return;
+        }
         let key = NodeKey {
             snapshot,
             path: self.paths.intern(path),
@@ -215,16 +254,24 @@ impl Executor {
         self.ensure(key);
     }
 
-    /// Every node in progress: a body, or a path waiting on its parent's
-    /// answer.
+    /// Every node in progress: a lookup, a body, or a path waiting on its
+    /// parent's answer.
     fn nodes_in_progress(&self) -> impl Iterator<Item = &NodeKey> {
-        self.tasks.keys().chain(&self.resolving)
+        self.lookups
+            .keys()
+            .chain(self.tasks.keys())
+            .chain(&self.resolving)
     }
 
     /// Whether `key` is among `nodes_in_progress`, found without walking
     /// them.
     fn in_progress(&self, key: NodeKey) -> bool {
-        self.tasks.contains_key(&key) || self.resolving.contains(&key)
+        self.is_reader(key) || self.resolving.contains(&key)
+    }
+
+    /// Whether `key` is a lookup or a body: a node in progress that reads.
+    fn is_reader(&self, key: NodeKey) -> bool {
+        self.lookups.contains_key(&key) || self.tasks.contains_key(&key)
     }
 
     fn answered(&self, key: NodeKey) -> bool {
@@ -263,6 +310,8 @@ impl Executor {
         while let Some(work) = queue.pop_front() {
             match work {
                 Work::Answered(key, entry) => {
+                    let limits = self.indexes.of(key.snapshot).limits();
+                    let entry = limit_check::children(entry, limits, &self.kinds);
                     let answer = Answer::Final(entry.outcome.clone());
                     let answered = finish::answered(
                         key,
@@ -295,10 +344,8 @@ impl Executor {
 
     /// Works out what the path at `key` is: a root from its snapshot input,
     /// read with the typed read a body uses (decision D11); any other path
-    /// from its parent's final answer. A declaration starts the body; any
-    /// other outcome is the path's answer.
+    /// from its parent's final answer.
     fn resolve(&mut self, key: NodeKey) -> Option<Work> {
-        self.counters.count_path_resolved();
         let index = self.indexes.of(key.snapshot);
         let declared = match self.paths.parent(key.path) {
             None => {
@@ -318,44 +365,169 @@ impl Executor {
                 declaration_of(step, entry, &self.kinds)
             }
         };
-        match declared {
-            Outcome::Value(declaration) => {
-                self.start(key, declaration);
-                None
+        self.work_out(key, declared)
+    }
+
+    /// Works out the path at `key`, which resolved to `declared`, or which
+    /// a body declared so (contract 7.1). A declaration of a node too deep
+    /// for the snapshot's depth setting answers that failure; any other
+    /// declaration starts a lookup; any other outcome is the path's answer.
+    /// A path no live request needs once its resolution is charged is not
+    /// worked out.
+    fn work_out(&mut self, key: NodeKey, declared: Outcome<Declaration>) -> Option<Work> {
+        if !self.charge_resolution(key) {
+            return None;
+        }
+        self.counters.count_path_resolved();
+        let declared = match declared {
+            Outcome::Value(_) => {
+                let depth = self.paths.depth(key.path);
+                let limits = self.indexes.of(key.snapshot).limits();
+                limit_check::depth(depth, limits).map_or(declared, Outcome::Failure)
             }
-            settled => Some(Work::Answered(
-                key,
-                Entry {
-                    outcome: settled.erase(),
-                    declaration: None,
-                },
-            )),
+            other => other,
+        };
+        let (content, outcome) = match declared {
+            Outcome::Value(declaration) => {
+                self.look_up(key, declaration);
+                return None;
+            }
+            Outcome::Failure(failure) => (Content::of_failure(&failure), Outcome::Failure(failure)),
+            Outcome::Absent => (Content::absent(), Outcome::Absent),
+        };
+        Some(Work::Answered(key, Entry::settled(outcome, content)))
+    }
+
+    /// Works out the child at `path`, which the reader at `reader`, its
+    /// parent, declared `declaration` and awaits. The reader's own
+    /// declaration, `declarer`, is filed first, so that the child's passed
+    /// bindings can be read through it while the reader runs. A path
+    /// already answered, or already a lookup or a body, is left as it is; a
+    /// path waiting on its parent is taken over, its wait on the parent
+    /// ended, since the parent's run is what declares it.
+    fn declare(
+        &mut self,
+        reader: NodeKey,
+        declarer: &Arc<Declaration>,
+        path: PathId,
+        declaration: Arc<Declaration>,
+    ) {
+        self.indexes
+            .file_declarer(reader.snapshot, reader.path, declarer);
+        let key = NodeKey {
+            snapshot: reader.snapshot,
+            path,
+        };
+        if self.answered(key) || self.is_reader(key) {
+            return;
+        }
+        if self.resolving.remove(&key) {
+            self.waits.forget(key);
+        }
+        if let Some(work) = self.work_out(key, Outcome::Value(declaration)) {
+            self.work(work);
         }
     }
 
-    /// Removes the body at `key`, with the read it waits on, if any.
-    fn remove_task(&mut self, key: NodeKey) -> Option<Task> {
+    /// Charges the resolution of `key` to every live request that needs it:
+    /// each that wants a node waiting on `key`, directly or through other
+    /// waits. Each whose budget allows no more is ended instead, by the
+    /// route `end` takes; whether `key` is still needed. Nothing is charged
+    /// while no live request on the snapshot has a bounded budget. Finding
+    /// the requests walks every node waiting on `key`, so under a bounded
+    /// budget a chain of n waiting bodies costs on the order of n² steps.
+    fn charge_resolution(&mut self, key: NodeKey) -> bool {
+        if !self.requests.any_bounded_on(key.snapshot) {
+            return true;
+        }
+        let needing: BTreeSet<RequestId> = self
+            .waits
+            .reach_waiters(key)
+            .iter()
+            .flat_map(|node| self.requests.wanting(node))
+            .collect();
+        let exhausted = self.requests.charge(&needing);
+        if exhausted.is_empty() {
+            return true;
+        }
+        for (request, snapshot, budget) in exhausted {
+            self.events.push(Event::Ended {
+                request,
+                snapshot,
+                error: RequestError::PathsBudgetExhausted { budget },
+            });
+            self.requests.end_id(request);
+        }
+        self.drop_unwanted_work();
+        !self.unwanted(key)
+    }
+
+    /// Removes the lookup or body at `key`, with the read it waits on, if
+    /// any, returning the body.
+    fn remove_reader(&mut self, key: NodeKey) -> Option<Task> {
         self.readings.remove(&key);
+        self.lookups.remove(&key);
         self.tasks.remove(&key)
     }
 
-    fn start(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
+    /// Takes the node at `key` out of the nodes in progress: the lookup or
+    /// body there with the read it waits on, or the path waiting on its
+    /// parent; and ends every wait of its own. Returns the body, for the
+    /// caller to discard or abandon.
+    fn withdraw(&mut self, key: NodeKey) -> Option<Task> {
+        self.resolving.remove(&key);
+        self.waits.forget(key);
+        self.remove_reader(key)
+    }
+
+    /// Queues a lookup for the node at `key`, which starts at its recipe's
+    /// key; a kind the core was not built with fails outside the inputs.
+    fn look_up(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
         let kind_id = declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
             return self.end_outside(key, unknown);
         };
+        let start = Key::of_recipe(kind.recipe());
+        self.lookups.insert(key, Lookup::new(declaration, start));
+        self.queue(key);
+    }
+
+    /// Drops the lookup at `key`, with the read it waits on and its waits,
+    /// and starts the body of its node from the beginning; whatever waits on
+    /// the node waits on that body.
+    fn miss(&mut self, key: NodeKey) {
+        self.readings.remove(&key);
+        self.waits.forget(key);
+        let declaration = self
+            .lookups
+            .remove(&key)
+            .expect("a lookup that misses is in progress")
+            .miss();
+        self.start(key, declaration);
+    }
+
+    /// Starts the body of the node at `key`, whose lookup found nothing.
+    fn start(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
+        let kind_id = declaration.kind();
+        let kind = self
+            .kinds
+            .get(kind_id)
+            .expect("a lookup is made only for a kind the core was built with");
         self.counters.count_body_run(kind_id);
         self.tasks.insert(key, Task::start(kind, declaration));
         self.queue(key);
     }
 
-    /// Queues the body at `key` to be polled, once however often it is
-    /// queued before its poll.
+    /// Queues the lookup or body at `key` to be stepped, once however often
+    /// it is queued before its step.
     fn queue(&mut self, key: NodeKey) {
-        if let Some(task) = self.tasks.get_mut(&key)
-            && task.owe_poll()
-        {
+        let owed = match (self.lookups.get_mut(&key), self.tasks.get_mut(&key)) {
+            (Some(lookup), _) => lookup.queue(),
+            (None, Some(task)) => task.owe_poll(),
+            (None, None) => false,
+        };
+        if owed {
             self.ready.push(key);
         }
     }
@@ -372,58 +544,69 @@ impl Executor {
             .copied()
             .collect();
         for key in unwanted {
-            if let Some(task) = self.remove_task(key) {
+            if let Some(task) = self.withdraw(key) {
                 task.abandon();
             }
-            self.resolving.remove(&key);
-            self.waits.forget(key);
         }
     }
 
-    /// With no body ready and no section in flight nothing can make
-    /// progress, so every node in progress is stuck. Ends each live request
-    /// that still wants a node with an error naming the bodies those nodes
-    /// wait on, every error worked out before any request ends (PRD 12.2 β;
-    /// ε replaces this with the cycle rule), then drops the work no live
-    /// request still waits on.
-    fn end_stuck(&mut self) {
+    /// At rest, breaks every ring of waits a live request needs (contract
+    /// 7.7): each lookup on a ring that holds one misses and its body
+    /// starts; each node of a ring that holds none answers "cycle". Then
+    /// drops the work no live request still waits on; whether it broke any.
+    /// Every node that answers leaves the nodes in progress before any
+    /// answers, so no answer on a ring resumes a node on it or works out a
+    /// path on it.
+    fn break_rings(&mut self) -> bool {
+        let lookups = &self.lookups;
+        let broken = cycle::broken(&self.waits, self.requests.wanted(), |key| {
+            lookups.contains_key(key)
+        });
+        if broken.is_empty() {
+            return false;
+        }
+        for key in broken.missed {
+            self.miss(key);
+        }
+        for key in &broken.answered {
+            if let Some(task) = self.withdraw(*key) {
+                task.discard();
+            }
+        }
+        for key in broken.answered {
+            self.work(Work::Answered(key, cycle::entry()));
+        }
+        self.drop_unwanted_work();
+        true
+    }
+
+    /// # Panics
+    ///
+    /// If a live request still wants a node at rest with every ring broken:
+    /// every node in progress then awaits another, so the nodes a request
+    /// waits on would hold a ring.
+    fn refuse_stuck(&self) {
         let stuck: Vec<_> = self
             .requests
             .wanting_any()
             .into_iter()
-            .map(|(request, snapshot, wanted)| {
-                let waiting = self.bodies_waited_on(wanted);
-                (request, snapshot, RequestError::NothingCanRun { waiting })
+            .map(|(request, _, wanted)| {
+                let paths: Vec<_> = wanted.iter().map(|key| self.paths.path(key.path)).collect();
+                (request, paths)
             })
             .collect();
-        for (request, snapshot, error) in stuck {
-            self.events.push(Event::Ended {
-                request,
-                snapshot,
-                error,
-            });
-            self.requests.end_id(request);
-        }
-        self.drop_unwanted_work();
+        assert!(
+            stuck.is_empty(),
+            "at rest with no ring of waits left, live requests still want {stuck:?}"
+        );
     }
 
-    /// The bodies reachable from `wanted` through the wait relation, in path
-    /// order. A path waiting on its parent passes through to it; only
-    /// bodies are named.
-    fn bodies_waited_on(&self, wanted: Vec<NodeKey>) -> Vec<Path> {
-        let mut bodies: Vec<_> = self
-            .waits
-            .reach(wanted)
-            .into_iter()
-            .filter(|key| self.tasks.contains_key(key))
-            .map(|key| self.paths.path(key.path))
-            .collect();
-        bodies.sort();
-        bodies
-    }
-
-    /// Polls the body at `key` if it is owed a poll.
+    /// Steps the lookup at `key` if it is queued, or polls the body there
+    /// if it is owed a poll.
     fn advance(&mut self, key: NodeKey) {
+        if self.lookups.contains_key(&key) {
+            return self.step_lookup(key);
+        }
         let Some(task) = self.tasks.get_mut(&key) else {
             return;
         };
@@ -440,17 +623,32 @@ impl Executor {
             }
         };
         match posted {
-            Posted::Ask(Ask::Read(refs)) => {
+            Posted::Ask(Ask::Read(wanted)) => {
                 let index = self.indexes.of(key.snapshot);
-                let reading =
-                    serve::read::serve(key.path, task.declaration(), &refs, &mut self.paths, index);
+                let declaration = task.declaration();
+                let children = task.children();
+                let served = serve::read::serve(
+                    key.path,
+                    declaration,
+                    wanted.into(),
+                    children,
+                    &mut self.paths,
+                    index,
+                );
+                let reading = match served {
+                    Ok(reading) => reading,
+                    Err(Conflict { step }) => {
+                        let conflict = Failure::ConflictingChild { step };
+                        return self.finish(key, Outcome::Failure(conflict));
+                    }
+                };
                 let awaited = reading.awaited();
                 if awaited.is_empty() {
                     task.answer_read(reading.reply(index));
                     return self.queue(key);
                 }
-                self.readings.insert(key, reading);
-                self.await_nodes(key, awaited);
+                let declaration = Arc::clone(declaration);
+                self.await_reading(key, reading, awaited, &declaration);
             }
             Posted::Ask(Ask::Exclusive(ask)) => {
                 let cancel = task.cancel_flag();
@@ -469,33 +667,124 @@ impl Executor {
         }
     }
 
-    /// Makes the reader at `key` wait on each node in `awaited` before any
-    /// of them is worked out, so that none can answer the reading early.
-    /// Stops once the reader is dropped: a node that fails outside the
-    /// inputs as it is worked out drops it at once.
-    fn await_nodes(&mut self, key: NodeKey, awaited: BTreeSet<PathId>) {
-        let nodes: Vec<_> = awaited
-            .into_iter()
-            .map(|path| NodeKey {
-                snapshot: key.snapshot,
-                path,
-            })
-            .collect();
+    /// Follows the store for the lookup at `key` if it is queued: first
+    /// past the request it awaited, if any, then from key to key while
+    /// each request stored can be answered at once. A result found is the
+    /// node's answer, with the node's own declaration, and no body runs; a
+    /// request that awaits a node makes the lookup wait as a body would;
+    /// a request that declares a child declares it at the lookup's own path
+    /// and awaits it; a key where nothing is filed starts the body from its
+    /// beginning, and so would a request in conflict with the children the
+    /// lookup declared. Only keys that collide could file one: a key hashes
+    /// every child item of the requests on the way to it, so those requests
+    /// are one run's, and that run met no conflict among them.
+    fn step_lookup(&mut self, key: NodeKey) {
+        let Some(lookup) = self.lookups.get_mut(&key) else {
+            return;
+        };
+        if !lookup.take_queued() {
+            return;
+        }
+        let index = self.indexes.of(key.snapshot);
+        if let Some(reading) = self.readings.remove(&key) {
+            lookup.advance(reading.reply(index));
+        }
+        loop {
+            self.counters.count_store_lookup();
+            let wanted = match self.store.probe(lookup.key()) {
+                Some(Stored::Next(wanted)) => Arc::clone(wanted),
+                Some(Stored::Result(result)) => {
+                    let (outcome, content) = (result.outcome.clone(), result.content);
+                    let found = self.lookups.remove(&key);
+                    let (declaration, children) = found.expect("a lookup stepped is held").found();
+                    let entry = Entry {
+                        outcome,
+                        declaration: Some(declaration),
+                        content,
+                        children_declared: children,
+                    };
+                    return self.work(Work::Answered(key, entry));
+                }
+                None => return self.miss(key),
+            };
+            let served = serve::read::serve(
+                key.path,
+                lookup.declaration(),
+                wanted,
+                lookup.children(),
+                &mut self.paths,
+                index,
+            );
+            let Ok(reading) = served else {
+                return self.miss(key);
+            };
+            let awaited = reading.awaited();
+            if !awaited.is_empty() {
+                let declaration = Arc::clone(lookup.declaration());
+                return self.await_reading(key, reading, awaited, &declaration);
+            }
+            lookup.advance(reading.reply(index));
+        }
+    }
+
+    /// Keeps the reading of the reader at `key`, declared `declaration`,
+    /// until each node in `awaited` is answered, and makes the reader wait
+    /// on them, declaring the children the reading lists.
+    fn await_reading(
+        &mut self,
+        key: NodeKey,
+        mut reading: Reading,
+        awaited: BTreeSet<PathId>,
+        declaration: &Arc<Declaration>,
+    ) {
+        let to_declare = reading.take_to_declare();
+        self.readings.insert(key, reading);
+        self.await_nodes(key, awaited, to_declare, declaration);
+    }
+
+    /// Makes the reader at `key`, declared `declaration`, wait on each node
+    /// in `awaited` before any of them is worked out, so that none can
+    /// answer the reading early; then declares each child in `to_declare`,
+    /// and sees that each other node will be answered. Stops once the
+    /// reader is dropped: a node that fails outside the inputs as it is
+    /// worked out drops it at once.
+    fn await_nodes(
+        &mut self,
+        key: NodeKey,
+        awaited: BTreeSet<PathId>,
+        to_declare: Vec<(PathId, Arc<Declaration>)>,
+        declaration: &Arc<Declaration>,
+    ) {
+        let at = |path| NodeKey {
+            snapshot: key.snapshot,
+            path,
+        };
+        let nodes: Vec<_> = awaited.into_iter().map(at).collect();
         for node in &nodes {
             self.waits.add(key, *node);
         }
+        for (path, child) in to_declare {
+            if !self.is_reader(key) {
+                return;
+            }
+            self.declare(key, declaration, path, child);
+        }
         for node in nodes {
-            if !self.tasks.contains_key(&key) {
+            if !self.is_reader(key) {
                 return;
             }
             self.ensure(node);
         }
     }
 
-    /// Replies to the body at `key`, whose reading awaits nothing more, and
+    /// Queues the lookup at `key`, whose reading awaits nothing more, to
+    /// move on when it is next stepped; or replies to the body there and
     /// queues it.
     fn resume_reader(&mut self, key: NodeKey) {
-        let Some(task) = self.tasks.get(&key) else {
+        if self.lookups.contains_key(&key) {
+            return self.queue(key);
+        }
+        let Some(task) = self.tasks.get_mut(&key) else {
             return;
         };
         if let Some(reading) = self.readings.remove(&key) {
@@ -504,20 +793,15 @@ impl Executor {
         }
     }
 
-    /// Ends a node whose body produced `outcome`.
+    /// Ends a node whose body produced `outcome`, filing it in the store.
     fn finish(&mut self, key: NodeKey, outcome: Outcome<Erased>) {
-        let declaration = self.remove_task(key).map(|task| {
-            let declaration = Arc::clone(task.declaration());
-            task.discard();
-            declaration
-        });
-        self.work(Work::Answered(
-            key,
-            Entry {
-                outcome,
-                declaration,
-            },
-        ));
+        let Some(task) = self.remove_reader(key) else {
+            return;
+        };
+        let (declaration, chain, children) = task.finish();
+        let store = &mut self.store;
+        let entry = finish::filed(declaration, chain, children, outcome, &self.kinds, store);
+        self.work(Work::Answered(key, entry));
     }
 
     /// Ends a node with a failure outside the inputs, stored nowhere, and
@@ -529,10 +813,9 @@ impl Executor {
         let mut released_a_wait = self.waits.awaits(key).next().is_some();
         let mut queue = VecDeque::from([key]);
         while let Some(key) = queue.pop_front() {
-            if let Some(task) = self.remove_task(key) {
+            if let Some(task) = self.withdraw(key) {
                 task.discard();
             }
-            self.resolving.remove(&key);
             let failed = finish::failed_outside(key, &mut self.waits, &mut self.requests);
             for request in failed.tell {
                 self.tell(request, key, Answer::Pending(failure.clone()));
@@ -627,15 +910,17 @@ impl Executor {
 }
 
 impl Drop for Executor {
-    /// Bodies, the reads they wait on, indexes and untaken answers go
-    /// before the resources, so what they hold is queued for release before
-    /// each resource thread stops.
+    /// Bodies, lookups, the reads they wait on, indexes, the store and
+    /// untaken answers go before the resources, so what they hold is queued
+    /// for release before each resource thread stops.
     fn drop(&mut self) {
         for (_, task) in mem::take(&mut self.tasks) {
             task.discard();
         }
+        self.lookups.clear();
         self.readings.clear();
         self.indexes.clear();
+        self.store.clear();
         self.events.clear();
     }
 }

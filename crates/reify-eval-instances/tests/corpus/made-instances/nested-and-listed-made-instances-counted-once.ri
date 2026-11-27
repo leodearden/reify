@@ -1,0 +1,7 @@
+structure def Thing { param w : Length = 1mm   constraint w > 0mm }
+structure def Holder { param t : Thing }
+structure def Root {
+    let g = Holder(t: Thing(w: -3mm))
+    let loads = [Thing(w: -3mm), Thing(w: 2mm)]
+    sub h : Holder { t = Thing(w: -3mm) }
+}

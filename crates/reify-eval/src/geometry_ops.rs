@@ -1352,13 +1352,13 @@ impl std::fmt::Display for GridCoordName {
 }
 
 /// Canonicalize sub-handle `kernel_handle` ids into the canonical edge/face
-/// order: ascending `kernel_handle` id, deduplicated. Single source of truth
-/// for the "canonical order + dedup" step, shared by `resolve_subhandle_list`
-/// (which layers the cross-solid membership gate on top) and the
-/// `compile_geometry_op` `ModifyKind::Fillet` eval arm, so the two never drift
-/// on ordering/dedup (task 3205 reviewer note). Ascending id matches
-/// `extract_edges`' TopExp mint order, so a curated subset lines up with the
-/// kernel's edge map.
+/// order: ascending `kernel_handle` id, deduplicated. The single
+/// canonicalization used by every curated-selector eval arm of
+/// `compile_geometry_op` — [`resolve_curated_edges_p2`] (Fillet, Chamfer,
+/// ChamferAsymmetric), the 3-arg `shell_open` arm and the 4-arg curated `draft`
+/// arm — so they never drift on ordering/dedup (task 3205 reviewer note).
+/// Ascending id matches `extract_edges`' TopExp mint order, so a curated subset
+/// lines up with the kernel's edge map.
 fn canonical_subhandle_ids(
     ids: impl IntoIterator<Item = GeometryHandleId>,
 ) -> Vec<GeometryHandleId> {
@@ -1368,117 +1368,6 @@ fn canonical_subhandle_ids(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
-}
-
-/// Lower a `List<Geometry>` of KGQ topology sub-handles to a canonical
-/// `Vec<GeometryHandleId>` (task 3205 — the curated edge/face SELECTION SEAM).
-///
-/// This helper is **kernel-free** (pure `Value` → `Value`): it never touches
-/// the geometry kernel, so it is callable from BOTH [`compile_geometry_op`]
-/// (the legacy eval lowering site, which has no kernel parameter and runs in a
-/// phase where the parent shape is not yet realized) AND the unified
-/// build-DAG driver (engine-unified-build-dag task η).
-///
-/// The cross-solid gate is `realization_ref` equality: every KGQ sub-handle
-/// inherits its parent solid's `realization_ref` unchanged (KGQ-η PRD §4
-/// invariant i, see [`crate::topology_selectors::make_sub_handle`]), so a
-/// handle minted from a different solid carries a different `realization_ref`
-/// and is rejected. The hash domain for these sub-handles is
-/// [`crate::topology_selectors::compose_sub_handle_hash`] /
-/// [`crate::topology_selectors::SubKind`]; this resolver reads only the
-/// already-built `realization_ref` + `kernel_handle`, so it needs no rehash.
-///
-/// Contract:
-///   - `arg` MUST be a `Value::List`; any other shape is a hard `Err`.
-///   - `parent` MUST be a `Value::GeometryHandle`; its `realization_ref` is the
-///     membership key.
-///   - every element MUST be a `Value::GeometryHandle` whose `realization_ref`
-///     equals the parent's — an element from a different solid is `Err`
-///     (cross-solid).
-///   - the resulting ids are **deduped** by `kernel_handle` and returned in
-///     **ascending canonical order** (matching `extract_edges`' TopExp mint
-///     order, so a curated subset lines up with the kernel's edge map).
-///   - an **empty** input list is a legitimate `Ok(vec![])`. The anti-zero-
-///     edges (`E_EMPTY_SELECTION`) guard — which distinguishes "selector
-///     present but resolved to nothing" from "no selector at all" — is the
-///     eval arm's job, NOT this structural resolver's.
-// `#[allow(dead_code)]`: forward-looking selection-resolver seam. The legacy
-// eval arm (`compile_geometry_op`'s `ModifyKind::Fillet`) cannot call the full
-// resolver because the parent solid's `Value::GeometryHandle` is not realized in
-// phase P2 (it enters `values` only in P3 — see the task-3205 plan), so that arm
-// shares only the structural `canonical_subhandle_ids` canonicalization and skips
-// the cross-solid membership gate. The full cross-solid resolver is consumed by
-// engine-unified-build-dag η/ε, whose in-loop driver has the realized parent
-// handle. Exercised now by the `resolve_subhandle_list_*` unit tests below.
-// TODO(#4727): Stage-4 cutover (#4362) landed — UnifiedDag is now the default —
-// but `resolve_subhandle_list` still has no production caller (the in-loop driver
-// has not been wired to invoke it). Drop this `#[allow(dead_code)]` once Stage-5
-// (#4727) wires the caller or removes this dead path entirely.
-#[allow(dead_code)]
-pub(crate) fn resolve_subhandle_list(
-    arg: &reify_ir::Value,
-    parent: &reify_ir::Value,
-) -> Result<Vec<GeometryHandleId>, String> {
-    let parent_ref = match parent {
-        reify_ir::Value::GeometryHandle {
-            realization_ref, ..
-        } => realization_ref,
-        other => {
-            return Err(format!(
-                "resolve_subhandle_list: parent must be a Geometry handle, got {:?}",
-                other
-            ));
-        }
-    };
-
-    let elems = match arg {
-        reify_ir::Value::List(elems) => elems,
-        other => {
-            return Err(format!(
-                "resolve_subhandle_list: edge selector must be a List<Geometry>, got {:?}",
-                other
-            ));
-        }
-    };
-
-    // Validate every element (cross-solid membership gate), collecting raw
-    // kernel_handles; `canonical_subhandle_ids` then dedups + sorts them into
-    // canonical order — the SAME canonicalization the eval Fillet arm uses, so
-    // the two cannot drift on ordering/dedup.
-    let mut ids: Vec<GeometryHandleId> = Vec::with_capacity(elems.len());
-    for (i, elem) in elems.iter().enumerate() {
-        match elem {
-            reify_ir::Value::GeometryHandle {
-                realization_ref,
-                kernel_handle,
-                ..
-            } => {
-                if realization_ref != parent_ref {
-                    return Err(format!(
-                        "resolve_subhandle_list: edge[{}] belongs to a different solid \
-                         ({} != parent {}) — cross-solid edge selection is rejected",
-                        i, realization_ref, parent_ref
-                    ));
-                }
-                let Some(kh) = *kernel_handle else {
-                    return Err(format!(
-                        "resolve_subhandle_list: edge[{}] is a symbolic (unrealized) handle \
-                         — edge selection requires a realized geometry handle",
-                        i
-                    ));
-                };
-                ids.push(kh);
-            }
-            other => {
-                return Err(format!(
-                    "resolve_subhandle_list: edge[{}] must be a Geometry sub-handle, got {:?}",
-                    i, other
-                ));
-            }
-        }
-    }
-
-    Ok(canonical_subhandle_ids(ids))
 }
 
 /// The curated sub-shape selector argument names carried by a
@@ -1732,8 +1621,7 @@ impl CuratedEdgeLabels {
 /// the caller has already confirmed an `edges` arg was present (the absent =
 /// all-edges back-compat path stays in the arm). Policy:
 ///   - `Value::List`: every element MUST be a `Value::GeometryHandle` — a
-///     non-handle element is a hard `Err` (never a silent drop, mirroring
-///     [`resolve_subhandle_list`]'s strictness); the ids are deduped +
+///     non-handle element is a hard `Err` (never a silent drop); the ids are deduped +
 ///     ascending-canonical via [`canonical_subhandle_ids`]. An EMPTY resolved
 ///     set pushes an `EmptyEdgeSelection` diagnostic and returns `Err`
 ///     (anti-zero-edges, task-3295 trap).
@@ -1741,9 +1629,9 @@ impl CuratedEdgeLabels {
 ///     resolves in P4, after this P2 arm): NOT an empty selection, so NO
 ///     `EmptyEdgeSelection`; returns a user-actionable `Err`.
 ///
-/// Kernel-free, and (like the legacy arms) shares only the cross-solid-gate-LESS
-/// canonicalization documented on [`resolve_subhandle_list`] — the P2 arm cannot
-/// run the membership gate because the parent solid handle is not yet realized.
+/// Kernel-free, and makes no cross-solid membership check: the P2 arm cannot
+/// compare an element against its parent solid because the parent solid handle
+/// is not yet realized.
 fn resolve_curated_edges_p2(
     edges_val: &reify_ir::Value,
     labels: CuratedEdgeLabels,
@@ -3518,10 +3406,16 @@ fn modify_draft(
         meta_map,
         diagnostics,
     )?;
-    // plane is resolved via step_handles.last() (a pre-existing approximation —
-    // plane_xy yields a Value::Plane, not a sub-op; the full plane-handle plumbing
-    // fix is out of scope for δ). Filter INVALID so a preceding compile failure
-    // (sentinel) propagates as Err rather than forwarding INVALID to the kernel.
+    // TODO(#5818): resolve the `plane` argument here. It is read from
+    // step_handles.last() (a pre-existing approximation — plane_xy yields a
+    // Value::Plane, not a sub-op, so no plane handle is plumbed). When this is
+    // fixed, add the .ri-source e2e that #5818 owns: compile a 4-arg curated
+    // `draft(solid, faces, angle, neutral_plane)`, build it, and assert
+    // `GeometryOp::Draft.faces` is non-empty and the drafted solid has
+    // positive volume. Today that build stops at the Err below.
+    //
+    // Filter INVALID so a preceding compile failure (sentinel) propagates as
+    // Err rather than forwarding INVALID to the kernel.
     let plane_id = step_handles
         .last()
         .copied()

@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
-use crate::declaration::KindId;
 use crate::erased_kind::{ErasedKind, Of};
 use crate::kind::Kind;
+use crate::kind_id::KindId;
 
 /// Two kinds were registered under one id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

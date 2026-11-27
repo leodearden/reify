@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# tests/infra/test_run_all_ambient_isolation_lib.sh — unit test for both
+# tests/infra/test_run_all_ambient_isolation_lib.sh — unit test for the three
 # functions in run_all_ambient_isolation_lib.sh: ambient_isolation_check_one()
-# (task 5259, PRD docs/prds/merge-gate-health.md W4c; sub-cases A-D) and
-# run_all_injected_env_keys() (task 7234; sub-cases E-H).
+# (task 5259, PRD docs/prds/merge-gate-health.md W4c; sub-cases A-D),
+# run_all_injected_env_keys() (task 7234; sub-cases E-H) and
+# run_all_stripped_env_keys() (task 10716; sub-cases I-L).
 #
 # ambient_isolation_check_one decides, per ambient ledger var, whether
 # test_run_all.sh going red under a HOSTILE ambient env is a GENUINE
@@ -13,6 +14,9 @@
 #
 # run_all_injected_env_keys derives, behaviourally, which env var NAMES a
 # runner injects into a member it spawns — the ledger's third live source.
+# run_all_stripped_env_keys derives, behaviourally, which of a set of candidate
+# NAMES a runner removes before a member it spawns ever sees them — the proof
+# behind the ledger's `strip` rows.
 #
 # This is the only place either function can be exercised in isolation: the
 # consumer test_run_all_ambient_isolation.sh cannot self-test (self-invocation
@@ -357,5 +361,117 @@ fi
 
 assert "H: non-vacuity — the diagnostic DOES carry the runner log, \`  | \`-prefixed" \
     plan_match "$_out" '^  \| FAILED '
+
+# ===========================================================================
+# run_all_stripped_env_keys <runner> <candidate_keys> (task 10716): which of
+# the candidate keys, set to a sentinel on top of the probe baseline, a member
+# the runner spawns never sees. Same rule as above: FAKE runners only.
+# ===========================================================================
+
+STRIP_CANDIDATES=$'FAKE_STRIP_TOP_VAR\nFAKE_STRIP_SPAWN_VAR\nFAKE_KEPT_VAR'
+
+# ---------------------------------------------------------------------------
+# Sub-case I "both strip shapes are detected, a kept key is not": the runner
+# unsets one candidate in its own shell and removes another on the member's
+# spawn line; the third reaches the member.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case I: an own-shell unset and a spawn-line env -u are both reported as stripped ---"
+
+FAKE_RUNNER_STRIPS="$FAKE_DIR/fake_runner_strips.sh"
+cat > "$FAKE_RUNNER_STRIPS" <<'SH'
+#!/usr/bin/env bash
+unset FAKE_STRIP_TOP_VAR
+for f in "$1"/test_*.sh; do env -u FAKE_STRIP_SPAWN_VAR bash "$f"; done
+SH
+
+_rc=0
+_out=""
+_out="$(run_all_stripped_env_keys "$FAKE_RUNNER_STRIPS" "$STRIP_CANDIDATES")" || _rc=$?
+
+assert "I: rc 0 when the probe member ran [rc=$_rc]" \
+    test "$_rc" -eq 0
+
+assert "I: stdout is EXACTLY FAKE_STRIP_SPAWN_VAR then FAKE_STRIP_TOP_VAR (the kept key absent, sorted) [got $(_line_count "$_out") line(s)]" \
+    test "$_out" = $'FAKE_STRIP_SPAWN_VAR\nFAKE_STRIP_TOP_VAR'
+
+# ---------------------------------------------------------------------------
+# Sub-case J "a runner that strips nothing yields an empty set".
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case J: a runner that strips nothing yields an empty key set ---"
+
+_rc=0
+_out=""
+_out="$(run_all_stripped_env_keys "$FAKE_RUNNER_PLAIN" "$STRIP_CANDIDATES")" || _rc=$?
+
+assert "J: rc 0 when the probe member ran [rc=$_rc]" \
+    test "$_rc" -eq 0
+
+assert "J: empty key set — every candidate reached the member [got $(_line_count "$_out") line(s)]" \
+    test -z "$_out"
+
+# ---------------------------------------------------------------------------
+# Sub-case K "a runner that never runs the probe member fails loudly": the
+# same contract and the same column-0 hazard as sub-case H. A never-run member
+# must not read as "every candidate stripped".
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case K: runner never runs the probe member -> rc 1, runner log re-emitted prefixed only ---"
+
+_rc=0
+_out=""
+_out="$(run_all_stripped_env_keys "$FAKE_RUNNER_NO_SPAWN" "$STRIP_CANDIDATES" 2>&1)" || _rc=$?
+
+assert "K: rc 1 when the probe member never ran [rc=$_rc]" \
+    test "$_rc" -eq 1
+
+if plan_match "$_out" '^FAILED '; then
+    assert "K: must NOT emit a column-0 FAILED line (DF's ^FAILED\\s classifier anchor)" false
+else
+    assert "K: emits no column-0 FAILED line" true
+fi
+
+assert "K: non-vacuity — the diagnostic DOES carry the runner log, \`  | \`-prefixed" \
+    plan_match "$_out" '^  \| FAILED '
+
+if plan_match "$_out" '^FAKE_'; then
+    assert "K: must NOT report any candidate as stripped when the member never ran" false
+else
+    assert "K: reports no candidate as stripped when the member never ran" true
+fi
+
+# ---------------------------------------------------------------------------
+# Sub-case L "a probe-baseline key is refused as a candidate": the probe needs
+# PATH (and the rest of its baseline) to run at all, so it cannot set such a
+# key to a sentinel. It must refuse loudly, naming the key, without spawning
+# the runner.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case L: a probe-baseline key as a candidate -> rc 1 naming it, runner never spawned ---"
+
+FAKE_RUNNER_MARKS_SPAWN="$FAKE_DIR/fake_runner_marks_spawn.sh"
+cat > "$FAKE_RUNNER_MARKS_SPAWN" <<'SH'
+#!/usr/bin/env bash
+: > "$(dirname "${BASH_SOURCE[0]}")/fake_runner_marks_spawn.ran"
+for f in "$1"/test_*.sh; do bash "$f"; done
+SH
+
+_rc=0
+_out=""
+_out="$(run_all_stripped_env_keys "$FAKE_RUNNER_MARKS_SPAWN" $'FAKE_KEPT_VAR\nPATH' 2>"$FAKE_DIR/l.err")" || _rc=$?
+_l_err="$(cat "$FAKE_DIR/l.err")"
+
+assert "L: rc 1 when a candidate is a probe-baseline key [rc=$_rc]" \
+    test "$_rc" -eq 1
+
+assert "L: stderr names the refused key PATH" \
+    plan_match "$_l_err" '(^|[^A-Z_])PATH([^A-Z_]|$)'
+
+assert "L: stdout is empty [got $(_line_count "$_out") line(s)]" \
+    test -z "$_out"
+
+assert "L: the runner was never spawned" \
+    test ! -e "$FAKE_DIR/fake_runner_marks_spawn.ran"
 
 test_summary

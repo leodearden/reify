@@ -1,0 +1,9 @@
+tests = "a definition constructed only in a function body and used only by a test stays a root, and a `@test` definition is not a default root."
+rule = "rule D (second and third bullets; a use by a test does not count); decision 2 (made in passing); decisions D22."
+provenance = "logic-2 N17(b) (proposed counting a function-body use by its callers; not taken: draft 5 counts no use in a function body); logic-1 L11 (the same proposal; not taken); logic-2 N17(e) and logic-3 R13 (`@test` definitions became default roots in draft 3; taken: not a default root); logic-2 doubts (spec 12.1)."
+needs = ["roots"]
+answer_basis = "traced. `Column` is named in `fixture`'s body, which does not count, and as the inferred type of `TestColumn.col`, a test, which does not count either. So `Column` is a root. `TestColumn` is `@test`: not a default root."
+today = "run `testroot.ri`: both `Column` and `TestColumn` are printed."
+
+[[expect]]
+roots = ["Column"]

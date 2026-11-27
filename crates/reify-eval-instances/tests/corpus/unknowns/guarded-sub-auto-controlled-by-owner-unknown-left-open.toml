@@ -1,0 +1,21 @@
+tests = "what a solve does with an `auto` on a sub whose guard reads another unknown of the same owner."
+rule = "Part 6.2; contract section 8 (\"Unknowns inside structure that another unknown of the same group controls\" is the solve design's)."
+provenance = "the tracer's interaction I6 (trace-braces-purposes-unknowns)."
+needs = ["compile-error", "guard", "unknown"]
+answer_basis = "open for `Asm.x`, the presence of `Asm.b` and `Asm.b.len`; owner task 10610. Both unknowns are `Asm`'s; `b`'s `len`, at `Asm/auto[b.len]`, exists only in trials where `x > 15mm`. Only compilation is pinned, so the entry runs (readings F, last note)."
+note = "traced by the tracer: `x` 20 mm, `b` present, `b.len` 10 mm; a test solver given the pair (20 mm, 10 mm) finds it."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.x"
+open = {}
+
+[[expect]]
+path = "Asm.b"
+open = {}
+
+[[expect]]
+path = "Asm.b.len"
+open = {}

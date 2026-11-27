@@ -1,0 +1,15 @@
+structure def Asm {
+    param on : Bool = false
+    param on2 : Bool = true
+    param u : Bool
+    where on {
+        where u {
+            let w = 1mm
+        }
+    }
+    where on2 {
+        where u {
+            let w2 = 1mm
+        }
+    }
+}

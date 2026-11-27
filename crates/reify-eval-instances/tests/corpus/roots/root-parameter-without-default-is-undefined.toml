@@ -1,0 +1,20 @@
+tests = "At a root, a parameter with no default is undefined and the verdicts that read it are undetermined, with no error."
+rule = "Part 3 (\"A parameter with no default is undefined at a root\"); decision 12 (task 9345 ruling)"
+provenance = "design Part 3; spec 9.2; task 7874 (a root's parameters keep today's unbound meaning). language-1 L19; language-2 B2."
+needs = ["roots", "instance", "constraint", "summary"]
+answer_basis = "stated: Part 3, \"A parameter with no default is undefined at a root ... and its verdicts are undetermined\". The root is given no argument, so its built-in argument verdict is satisfied (decisions B5) and the summary counts the one constraint."
+
+[[expect]]
+roots = ["Bolt"]
+
+[[expect]]
+path = "Bolt.d"
+value = "undefined"
+
+[[expect]]
+path = "Bolt/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Bolt/summary"
+summary = { violated = 0, undetermined = 1, failed = 0 }

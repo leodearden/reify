@@ -4,7 +4,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use reify_eval_core::{Event, RequestId, SnapshotId};
+use reify_eval_core::{Budget, Event, RequestId, SnapshotId};
 
 use crate::toy;
 
@@ -26,11 +26,12 @@ fn snapshots_told(events: &[Event], request: RequestId) -> Vec<SnapshotId> {
 #[test]
 fn each_answer_is_tagged_with_its_request_and_the_snapshot_that_request_was_made_on() {
     let mut core = toy::core();
-    let (earlier, later) = (core.snapshot([]), core.snapshot([]));
+    let earlier = core.snapshot([toy::named("a", 1_i64)]);
+    let later = core.snapshot([toy::named("a", 2_i64)]);
     assert_ne!(earlier.id(), later.id());
 
-    let on_earlier = core.evaluate(&earlier, toy::roots(&["missing"]));
-    let on_later = core.evaluate(&later, toy::roots(&["missing"]));
+    let on_earlier = core.evaluate(&earlier, toy::roots(&["missing"]), Budget::unlimited());
+    let on_later = core.evaluate(&later, toy::roots(&["missing"]), Budget::unlimited());
     core.run();
 
     let events = core.take_events();
@@ -54,7 +55,7 @@ fn a_core_refuses_a_snapshot_another_core_made() {
     let snapshot = maker.snapshot([]);
 
     let refused = catch_unwind(AssertUnwindSafe(|| {
-        let _ = other.evaluate(&snapshot, toy::roots(&["missing"]));
+        let _ = other.evaluate(&snapshot, toy::roots(&["missing"]), Budget::unlimited());
     }));
     let message = refusal(refused);
     assert!(message.contains("a snapshot made by core "), "{message}");
@@ -65,7 +66,7 @@ fn a_core_refuses_to_end_a_request_another_core_opened() {
     let mut maker = toy::core();
     let mut other = toy::core();
     let snapshot = maker.snapshot([]);
-    let request = maker.evaluate(&snapshot, toy::roots(&["missing"]));
+    let request = maker.evaluate(&snapshot, toy::roots(&["missing"]), Budget::unlimited());
 
     let refused = catch_unwind(AssertUnwindSafe(|| other.end(request)));
     let message = refusal(refused);

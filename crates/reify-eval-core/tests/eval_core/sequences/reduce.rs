@@ -7,8 +7,9 @@ use super::design::{Bind, Decl, ModelPath, ModelRef, ToyKind, Val, decl};
 
 /// The cases one step smaller than `case`, largest reductions first: an
 /// event dropped, a demanded path dropped or shortened, a Drive made an
-/// Evaluate, a request ended rather than left, an edit's change dropped,
-/// an initial input dropped, then one value made smaller.
+/// Evaluate, a request ended rather than left, an Evaluate's budget
+/// dropped, an edit's change dropped, an initial input dropped, then one
+/// value made smaller.
 pub fn candidates(case: &Case) -> Vec<Case> {
     let mut all: Vec<_> = (0..case.events.len())
         .map(|at| without_event(case, at))
@@ -42,6 +43,7 @@ pub fn candidates(case: &Case) -> Vec<Case> {
         } => vec![HostEvent::Evaluate {
             on: *on,
             paths: paths.clone(),
+            budget: None,
             then: *then,
         }],
         _ => Vec::new(),
@@ -50,10 +52,12 @@ pub fn candidates(case: &Case) -> Vec<Case> {
         HostEvent::Evaluate {
             on,
             paths,
+            budget,
             then: Then::Leave,
         } => vec![HostEvent::Evaluate {
             on: *on,
             paths: paths.clone(),
+            budget: *budget,
             then: Then::End,
         }],
         HostEvent::Drive {
@@ -66,6 +70,20 @@ pub fn candidates(case: &Case) -> Vec<Case> {
             paths: paths.clone(),
             turns: *turns,
             then: Then::End,
+        }],
+        _ => Vec::new(),
+    }));
+    all.extend(each_event(case, |event| match event {
+        HostEvent::Evaluate {
+            on,
+            paths,
+            budget: Some(_),
+            then,
+        } => vec![HostEvent::Evaluate {
+            on: *on,
+            paths: paths.clone(),
+            budget: None,
+            then: *then,
         }],
         _ => Vec::new(),
     }));
@@ -114,9 +132,9 @@ pub fn candidates(case: &Case) -> Vec<Case> {
 }
 
 /// A measure each candidate of a case strictly lowers: a count of its
-/// events, paths, steps, inputs, changes and bindings, a Drive above an
-/// Evaluate, a request left above one ended, a structure kind above a
-/// cell, and an int by its distance from zero.
+/// events, paths, steps, inputs, changes, budgets and bindings, a Drive
+/// above an Evaluate, a request left above one ended, any other kind above
+/// a cell, and an int by its distance from zero.
 pub fn size(case: &Case) -> u64 {
     let inputs: u64 = case
         .inputs
@@ -136,7 +154,12 @@ fn event_size(event: &HostEvent) -> u64 {
             let change = |value: &Option<Val>| 1 + value.as_ref().map_or(0, value_size);
             1 + changes.iter().map(|(_, value)| change(value)).sum::<u64>()
         }
-        HostEvent::Evaluate { paths, then, .. } => 2 + request(paths, then),
+        HostEvent::Evaluate {
+            paths,
+            budget,
+            then,
+            ..
+        } => 2 + u64::from(budget.is_some()) + request(paths, then),
         HostEvent::Drive { paths, then, .. } => 3 + request(paths, then),
     }
 }
@@ -147,6 +170,13 @@ fn value_size(value: &Val) -> u64 {
         Val::Bool(value) => u64::from(*value),
         Val::Members(members) => members.values().map(|decl| 1 + decl_size(decl)).sum(),
         Val::Decl(decl) => decl_size(decl),
+        Val::Bound(bound) => *bound,
+        Val::Calls(sites) => sites
+            .iter()
+            .map(|site| {
+                1 + site.sites.len() as u64 + site.offset.unsigned_abs() + decl_size(&site.callee)
+            })
+            .sum(),
     }
 }
 
@@ -163,7 +193,8 @@ fn bind_steps(bind: &Bind) -> u64 {
     match bind {
         Bind::Declarer(place) => place.len() as u64,
         Bind::Passed(r) => r.steps.len() as u64,
-        Bind::Input(_) | Bind::Attached(_) => 0,
+        Bind::Input(_) => 0,
+        Bind::Constant(value) => value_size(value),
     }
 }
 
@@ -218,9 +249,12 @@ fn demanded(event: &HostEvent) -> Option<&Vec<ModelPath>> {
 
 fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
     match event {
-        HostEvent::Evaluate { on, then, .. } => HostEvent::Evaluate {
+        HostEvent::Evaluate {
+            on, budget, then, ..
+        } => HostEvent::Evaluate {
             on: *on,
             paths,
+            budget: *budget,
             then: *then,
         },
         HostEvent::Drive {
@@ -235,9 +269,9 @@ fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
     }
 }
 
-/// The values one step smaller than `value`: an int toward zero, true
-/// made false, a member dropped or made smaller, a declaration made
-/// smaller.
+/// The values one step smaller than `value`: an int or a bound toward
+/// zero, true made false, a member or a call's site dropped, or a member's
+/// declaration made smaller, a declaration made smaller.
 fn smaller_values(value: &Val) -> Vec<Val> {
     match value {
         Val::Int(value) => {
@@ -267,11 +301,28 @@ fn smaller_values(value: &Val) -> Vec<Val> {
             dropped.chain(shrunk).map(Val::Members).collect()
         }
         Val::Decl(decl) => smaller_decls(decl).into_iter().map(Val::Decl).collect(),
+        Val::Bound(bound) => {
+            let mut smaller = Vec::new();
+            for toward in [0, bound / 2, bound.saturating_sub(1)] {
+                if toward != *bound && !smaller.contains(&toward) {
+                    smaller.push(toward);
+                }
+            }
+            smaller.into_iter().map(Val::Bound).collect()
+        }
+        Val::Calls(sites) => (0..sites.len())
+            .map(|dropped| {
+                let mut fewer = sites.clone();
+                fewer.remove(dropped);
+                Val::Calls(fewer)
+            })
+            .collect(),
     }
 }
 
-/// A structure made a cell with no terms, a binding dropped, or a
-/// binding's steps shortened by one.
+/// A declaration of any other kind made a cell with no terms, a binding
+/// dropped, a binding's steps shortened by one, or a constant's value
+/// made smaller.
 fn smaller_decls(of: &Decl) -> Vec<Decl> {
     let mut smaller = Vec::new();
     if of.kind != ToyKind::Cell {
@@ -297,6 +348,16 @@ fn smaller_decls(of: &Decl) -> Vec<Decl> {
         shortened.bindings.insert(name.clone(), shorter);
         smaller.push(shortened);
     }
+    for (name, bind) in &of.bindings {
+        let Bind::Constant(value) = bind else {
+            continue;
+        };
+        for value in smaller_values(value) {
+            let mut shrunk = of.clone();
+            shrunk.bindings.insert(name.clone(), Bind::Constant(value));
+            smaller.push(shrunk);
+        }
+    }
     smaller
 }
 
@@ -317,6 +378,7 @@ mod tests {
         let evaluate = |on| HostEvent::Evaluate {
             on,
             paths: vec![path("c", [])],
+            budget: None,
             then: Then::End,
         };
         let case = Case {
@@ -339,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn every_candidate_is_smaller_well_formed_and_acyclic() {
+    fn every_candidate_is_smaller_and_well_formed() {
         for (seed, case) in gate_cases() {
             let smaller = candidates(&case);
             assert!(!smaller.is_empty(), "seed {seed} has no candidate");

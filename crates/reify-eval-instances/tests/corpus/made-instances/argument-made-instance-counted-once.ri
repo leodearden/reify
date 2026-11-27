@@ -1,0 +1,14 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+}
+structure def Widget {
+    param p : Plate = Plate(t: 5mm)
+}
+structure def AsmI {
+    sub d = Widget(p: Plate(t: 1mm))
+}
+structure def AsmII {
+    let c = Plate(t: 1mm)
+    sub d = Widget(p: c)
+}

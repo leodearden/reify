@@ -1,9 +1,10 @@
 # tests/infra/run-all-ambient-vars.manifest — the single acknowledged ledger
 # of every env var ambiently injected into the run_all.sh pool (every one of
 # its ~103 tests inherits ALL of these, whether or not a given test cares
-# about a given var).
+# about a given var), and of every upstream-injected var run_all.sh strips
+# before a member can inherit it.
 #
-# Co-maintained with the three live injection sources:
+# Co-maintained with the four live injection sources:
 #   (1) scripts/verify.sh's run_all.sh plan line (grep for
 #       `REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1` in
 #       scripts/verify.sh — a bare grep for `tests/infra/run_all.sh` also
@@ -19,18 +20,31 @@
 #       run_all_injected_env_keys in tests/infra/run_all_ambient_isolation_lib.sh,
 #       so a new export in any sourced lib is a detected drift, not a silent
 #       hole (task 7234).
+#   (4) the Environment= of the orchestrator's systemd unit, as set by every
+#       `*.conf` drop-in reify tracks under
+#       deploy/systemd/orchestrator-reify.service.d/ (read by
+#       tests/infra/systemd_unit_env.py, task 10716): install-warm-lane-units.sh
+#       copies them verbatim into the unit the orchestrator runs as, and
+#       dark-factory hands that whole process environment to verify. The other
+#       deploy/systemd/reify-*.service units do not qualify (each is its own
+#       oneshot or timer process tree, never an ancestor of a verify), even
+#       where they set the same var (reify-warm-lane-gc.service does).
 #
 # Line numbers are deliberately NOT cited above: both prior citations
 # (verify.sh:1430 and dark-factory-orchestrator.yaml:148-152, landed by task
 # 5152 on 2026-07-09) drifted stale within weeks. Use the grep anchors.
 #
 # Deliberately OUT of scope: verify.sh's own process-level exports (apply_env,
-# e.g. CARGO_MAKEFLAGS — see the verify_env section below). Source (3)'s own
-# residual blind spots are listed once, in run_all_ambient_isolation_lib.sh's
-# header entry for run_all_injected_env_keys.
+# e.g. CARGO_MAKEFLAGS — see the verify_env section below); the dark-factory-
+# owned base unit orchestrator-reify.service (PATH, LANG, ORCH_UNIT), which
+# reify does not track, so reading it would make the verdict depend on each
+# host's dark-factory checkout; the environment.d PATH drop-in that
+# scripts/install-canon-trampoline.sh generates; and any untracked host-local
+# drop-in. The residual blind spots of source (3) and of the strip probe are
+# listed once, in run_all_ambient_isolation_lib.sh's header.
 #
 # tests/infra/test_run_all_ambient_isolation.sh derives the LIVE injected-var
-# set from all three sources above and cross-checks it against this file's key
+# set from all four sources above and cross-checks it against this file's key
 # set for SET EQUALITY. A var newly injected by any source without a matching
 # entry here (or a stale entry here for a var no longer injected) fails that
 # guard's drift assertion — so extending any injection source requires a
@@ -44,7 +58,14 @@
 # `Coverage-shape note`) for the canonical rationale — do not re-derive it
 # here.
 #
-# Format: one env-var name per line. `#`-comment and blank lines ignored.
+# Format: one row per env var, `<KEY>` or `<KEY> strip`. `#`-comment and
+# blank lines ignored; any other row shape fails the guard.
+#   <KEY>        the var reaches every pool member.
+#   <KEY> strip  the var is injected upstream of run_all.sh, which removes it
+#                before spawning any member. The guard proves each strip row
+#                behaviourally (run_all_stripped_env_keys spawns the real
+#                run_all.sh with the key set and checks the member never sees
+#                it), and still counts the key in the set-equality check.
 # Values are NOT recorded here (this is a keys-only ledger) — each guard run
 # looks up the live value from whichever injection source actually carries
 # that key.
@@ -137,3 +158,16 @@ CARGO_HOME
 # CARGO_HOME's above: not in HOSTILE_LOOP_KEYS, so this row buys ledger-drift
 # coverage only.
 DF_VERIFY_ROLE
+
+# --- orchestrator systemd unit Environment= (deploy/systemd/orchestrator-reify.service.d) ---
+# REIFY_LANE_LEAK_STATUS_CMD: the live warm-lane leak-status oracle, set by
+# warm-lane.conf for the orchestrator's own background loops. run_all.sh strips
+# it; a member that wants an oracle passes --status-cmd with a stub. The strip
+# does not make a member's own clearing redundant: members also run outside
+# run_all.sh, standalone and through verify.sh's selective infra leaf
+# (scripts/verify-pipeline-infra-tests.txt), under the orchestrator's
+# environment. So a member that runs a leak-oracle script must still unset the
+# variable or pass --status-cmd itself (today: the top-level unset in
+# test_warm_lane_preflight.sh and test_warm_lane_audit.sh, --status-cmd in
+# test_warm_lane_sizing_lifecycle.sh).
+REIFY_LANE_LEAK_STATUS_CMD strip

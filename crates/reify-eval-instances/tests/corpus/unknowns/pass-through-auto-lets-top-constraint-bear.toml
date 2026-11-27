@@ -1,0 +1,25 @@
+tests = "to choose a child's value from above, each level passes an `auto` parameter through, and then the top's constraint bears on it."
+rule = "decision 1 (its cost); Part 6.2; Part 4 (names in the braces)."
+provenance = "language-1 L10 (the pass-through source); design decision 1 \"Cost\". Taken. Also, from the merged entries: design decision 1 (cost, first bullet)."
+needs = ["instance", "braces", "constraint", "unknown", "solve-forced"]
+answer_basis = "traced. `a_len = auto` in `TopS`'s braces is `TopS`'s unknown, at `TopS/auto[asm.a_len]`; `Asm`'s own default `auto` is not used, since the use gives it. In `Asm`'s braces, bare `a_len` is no `let` of the braces and not a member of `Beam`, so it is `Asm`'s parameter (readings C20; this name resolution is why the entry needs `braces`). Bearing, all inside `TopS`: `a_len == 70mm` and `Beam`'s bounds at `TopS.asm.a`. Exactly 70 mm."
+today = "`TopS.asm.a_len = 70 mm` but `TopS.asm.a.len = undef` (run `own_pass.ri`)."
+
+[candidates]
+note = "50 mm meets `Beam`'s bounds and breaks `TopS`'s constraint; a reading in which `Asm` keeps its own `auto` and `TopS`'s constraint only checks takes it. The first taken is 70 mm."
+
+[[candidates.unknown]]
+path = "TopS/auto[asm.a_len]"
+values = ["50mm", "70mm"]
+
+[[expect]]
+path = "TopS.asm.a.len"
+value = "70 mm"
+
+[[expect]]
+path = "TopS/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "TopS.asm.a/constraint[1]"
+verdict = "satisfied"

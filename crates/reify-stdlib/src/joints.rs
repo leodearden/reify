@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use reify_core::DimensionVector;
+use reify_core::{Diagnostic, DimensionVector};
+use reify_ir::arg_acceptance::ArgRejection;
 use reify_ir::{Value, decode_direction, quaternion_is_finite};
 
 use crate::dynamics::spatial::SpatialVector6;
@@ -259,12 +260,12 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     };
                     // Extract x (metres), y (metres), theta (radians).
                     let x = match length_input(&items[0]) {
-                        Some(v) => v,
-                        None => return Some(Value::Undef),
+                        Ok(Some(v)) => v,
+                        Ok(None) | Err(_) => return Some(Value::Undef),
                     };
                     let y = match length_input(&items[1]) {
-                        Some(v) => v,
-                        None => return Some(Value::Undef),
+                        Ok(Some(v)) => v,
+                        Ok(None) | Err(_) => return Some(Value::Undef),
                     };
                     let theta = match trig_input(&items[2]) {
                         Some(v) => v,
@@ -448,8 +449,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     // both helpers reject wrong-dim Scalars and non-finite values.
                     let v_si = if parent_kind == "prismatic" {
                         match length_input(&args[1]) {
-                            Some(d) => d,
-                            None => return Some(Value::Undef),
+                            Ok(Some(d)) => d,
+                            Ok(None) | Err(_) => return Some(Value::Undef),
                         }
                     } else {
                         match trig_input(&args[1]) {
@@ -522,13 +523,13 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                 Some(r) => r,
                 None => return Some(Value::Undef),
             };
-            // Extract offset: use parent-dimension-keyed helper (length_input / trig_input)
-            // so bare Real/Int is accepted in addition to correctly-dimensioned Scalar.
+            // Extract offset: use parent-dimension-keyed helper (length_input / trig_input):
+            // a prismatic offset must be a LENGTH, a revolute one an ANGLE or bare radians.
             let offset_si = if args.len() == 3 {
                 if is_prismatic {
                     match length_input(&args[2]) {
-                        Some(d) => d,
-                        None => return Some(Value::Undef),
+                        Ok(Some(d)) => d,
+                        Ok(None) | Err(_) => return Some(Value::Undef),
                     }
                 } else {
                     match trig_input(&args[2]) {
@@ -575,8 +576,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
             // Parse lead as a LENGTH value (SI metres).
             let lead_si = match length_input(&args[1]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
+                Ok(Some(v)) => v,
+                Ok(None) | Err(_) => return Some(Value::Undef),
             };
             // Compute the dimensionless ratio: lead / (2π).
             let ratio = lead_si / (2.0 * std::f64::consts::PI);
@@ -648,8 +649,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
             // Parse pitch_radius as a LENGTH value (SI metres).
             let pitch_radius_si = match length_input(&args[1]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
+                Ok(Some(v)) => v,
+                Ok(None) | Err(_) => return Some(Value::Undef),
             };
             // ratio = pitch_radius (dimensionless scaling factor for the coupling).
             let ratio = pitch_radius_si;
@@ -751,6 +752,60 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         }
         _ => return None,
     })
+}
+
+/// Post-`Value::Undef` classifier for the joint builtins that read a LENGTH
+/// position (`transform_at`, `couple`, `screw`, `rack_and_pinion`), drained by
+/// reify-expr's `emit_undef_builtin_diagnostics`. A position refused by
+/// dimension, a bare number included, is one `DimensionedArgRejected` Error
+/// naming the argument; an unresolved (`Value::Undef`) argument is never
+/// diagnosed.
+pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
+    let (arg, rejection) = refused_length_position(name, args)?;
+    Some(rejection.to_error(name, &arg))
+}
+
+/// The first LENGTH position of `name(args)` that [`length_input`] refuses,
+/// with its argument name: exactly the positions the [`eval_joints`] arms read.
+fn refused_length_position(name: &str, args: &[Value]) -> Option<(String, ArgRejection)> {
+    let refused = |arg: &str, v: &Value| length_input(v).err().map(|r| (arg.to_string(), r));
+    match (name, args) {
+        ("screw", [_, lead]) => refused("lead", lead),
+        ("rack_and_pinion", [_, pitch_radius]) => refused("pitch_radius", pitch_radius),
+        ("couple", [parent, _, offset]) if joint_kind(parent) == Some("prismatic") => {
+            refused("offset", offset)
+        }
+        ("transform_at", [joint, v]) => match (joint_kind(joint)?, v) {
+            ("prismatic", _) => refused("v", v),
+            ("planar", Value::List(items)) if items.len() == 3 => {
+                refused("v[0]", &items[0]).or_else(|| refused("v[1]", &items[1]))
+            }
+            ("cylindrical", Value::List(items)) if items.len() == 2 => refused("v[0]", &items[0]),
+            ("coupling", _)
+                if joint_field(joint, "parent").and_then(joint_kind) == Some("prismatic") =>
+            {
+                refused("v", v)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The `kind` string of a joint Map; `None` for any other value.
+fn joint_kind(joint: &Value) -> Option<&str> {
+    match joint_field(joint, "kind")? {
+        Value::String(kind) => Some(kind),
+        _ => None,
+    }
+}
+
+/// The `key` field of a joint Map; `None` for any other value.
+fn joint_field<'a>(joint: &'a Value, key: &str) -> Option<&'a Value> {
+    match joint {
+        Value::Map(map) => map.get(&Value::String(key.to_string())),
+        _ => None,
+    }
 }
 
 /// Compute the SE(3) twist column for a joint Map.
@@ -1158,35 +1213,27 @@ fn ratio_input(v: &Value) -> Option<f64> {
     }
 }
 
-/// Extract metres from a `transform_at` value argument for a Prismatic joint.
+/// Read metres from a joint LENGTH position (a prismatic displacement, a
+/// planar / cylindrical length component, a coupling offset, a screw lead, a
+/// rack pitch radius).
 ///
-/// Accepts:
-/// - `Value::Scalar { dimension: LENGTH, .. }` — si_value is metres.
-/// - `Value::Real(r)` / `Value::Int(i)` — treated as metres directly.
+/// - `Ok(Some(m))`: accepted, a finite LENGTH `Value::Scalar`.
+/// - `Ok(None)`: unresolved (`Value::Undef`) or non-finite.
+/// - `Err`: refused by dimension — a bare `Value::Real` / `Value::Int` included,
+///   which would otherwise read as metres (the 10-vs-10mm hazard).
 ///
-/// Returns `None` for any other variant (wrong dimension, non-finite).
-fn length_input(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => {
-            if *dimension == DimensionVector::LENGTH && si_value.is_finite() {
-                Some(*si_value)
-            } else {
-                None
-            }
-        }
-        Value::Real(r) if r.is_finite() => Some(*r),
-        Value::Int(i) => Some(*i as f64),
-        _ => None,
-    }
+/// The value path maps both non-accepted arms to `Value::Undef`; [`diagnose`]
+/// reports the `Err`. The one LENGTH motion-component reader is
+/// [`crate::loop_closure::length_component`], shared with the loop-closure
+/// binding reader so a bound and a driven displacement accept the same values.
+fn length_input(v: &Value) -> Result<Option<f64>, ArgRejection> {
+    crate::loop_closure::length_component(v)
 }
 
 /// Extract `(dist, theta)` from a cylindrical motion-variable argument.
 ///
 /// Accepts a 2-element `Value::List` whose elements are:
-/// - `items[0]`: a length scalar (LENGTH-dim Scalar, or bare Real/Int as metres)
+/// - `items[0]`: a length scalar (LENGTH-dim Scalar; a bare number is refused)
 /// - `items[1]`: an angle scalar (ANGLE-dim Scalar, or bare Real/Int as radians)
 ///
 /// Returns `None` if:
@@ -1208,7 +1255,7 @@ fn cylindrical_motion_vars(value: &Value) -> Option<(f64, f64)> {
         Value::List(items) if items.len() == 2 => items,
         _ => return None,
     };
-    let dist = length_input(&items[0])?;
+    let dist = length_input(&items[0]).ok().flatten()?;
     let theta = trig_input(&items[1])?;
     Some((dist, theta))
 }
@@ -1715,8 +1762,8 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
             };
             // Accept Length Scalar or bare Real/Int as metres
             let dist = match length_input(value) {
-                Some(d) => d,
-                None => return Value::Undef,
+                Ok(Some(d)) => d,
+                Ok(None) | Err(_) => return Value::Undef,
             };
             // length_input already enforces finiteness for the Scalar/Real
             // branches; the Int branch yields finite f64 by construction.
@@ -1775,13 +1822,13 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 
 #[cfg(test)]
 mod tests {
-    use super::{JOINT_KINDS, is_joint_value};
+    use super::{JOINT_KINDS, diagnose, is_joint_value};
     use crate::eval_builtin;
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
         length_range_0_to_1m, planar_xy_joint, spherical_joint,
     };
-    use reify_core::DimensionVector;
+    use reify_core::{DiagnosticCode, DimensionVector};
     use reify_ir::Value;
     use reify_test_support::direction_val;
 
@@ -2327,17 +2374,21 @@ mod tests {
     }
 
     #[test]
-    fn prismatic_transform_at_bare_real_value() {
-        // bare Value::Real(0.5) accepted as 0.5 metres
-        let joint = prismatic_x_joint();
-        let result = eval_builtin("transform_at", &[joint, Value::Real(0.5)]);
-        assert_transform_approx(
-            &result,
-            (1.0, 0.0, 0.0, 0.0),
-            [0.5, 0.0, 0.0],
-            1e-12,
-            "prismatic X, bare Real(0.5)",
-        );
+    fn prismatic_transform_at_bare_value_refused() {
+        // A prismatic displacement is a LENGTH: a bare Real / Int is refused,
+        // and the refusal is named.
+        for bare in [Value::Real(0.5), Value::Int(1)] {
+            let args = [prismatic_x_joint(), bare.clone()];
+            assert!(
+                eval_builtin("transform_at", &args).is_undef(),
+                "bare {bare:?} displacement must be refused"
+            );
+            assert_eq!(
+                diagnose("transform_at", &args).and_then(|d| d.code),
+                Some(DiagnosticCode::DimensionedArgRejected),
+                "bare {bare:?} displacement refusal must be named"
+            );
+        }
     }
 
     // ── transform_at on Revolute: helpers ────────────────────────────────────
@@ -3355,30 +3406,24 @@ mod tests {
     }
 
     #[test]
-    fn couple_prismatic_int_offset_accepted() {
-        // Value::Int(1) is accepted by length_input for a prismatic parent
-        // and stored as Value::length(1.0)
+    fn couple_prismatic_bare_offset_refused() {
+        // A prismatic offset is a LENGTH: a bare Int / Real would read as
+        // metres (the 10-vs-10mm hazard), so length_input refuses both.
+        for bare in [Value::Int(1), Value::Real(1.5)] {
+            let args = [prismatic_x_joint(), Value::Real(1.0), bare.clone()];
+            assert!(
+                eval_builtin("couple", &args).is_undef(),
+                "bare {bare:?} prismatic offset must be refused"
+            );
+            assert_eq!(
+                diagnose("couple", &args).and_then(|d| d.code),
+                Some(DiagnosticCode::DimensionedArgRejected),
+                "bare {bare:?} prismatic offset refusal must be named"
+            );
+        }
         let result = eval_builtin(
             "couple",
-            &[prismatic_x_joint(), Value::Real(1.0), Value::Int(1)],
-        );
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-        assert_eq!(
-            map.get(&Value::String("offset".to_string())),
-            Some(&Value::length(1.0)),
-            "Int(1) offset for prismatic should be stored as Value::length(1.0)"
-        );
-    }
-
-    #[test]
-    fn couple_prismatic_bare_real_offset_accepted() {
-        // bare Value::Real(1.5) is accepted by length_input for a prismatic parent
-        let result = eval_builtin(
-            "couple",
-            &[prismatic_x_joint(), Value::Real(1.0), Value::Real(1.5)],
+            &[prismatic_x_joint(), Value::Real(1.0), Value::length(1.5)],
         );
         let map = match result {
             Value::Map(m) => m,
@@ -3387,7 +3432,7 @@ mod tests {
         assert_eq!(
             map.get(&Value::String("offset".to_string())),
             Some(&Value::length(1.5)),
-            "Real(1.5) offset for prismatic should be stored as Value::length(1.5)"
+            "a LENGTH offset for prismatic is stored as given"
         );
     }
 
@@ -3666,16 +3711,15 @@ mod tests {
     }
 
     #[test]
-    fn coupling_prismatic_bare_real_value() {
-        // bare Real(0.5) accepted as 0.5 metres; ratio=1, offset=0 → [0.5,0,0]
+    fn coupling_prismatic_bare_real_value_refused() {
+        // A prismatic coupling's input is a LENGTH: bare Real(0.5) is refused,
+        // and the refusal is named.
         let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
-        let result = eval_builtin("transform_at", &[c, Value::Real(0.5)]);
-        assert_transform_approx(
-            &result,
-            (1.0, 0.0, 0.0, 0.0),
-            [0.5, 0.0, 0.0],
-            1e-12,
-            "coupling prismatic bare Real(0.5), ratio=1 → [0.5,0,0]",
+        let args = [c, Value::Real(0.5)];
+        assert!(eval_builtin("transform_at", &args).is_undef());
+        assert_eq!(
+            diagnose("transform_at", &args).and_then(|d| d.code),
+            Some(DiagnosticCode::DimensionedArgRejected)
         );
     }
 
@@ -6532,10 +6576,9 @@ mod tests {
     /// argument. All listed shapes return Undef. Also includes two positive
     /// polarity cases: (1) a 2-element `Value::List` with the right dims that
     /// MUST return a Transform — guards against accidental over-rejection of
-    /// the canonical List container shape; (2) a bare `Value::Real` pair that
-    /// pins the `length_input`/`trig_input` bare-Real contract — without this,
-    /// a future tightening to require dimensioned Scalars could silently shrink
-    /// cylindrical's accepted input set.
+    /// the canonical List container shape; (2) a bare `Value::Real` angle that
+    /// pins `trig_input`'s bare-radians contract. A bare translation is refused
+    /// (`length_input` requires a LENGTH), so it sits in the Undef table.
     ///
     /// Container shape is List-only (mirrors the planar arm); a 2-element
     /// `Value::Vector` is rejected as a negative case to keep the joint-zoo
@@ -6582,6 +6625,10 @@ mod tests {
                 "Vector container (wrong shape — List required)",
                 Value::Vector(vec![Value::length(0.5), Value::angle(0.0)]),
             ),
+            (
+                "bare Real translation (would read as metres)",
+                Value::List(vec![Value::Real(0.5), Value::angle(0.0)]),
+            ),
         ];
 
         for (label, motion) in undef_cases {
@@ -6600,15 +6647,13 @@ mod tests {
             result
         );
 
-        // Positive polarity: bare-Real motion vars (interpreted as metres/radians).
-        // Locks in that length_input/trig_input accept Value::Real, mirroring the
-        // planar arm. Without this, a future tightening to require dimensioned
-        // Scalars could silently shrink cylindrical's accepted input set.
-        let bare_real_motion = Value::List(vec![Value::Real(0.5), Value::Real(0.0)]);
-        let result = eval_builtin("transform_at", &[cyl.clone(), bare_real_motion]);
+        // Positive polarity: a bare-Real angle still reads as radians
+        // (trig_input), mirroring the planar arm.
+        let bare_angle_motion = Value::List(vec![Value::length(0.5), Value::Real(0.0)]);
+        let result = eval_builtin("transform_at", &[cyl.clone(), bare_angle_motion]);
         assert!(
             matches!(&result, Value::Transform { .. }),
-            "transform_at(cyl, List[Real, Real]) must return Transform, got {:?}",
+            "transform_at(cyl, List[length, Real]) must return Transform, got {:?}",
             result
         );
     }

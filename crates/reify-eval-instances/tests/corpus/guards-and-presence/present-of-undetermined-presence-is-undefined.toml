@@ -1,0 +1,17 @@
+tests = "`present(...)` of a member whose presence is undetermined is undefined, not false, so an `if` on it takes no arm and an undecided member does not read as an absent one."
+rule = "readings E29; decision 3 (3c); ruling 9 of `seat-context.md` (a summary must tell an undetermined verdict from any other cause); ruling 6 (only the condition of an `if` decides what is read)"
+provenance = "tracer report `critics/trace-presence-and-values.md`, counter-example N2; readings E29, which answers it."
+needs = ["instance", "guard"]
+answer_basis = "traced. `Top.x` is a root parameter with no value, so it is undefined; the argument `cooled = x` resolves `x` to `Top.x` (`Case` has no member `x`). `Top.c.fan` reads its guard `cooled`, undefined: `presence-undetermined`. `present(self.c.fan)` is therefore `value undefined` (readings E29). `r`'s `if` condition is undefined, so no arm is taken and `r` is undefined. Had `present` given false, `r` would be 0 mm and a design whose fan is undecided would read as one with no fan."
+
+[[expect]]
+path = "Top.c.fan"
+presence = "undetermined"
+
+[[expect]]
+path = "Top.p"
+value = "undefined"
+
+[[expect]]
+path = "Top.r"
+value = "undefined"

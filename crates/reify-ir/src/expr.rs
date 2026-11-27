@@ -198,6 +198,10 @@ pub enum CompiledExprKind {
         /// `remap_entity`, `remap_cell`, …) skip them — those passes act on
         /// surrounding-scope refs only.
         lets: Vec<(String, CompiledExpr)>,
+        /// Template geometry `let`s the evaluator places in the instance's
+        /// member scope as symbolic handles (task 10352), in value-cell order.
+        /// Template-local like `lets`, so NOT children.
+        geometry_lets: Vec<CtorGeometryLet>,
         /// The `.ri` source span of the constructor call site (task 4089,
         /// FEA result-model R2), populated by the compiler from the AST
         /// `FunctionCall` node's own span. `None` for synthetic ctors with no
@@ -323,6 +327,17 @@ impl CompiledPattern {
             }
         }
     }
+}
+
+/// A template geometry `let` a structure ctor places in the constructed
+/// instance's member scope as a symbolic `GeometryHandle`, never as a field
+/// (docs/prds/v0_6/uniform-member-access.md D5). `upstream_args` are the
+/// realization ops' scalar args the handle's upstream-values hash folds over.
+#[derive(Debug, Clone)]
+pub struct CtorGeometryLet {
+    pub member: String,
+    pub realization: reify_core::identity::RealizationNodeId,
+    pub upstream_args: Vec<(String, CompiledExpr)>,
 }
 
 /// A compiled match arm.
@@ -786,6 +801,20 @@ impl CompiledExpr {
         self.for_each_child(&mut |child| child.walk(f));
     }
 
+    /// True if a `CrossSubGeometryRef` occurs anywhere in this tree.
+    ///
+    /// `eval_expr` `unreachable!`s on that variant (task 3616), so a fold over
+    /// a realization's scalar args skips any arg that contains one.
+    pub fn contains_cross_sub_geometry_ref(&self) -> bool {
+        fn visit(expr: &CompiledExpr) -> ControlFlow<()> {
+            if matches!(expr.kind, CompiledExprKind::CrossSubGeometryRef(_)) {
+                return ControlFlow::Break(());
+            }
+            expr.try_for_each_child(&mut visit)
+        }
+        visit(self).is_break()
+    }
+
     /// Rewrite every `ValueRef` cell ID in this expression tree by applying
     /// `f`, returning a fresh `CompiledExpr` with recomputed `content_hash`
     /// values on every rebuilt node. (Task 2629 — runtime forall re-elaboration.)
@@ -1031,6 +1060,7 @@ impl CompiledExpr {
                 ordered_args,
                 defaults,
                 lets,
+                geometry_lets,
                 span,
             } => {
                 // Rebuild via the constructor so content_hash is recomputed
@@ -1043,10 +1073,11 @@ impl CompiledExpr {
                     .into_iter()
                     .map(|(n, e)| (n, e.map_value_refs(f)))
                     .collect();
-                // `lets` reference template-local ValueCellIds (entity ==
-                // type_name) — do NOT apply `f`, which remaps surrounding-scope
-                // refs.  Pass through cloned-unchanged so lets survive the
-                // map_value_refs rebuild without being dropped or wrongly remapped.
+                // `lets` and `geometry_lets` reference template-local
+                // ValueCellIds (entity == type_name) — do NOT apply `f`, which
+                // remaps surrounding-scope refs.  Pass through unchanged so they
+                // survive the map_value_refs rebuild without being dropped or
+                // wrongly remapped.
                 //
                 // INVARIANT ENFORCEMENT (suggestion 4): assert in debug/test builds
                 // that every ValueRef inside a let expr has entity == type_name.
@@ -1075,6 +1106,7 @@ impl CompiledExpr {
                     new_args,
                     new_defaults,
                     lets,
+                    geometry_lets,
                     span,
                     result_type,
                 )
@@ -1673,6 +1705,7 @@ impl CompiledExpr {
         ordered_args: Vec<(String, CompiledExpr)>,
         defaults: Vec<(String, CompiledExpr)>,
         lets: Vec<(String, CompiledExpr)>,
+        geometry_lets: Vec<CtorGeometryLet>,
         span: Option<SourceSpan>,
         result_type: Type,
     ) -> Self {
@@ -1697,6 +1730,19 @@ impl CompiledExpr {
                 .combine(ContentHash::of_str(name))
                 .combine(let_expr.content_hash);
         }
+        // Empty geometry_lets fold nothing, so a geometry-free ctor's hash is
+        // unchanged (task 10352, the task-4342 precedent above).
+        for geometry_let in &geometry_lets {
+            content_hash = content_hash
+                .combine(ContentHash::of_str(&geometry_let.member))
+                .combine(ContentHash::of_str(&geometry_let.realization.entity))
+                .combine(ContentHash::of(&geometry_let.realization.index.to_le_bytes()));
+            for (name, arg) in &geometry_let.upstream_args {
+                content_hash = content_hash
+                    .combine(ContentHash::of_str(name))
+                    .combine(arg.content_hash);
+            }
+        }
         CompiledExpr {
             kind: CompiledExprKind::StructureInstanceCtor {
                 type_id,
@@ -1705,6 +1751,7 @@ impl CompiledExpr {
                 ordered_args,
                 defaults,
                 lets,
+                geometry_lets,
                 span,
             },
             result_type,
@@ -2921,6 +2968,44 @@ mod tests {
         assert_eq!(remapped.result_type, Type::Geometry);
     }
 
+    #[test]
+    fn contains_cross_sub_geometry_ref_detects_top_level_ref() {
+        let xref = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("Parent.sub", "body"),
+            Type::Geometry,
+        );
+        assert!(xref.contains_cross_sub_geometry_ref());
+    }
+
+    #[test]
+    fn contains_cross_sub_geometry_ref_detects_ref_nested_in_larger_node() {
+        let xref = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("Parent.sub", "body"),
+            Type::Geometry,
+        );
+        let scalar = CompiledExpr::value_ref(ValueCellId::new("E", "width"), Type::Bool);
+        let in_operand = CompiledExpr::binop(BinOp::Gt, xref.clone(), scalar, Type::Bool);
+        assert!(in_operand.contains_cross_sub_geometry_ref());
+
+        let in_call_arg = make_function_call(
+            "translate",
+            vec![CompiledExpr::literal(Value::Int(1), Type::Int), in_operand],
+            Type::Geometry,
+        );
+        assert!(in_call_arg.contains_cross_sub_geometry_ref());
+    }
+
+    #[test]
+    fn contains_cross_sub_geometry_ref_is_false_for_ref_free_tree() {
+        let plain = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(ValueCellId::new("E", "a"), Type::Bool),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+            Type::Bool,
+        );
+        assert!(!plain.contains_cross_sub_geometry_ref());
+    }
+
     // ── task-3760 tests ───────────────────────────────────────────────────────
 
     /// `CompiledFunction::no_defaults_for` produces the canonical
@@ -3001,6 +3086,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone()), ("b".to_string(), ref_b.clone())],
             vec![],
             vec![("derived".to_string(), derived_expr.clone())], // <-- NEW lets param
+            Vec::new(),
             None,
             Type::Bool, // placeholder result type
         );
@@ -3037,6 +3123,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone()), ("b".to_string(), ref_b.clone())],
             vec![],
             vec![], // no lets
+            Vec::new(),
             None,
             Type::Bool,
         );
@@ -3067,6 +3154,117 @@ mod tests {
         );
     }
 
+    // ── task 10352: StructureInstanceCtor.geometry_lets ───────────────────────
+
+    fn body_geometry_let(index: u32, width: CompiledExpr) -> CtorGeometryLet {
+        CtorGeometryLet {
+            member: "body".to_string(),
+            realization: reify_core::identity::RealizationNodeId::new("Beam", index),
+            upstream_args: vec![("width".to_string(), width)],
+        }
+    }
+
+    fn beam_ctor(geometry_lets: Vec<CtorGeometryLet>) -> CompiledExpr {
+        let tip = make_function_call(
+            "vertex",
+            vec![CompiledExpr::value_ref(ValueCellId::new("Beam", "body"), Type::Geometry)],
+            Type::Geometry,
+        );
+        CompiledExpr::structure_instance_ctor(
+            crate::structure_type_id::StructureTypeId(0),
+            "Beam".to_string(),
+            1,
+            vec![],
+            vec![("len".to_string(), CompiledExpr::literal(Value::Int(1), Type::Int))],
+            vec![("tip".to_string(), tip)],
+            geometry_lets,
+            None,
+            Type::Bool,
+        )
+    }
+
+    fn geometry_lets_of(expr: &CompiledExpr) -> &[CtorGeometryLet] {
+        match &expr.kind {
+            CompiledExprKind::StructureInstanceCtor { geometry_lets, .. } => geometry_lets,
+            other => panic!("expected StructureInstanceCtor, got {other:?}"),
+        }
+    }
+
+    fn len_ref() -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new("Beam", "len"), Type::length())
+    }
+
+    #[test]
+    fn structure_instance_ctor_stores_geometry_lets_verbatim() {
+        let ctor = beam_ctor(vec![body_geometry_let(0, len_ref())]);
+        let stored = geometry_lets_of(&ctor);
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].member, "body");
+        assert_eq!(
+            stored[0].realization,
+            reify_core::identity::RealizationNodeId::new("Beam", 0)
+        );
+        assert_eq!(stored[0].upstream_args.len(), 1);
+        assert_eq!(stored[0].upstream_args[0].0, "width");
+        assert_eq!(
+            stored[0].upstream_args[0].1.content_hash,
+            len_ref().content_hash
+        );
+    }
+
+    #[test]
+    fn map_value_refs_passes_geometry_lets_through_unremapped() {
+        let ctor = beam_ctor(vec![body_geometry_let(0, len_ref())]);
+
+        let identity = ctor.clone().map_value_refs(&mut |id| id);
+        assert_eq!(identity.content_hash, ctor.content_hash);
+
+        let remapped = ctor.map_value_refs(&mut |id| ValueCellId::new("Elsewhere", id.member));
+        let kept = geometry_lets_of(&remapped);
+        assert_eq!(kept.len(), 1, "geometry_lets must survive the rebuild");
+        match &kept[0].upstream_args[0].1.kind {
+            CompiledExprKind::ValueRef(id) => assert_eq!(
+                *id,
+                ValueCellId::new("Beam", "len"),
+                "template-local upstream args must not be remapped"
+            ),
+            other => panic!("expected the ValueRef upstream arg, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn geometry_lets_fold_into_ctor_content_hash() {
+        let with = beam_ctor(vec![body_geometry_let(0, len_ref())]);
+        let without = beam_ctor(vec![]);
+        let other_realization = beam_ctor(vec![body_geometry_let(1, len_ref())]);
+        let other_arg = beam_ctor(vec![body_geometry_let(
+            0,
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        )]);
+        assert_ne!(with.content_hash, without.content_hash);
+        assert_ne!(with.content_hash, other_realization.content_hash);
+        assert_ne!(with.content_hash, other_arg.content_hash);
+    }
+
+    #[test]
+    fn geometry_let_upstream_args_are_not_children() {
+        let marker = ValueCellId::new("Beam", "only_in_upstream_arg");
+        let ctor = beam_ctor(vec![body_geometry_let(
+            0,
+            CompiledExpr::value_ref(marker.clone(), Type::length()),
+        )]);
+        let mut visited_marker = false;
+        ctor.walk(&mut |node| {
+            if matches!(&node.kind, CompiledExprKind::ValueRef(id) if *id == marker) {
+                visited_marker = true;
+            }
+        });
+        assert!(!visited_marker, "no traversal may enter geometry_lets");
+        let mut direct = 0;
+        ctor.for_each_child(&mut |_| direct += 1);
+        assert_eq!(direct, 1, "only the `len` default is a child");
+    }
+
     // ── task 4089 step-3 RED: StructureInstanceCtor.span ─────────────────────
     //
     // The construction-site `span` must be excluded from `content_hash` —
@@ -3087,6 +3285,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone())],
             vec![],
             vec![],
+            Vec::new(),
             Some(SourceSpan::new(10, 25)),
             Type::Bool,
         );
@@ -3097,6 +3296,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone())],
             vec![],
             vec![],
+            Vec::new(),
             None,
             Type::Bool,
         );

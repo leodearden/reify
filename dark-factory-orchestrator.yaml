@@ -1065,10 +1065,15 @@ verify_runners:
 # guard. Green tier: reload_config applies it live, and `prefer_local` is the one-reload
 # rollback.
 verify_host_policy: prefer_remote
-# Cadence 20 -> 10 (2026-09-30), matching dark_factory D1 (5053). A drift check leases
-# BOTH hosts and runs both legs, so 1-in-10 spends back a little of the local CPU this
-# change frees. Accepted: the guard is the whole safety case for prefer_remote. Restart-only.
-verify_drift_check_every_n_lands: 10
+# Cadence 10 -> 20 (2026-11-27, Leo ruling on the drift investigation for
+# esc-__drift__-8), matching dark_factory's own 20 (dark_factory 10999). None of
+# reify's four drift divergences (11-08..11-26) was a laptop false green: the
+# failures were non-hermetic infra tests (reify 9993, 10282, 10670), and each local
+# drift leg costs about 50 min of workstation CPU. Price: half the sampling of
+# remote greens, the standing fidelity guard under prefer_remote. Revisit when
+# dark_factory 11000 lands. Earlier: 20 -> 10 on 2026-09-30 (dark_factory D1, 5053).
+# Restart-only.
+verify_drift_check_every_n_lands: 20
 #
 # verify_cross_check_remote_green: FALSE again 2026-10-02 (dark_factory 5416 OFF step, Leo
 # ruling on esc-5416-2: window shortened to 1 day, OFF pre-approved). Window 2026-10-01T05:01Z

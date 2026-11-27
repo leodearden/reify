@@ -1,0 +1,28 @@
+tests = "a constraint in a sub's braces bears on the instance's own `auto`, shown with a forced value that needs no real solver."
+rule = "decision 4 (braces half); decision 1; Part 4; seat-context ruling 3."
+provenance = "the tracer of 2026-11-26 (trace-braces-purposes-unknowns, wrong tags, \"coverage that waits and need not\"): decision 4's model with the braces' bound at 20 mm; PRD boundary scenario S5."
+needs = ["instance", "braces", "constraint", "summary", "unknown", "solve-forced"]
+answer_basis = "traced. `shaft_d` is `Motor`'s `auto`, owned by `Rig.motor`. Bearing, all inside `Rig.motor`: `Motor`'s two bounds and the braces' `>= 20mm`. The only value is 20 mm. Had the braces not borne, any value in [4 mm, 20 mm] would do and the first candidate, 12 mm, would be taken."
+
+[candidates]
+note = "12 mm meets `Motor`'s bounds and not the braces; 25 mm meets the braces and not `Motor`'s `<= 20mm`. Each breaks a constraint that depended on the trial, so 20 mm is the first taken."
+
+[[candidates.unknown]]
+path = "Rig.motor.shaft_d"
+values = ["12mm", "25mm", "20mm"]
+
+[[expect]]
+path = "Rig.motor.shaft_d"
+value = "20 mm"
+
+[[expect]]
+path = "Rig.motor/braces/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Rig.motor/constraint[1]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Rig/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

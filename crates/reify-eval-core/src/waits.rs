@@ -53,6 +53,19 @@ impl Waits {
         reached
     }
 
+    /// `from`, and every node that waits on it, directly or through other
+    /// waits, worked with a stack rather than by recursion.
+    pub fn reach_waiters(&self, from: NodeKey) -> BTreeSet<NodeKey> {
+        let mut reached = BTreeSet::new();
+        let mut unvisited = vec![from];
+        while let Some(key) = unvisited.pop() {
+            if reached.insert(key) {
+                unvisited.extend(self.awaited_by.get(&key).into_iter().flatten());
+            }
+        }
+        reached
+    }
+
     /// Whether any node waits on `awaited`.
     pub fn is_awaited(&self, awaited: NodeKey) -> bool {
         self.awaited_by.contains_key(&awaited)

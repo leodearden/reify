@@ -5,6 +5,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod adoption_ratchet;
+pub mod bare_scalar;
 pub mod builders;
 pub mod ctor_conformance;
 pub mod ctor_conformance_debt;

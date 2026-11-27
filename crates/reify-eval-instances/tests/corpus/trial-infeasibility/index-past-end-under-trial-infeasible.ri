@@ -1,0 +1,12 @@
+structure def Vent {
+    param area : Length = 2mm
+}
+structure def M {
+    param n : Int = auto
+    sub vents : List<Vent>
+    constraint n >= 3
+    constraint n <= 6
+    constraint vents[2].area >= 1mm
+    minimize n
+    constraint vents.count == n
+}

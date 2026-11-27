@@ -12,7 +12,7 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_ir::{PersistentMap, Value};
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
@@ -29,7 +29,7 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 /// task 3544 step-1: bare `PressureLoad()` constructor lowers to a
 /// `Value::StructureInstance` whose `type_name` is `"PressureLoad"` and whose
 /// fields carry the three declared defaults: `direction = "normal"`,
-/// `face = none` (Option<FaceSelector> = none — task 4370), `magnitude = 0.0`.
+/// `face = none` (Option<FaceSelector> = none — task 4370), `magnitude = 0Pa`.
 ///
 /// RED before step-2 declares `structure def PressureLoad : Load { ... }` in
 /// `crates/reify-compiler/stdlib/fea_multi_case.ri`; source-level `PressureLoad(...)`
@@ -75,11 +75,14 @@ structure def PressureLoadFixture {
                 "PressureLoad.face default must be none (Value::Option(None)); fields: {:?}",
                 data.fields
             );
-            // magnitude default = 0.0
+            // magnitude default = 0Pa
             assert_eq!(
                 field(&data.fields, "magnitude"),
-                Some(&Value::Real(0.0)),
-                "PressureLoad.magnitude default must be 0.0; fields: {:?}",
+                Some(&Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::PRESSURE,
+                }),
+                "PressureLoad.magnitude default must be 0Pa; fields: {:?}",
                 data.fields
             );
         }
@@ -121,7 +124,7 @@ structure def PressureLoadAccess {
 
 /// task 3544 step-1: member-access chain `self.pressure.magnitude` reads
 /// through the `PressureLoad` structure instance and resolves to
-/// `Value::Real(0.0)` (the default declared in the structure def).
+/// `0Pa` (the default declared in the structure def).
 #[test]
 fn pressure_load_member_access_magnitude() {
     const SOURCE: &str = r#"
@@ -143,8 +146,11 @@ structure def PressureLoadMag {
 
     assert_eq!(
         mag,
-        &Value::Real(0.0),
-        "self.pressure.magnitude must resolve to Value::Real(0.0); got {mag:?}"
+        &Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "self.pressure.magnitude must resolve to 0Pa; got {mag:?}"
     );
 }
 

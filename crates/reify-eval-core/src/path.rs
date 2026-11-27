@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::hash::Encoder;
 use crate::step::Step;
 
 /// A root, named by the session.
@@ -11,6 +12,14 @@ pub struct Root(Arc<str>);
 impl Root {
     pub fn named(name: impl Into<Arc<str>>) -> Self {
         Self(name.into())
+    }
+
+    pub fn name(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn encode(&self, encoder: &mut Encoder) {
+        encoder.tag("root").text(&self.0);
     }
 }
 
@@ -42,11 +51,11 @@ impl Path {
         Self { root, steps }
     }
 
-    pub(crate) fn root_name(&self) -> &Root {
+    pub fn root_name(&self) -> &Root {
         &self.root
     }
 
-    pub(crate) fn steps(&self) -> &[Step] {
+    pub fn steps(&self) -> &[Step] {
         &self.steps
     }
 }

@@ -3,7 +3,9 @@
 
 use std::any::type_name;
 
-use reify_eval_core::{Answer, Declaration, Failure, KindId, Outcome, OutsideFailure, Turn};
+use reify_eval_core::{
+    Answer, Budget, Declaration, Failure, KindId, Outcome, OutsideFailure, Turn,
+};
 
 use crate::toy;
 
@@ -12,7 +14,7 @@ fn a_demanded_root_with_no_input_answers_absent() {
     let mut core = toy::core();
     let snapshot = core.snapshot([]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["missing"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["missing"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("missing"));
@@ -27,7 +29,7 @@ fn a_root_input_that_is_not_a_declaration_answers_a_failure_naming_both_types() 
     let mut core = toy::core();
     let snapshot = core.snapshot([toy::root("seven", 7_i64)]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["seven"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["seven"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("seven"));
@@ -44,7 +46,7 @@ fn a_root_declaring_a_kind_the_core_was_not_built_with_is_pending_with_that_fail
     let nobody = KindId("toy.nobody");
     let snapshot = core.snapshot([toy::root("lost", Declaration::new(nobody))]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["lost"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["lost"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("lost"));

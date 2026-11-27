@@ -1,0 +1,2 @@
+structure def Bolt { param d : Length = 2mm   constraint d >= 3mm }
+structure def Nut  { param d : Length = 2mm   constraint d >= 3mm }

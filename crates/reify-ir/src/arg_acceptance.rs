@@ -570,6 +570,49 @@ pub fn rotational_damping_spec() -> ArgSpec {
     }
 }
 
+/// Returns the [`ArgSpec`] for an ANGULAR-VELOCITY reader position (rad·s⁻¹):
+/// the revolute twin of [`velocity_spec`] (`RevoluteTOTSShaper.velocity_limit`).
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn angular_velocity_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "AngularVelocity",
+        dimension: reify_core::DimensionVector::ANGULAR_VELOCITY,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for an ANGULAR-ACCELERATION reader position
+/// (rad·s⁻²): the revolute twin of [`acceleration_spec`]
+/// (`RevoluteTOTSShaper.acceleration_limit`, declared `Rate<AngularVelocity>`).
+///
+/// Composed from the registry as `ANGULAR_VELOCITY / TIME`, exactly as the
+/// `.ri` declaration composes it: no `ANGULAR_ACCELERATION` registry const
+/// exists yet (minting one is `docs/prds/v0_6/angle-dimension-completion.md`
+/// leaf δ's).
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn angular_acceleration_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "AngularAcceleration",
+        dimension: reify_core::DimensionVector::ANGULAR_VELOCITY
+            .div(&reify_core::DimensionVector::TIME),
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for a TORQUE reader position (N·m·rad⁻¹): the
+/// revolute twin of [`force_spec`] (`RevoluteJointLimit.max_force`).
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn torque_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Torque",
+        dimension: reify_core::DimensionVector::TORQUE,
+        migration_hint: None,
+    }
+}
+
 
 /// Returns the [`ArgSpec`] for a DELIBERATELY-BARE reader position — one whose
 /// quantity is genuinely dimensionless (a ratio, a count, a relative
@@ -667,6 +710,16 @@ pub fn accept_arg_or_bare(value: &crate::value::Value, spec: &ArgSpec) -> Accept
     }
 }
 
+/// [`accept_arg`] as a reader's `Result`: `Ok(Some(si))` accepted, `Ok(None)`
+/// unresolved, `Err` refused — the strict twin of [`read_arg_or_bare`], so a
+/// bare number at a dimensioned position is an `Err`.
+pub fn read_arg(
+    value: &crate::value::Value,
+    spec: &ArgSpec,
+) -> Result<Option<f64>, ArgRejection> {
+    acceptance_reading(accept_arg(value, spec))
+}
+
 /// [`accept_arg_or_bare`] as a reader's `Result`: `Ok(Some(si))` accepted,
 /// `Ok(None)` unresolved, `Err` refused.
 ///
@@ -679,7 +732,12 @@ pub fn read_arg_or_bare(
     value: &crate::value::Value,
     spec: &ArgSpec,
 ) -> Result<Option<f64>, ArgRejection> {
-    match accept_arg_or_bare(value, spec) {
+    acceptance_reading(accept_arg_or_bare(value, spec))
+}
+
+/// A positional [`Acceptance`] as a reader's `Result`.
+fn acceptance_reading(acceptance: Acceptance) -> Result<Option<f64>, ArgRejection> {
+    match acceptance {
         Acceptance::Accepted(si) => Ok(Some(si)),
         Acceptance::Undefined => Ok(None),
         Acceptance::Rejected(rejection) => Err(rejection),
@@ -732,8 +790,8 @@ pub enum FieldAcceptance {
 ///    rejection;
 /// 2. `Value::Option` is unwrapped — `Option(None)` →
 ///    [`FieldAcceptance::Absent`], `Option(Some(inner))` → recurse. The
-///    recursion goes all the way down, for behavioural parity with
-///    `reify-stdlib/src/flexures/common.rs`'s `scalar_si`.
+///    recursion unwraps every nesting level, so `Option(Some(Option(Some(x))))`
+///    reads as `x`.
 ///
 /// **Option unwrapping lives here and ONLY here.** [`accept_arg`] stays frozen
 /// (amendment A1), and every Option shape amendment A2 cites is a struct
@@ -933,7 +991,7 @@ mod tests {
     fn prd5_spec_constructors_read_dimensions_from_the_core_registry() {
         use reify_core::DimensionVector as DV;
 
-        let cases: [(&str, ArgSpec, DV); 13] = [
+        let cases: [(&str, ArgSpec, DV); 16] = [
             ("pressure_spec", pressure_spec(), DV::PRESSURE),
             ("force_spec", force_spec(), DV::FORCE),
             ("mass_spec", mass_spec(), DV::MASS),
@@ -967,6 +1025,17 @@ mod tests {
                 rotational_damping_spec(),
                 DV::ROTATIONAL_DAMPING,
             ),
+            (
+                "angular_velocity_spec",
+                angular_velocity_spec(),
+                DV::ANGULAR_VELOCITY,
+            ),
+            (
+                "angular_acceleration_spec",
+                angular_acceleration_spec(),
+                DV::ANGULAR_VELOCITY.div(&DV::TIME),
+            ),
+            ("torque_spec", torque_spec(), DV::TORQUE),
         ];
 
         for (name, spec, expected) in cases {
@@ -1568,8 +1637,7 @@ mod tests {
             "a LENGTH inside Option(Some(..)) at a PRESSURE field must be Rejected"
         );
 
-        // (6) Nested Option, for behavioural parity with the recursion in
-        //     crates/reify-stdlib/src/flexures/common.rs:109 `scalar_si`.
+        // (6) Nested Option: the recursion unwraps every nesting level.
         let nested = steel_instance(&[(
             "yield_stress",
             Value::Option(Some(Box::new(Value::Option(Some(Box::new(pressure(
@@ -1579,7 +1647,7 @@ mod tests {
         assert_eq!(
             accept_field(&nested, "yield_stress", &pressure_spec()),
             FieldAcceptance::Accepted(310_000_000.0),
-            "nested Option must unwrap all the way down (parity with scalar_si)"
+            "Option(Some(Option(Some(x)))) must read as x"
         );
 
         // (7) The poisson_ratio shape: a bare Real lands at a dimensionless
@@ -1590,8 +1658,7 @@ mod tests {
             accept_field(&ratio, "poisson_ratio", &dimensionless_spec()),
             FieldAcceptance::Accepted(0.3),
             "a bare Real at a dimensionless_spec field must be Accepted \
-             (common.rs's material_numeric_field records that poisson_ratio \
-             lands as a bare Real at runtime)"
+             (a material's poisson_ratio lands as a bare Real at runtime)"
         );
         let bare_at_pressure = steel_instance(&[("youngs_modulus", Value::Real(2.0e11))]);
         assert!(
