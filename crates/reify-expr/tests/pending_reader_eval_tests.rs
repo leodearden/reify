@@ -270,3 +270,118 @@ fn a_logical_operator_whose_left_operand_decides_is_pending_when_the_other_is_no
         }
     }
 }
+
+// ── An `if` or a `match` whose condition is pending evaluates no arm ───────
+
+fn if_then_else(condition: CompiledExpr, a: &ValueCellId, b: &ValueCellId) -> CompiledExpr {
+    reify_test_support::builders::conditional_expr(condition, read_int(a), read_int(b))
+}
+
+/// `match discriminant { Red => read(a), _ => read(b) }`.
+fn match_red_or_other(discriminant: CompiledExpr, a: &ValueCellId, b: &ValueCellId) -> CompiledExpr {
+    CompiledExpr::match_expr(
+        discriminant,
+        vec![
+            arm(CompiledPattern::variant("Red"), read_int(a)),
+            arm(CompiledPattern::wildcard(), read_int(b)),
+        ],
+        Type::Int,
+    )
+}
+
+/// `Color.Red { shade: payload }`.
+fn red_with_shade(payload: CompiledExpr) -> CompiledExpr {
+    CompiledExpr::variant_ctor(
+        "Color".to_string(),
+        "Red".to_string(),
+        vec![("shade".to_string(), payload)],
+        Type::Enum("Color".to_string()),
+    )
+}
+
+#[test]
+fn an_if_whose_condition_is_not_here_yet_evaluates_no_arm() {
+    let (a, b, c) = (cell("a"), cell("b"), cell("c"));
+    let reader = TestReader::new()
+        .not_yet(&c)
+        .with(&a, Value::Int(1))
+        .with(&b, Value::Int(2));
+    let expr = if_then_else(read_bool(&c), &a, &b);
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&c]));
+}
+
+#[test]
+fn an_if_whose_condition_is_defined_but_read_a_pending_cell_evaluates_no_arm() {
+    let (a, b, c) = (cell("a"), cell("b"), cell("c"));
+    let reader = TestReader::new()
+        .not_yet(&c)
+        .with(&a, Value::Int(1))
+        .with(&b, Value::Int(2));
+    let condition = binop(
+        BinOp::And,
+        CompiledExpr::literal(Value::Bool(false), Type::Bool),
+        read_bool(&c),
+        Type::Bool,
+    );
+    let expr = if_then_else(condition, &a, &b);
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&c]), "the else arm is not evaluated");
+}
+
+#[test]
+fn a_match_whose_discriminant_is_not_here_yet_evaluates_no_arm() {
+    let (a, b, d) = (cell("a"), cell("b"), cell("d"));
+    let reader = TestReader::new()
+        .not_yet(&d)
+        .with(&a, Value::Int(1))
+        .with(&b, Value::Int(2));
+    let expr = match_red_or_other(read(&d, Type::Enum("Color".to_string())), &a, &b);
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&d]));
+}
+
+#[test]
+fn a_match_on_a_variant_whose_payload_is_not_here_yet_evaluates_no_arm() {
+    let (a, b, c) = (cell("a"), cell("b"), cell("c"));
+    let reader = TestReader::new()
+        .not_yet(&c)
+        .with(&a, Value::Int(1))
+        .with(&b, Value::Int(2));
+    let expr = match_red_or_other(red_with_shade(read_int(&c)), &a, &b);
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&c]), "the tag is known, but no arm is evaluated");
+}
+
+#[test]
+fn an_if_or_a_match_whose_condition_is_here_evaluates_only_the_taken_arm() {
+    let (a, b, c, d) = (cell("a"), cell("b"), cell("c"), cell("d"));
+    let cases: Vec<(&str, CompiledExpr, BTreeSet<ValueCellId>)> = vec![
+        (
+            "if, then arm",
+            if_then_else(read_bool(&c), &a, &b),
+            ids(&[&c, &a]),
+        ),
+        (
+            "match, Red arm",
+            match_red_or_other(red_with_shade(read_int(&d)), &a, &b),
+            ids(&[&d, &a]),
+        ),
+        (
+            "match, wildcard arm",
+            match_red_or_other(read(&d, Type::Enum("Color".to_string())), &a, &b),
+            ids(&[&d, &b]),
+        ),
+    ];
+    for (name, expr, expected_asks) in cases {
+        let reader = TestReader::new()
+            .with(&c, Value::Bool(true))
+            .with(&d, enum_value("Color", "Green"))
+            .with(&a, Value::Int(1))
+            .with(&b, Value::Int(2));
+        let expected = old_eval(&expr, &reader);
+        assert!(!expected.is_undef(), "{name}: the old entry gives a value");
+        assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(expected), "{name}");
+        assert_eq!(asked(&reader), expected_asks, "{name}: only the taken arm is evaluated");
+    }
+}
