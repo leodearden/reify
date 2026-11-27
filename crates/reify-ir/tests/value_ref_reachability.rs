@@ -150,6 +150,7 @@ fn structure_ctor_with_lets() -> CompiledExpr {
             "l".to_string(),
             CompiledExpr::value_ref(struct_local_cell(), scalar()),
         )],
+        Vec::new(),
         None,
         Type::Bool,
     )

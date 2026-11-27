@@ -23,9 +23,13 @@ structure def Widget {
 }
 "#;
 
-/// Return the `face` field expr of a `PressureLoad` `StructureInstanceCtor`
+/// Return the `field` expr of a `type_name` `StructureInstanceCtor`
 /// (searching both `ordered_args` and `defaults`).
-fn pressure_face_arg(expr: &reify_ir::CompiledExpr) -> &reify_ir::CompiledExpr {
+fn ctor_field_arg<'e>(
+    expr: &'e reify_ir::CompiledExpr,
+    expected_type: &str,
+    field: &str,
+) -> &'e reify_ir::CompiledExpr {
     match &expr.kind {
         CompiledExprKind::StructureInstanceCtor {
             type_name,
@@ -33,15 +37,15 @@ fn pressure_face_arg(expr: &reify_ir::CompiledExpr) -> &reify_ir::CompiledExpr {
             defaults,
             ..
         } => {
-            assert_eq!(type_name, "PressureLoad", "expected a PressureLoad ctor");
+            assert_eq!(type_name, expected_type, "expected a {expected_type} ctor");
             ordered_args
                 .iter()
                 .chain(defaults.iter())
-                .find(|(n, _)| n == "face")
+                .find(|(n, _)| n == field)
                 .map(|(_, e)| e)
-                .expect("PressureLoad ctor must carry a `face` field")
+                .unwrap_or_else(|| panic!("{expected_type} ctor must carry a `{field}` field"))
         }
-        other => panic!("expected PressureLoad StructureInstanceCtor, got {:?}", other),
+        other => panic!("expected {expected_type} StructureInstanceCtor, got {other:?}"),
     }
 }
 
@@ -96,7 +100,11 @@ fn hoist_mints_synthetic_sel_cells_and_rewrites_fields() {
         .iter()
         .find(|c| c.id.member == "p")
         .expect("p cell");
-    let p_face = pressure_face_arg(p.default_expr.as_ref().expect("p default_expr"));
+    let p_face = ctor_field_arg(
+        p.default_expr.as_ref().expect("p default_expr"),
+        "PressureLoad",
+        "face",
+    );
     match &p_face.kind {
         CompiledExprKind::ValueRef(id) => assert!(
             id.member.starts_with("__sel"),
@@ -120,7 +128,7 @@ fn hoist_mints_synthetic_sel_cells_and_rewrites_fields() {
         CompiledExprKind::ListLiteral(elems) => &elems[0],
         other => panic!("loads default_expr must be a ListLiteral, got {:?}", other),
     };
-    let loads_face = pressure_face_arg(elem);
+    let loads_face = ctor_field_arg(elem, "PressureLoad", "face");
     match &loads_face.kind {
         CompiledExprKind::ValueRef(id) => assert!(
             id.member.starts_with("__sel"),
@@ -131,5 +139,93 @@ fn hoist_mints_synthetic_sel_cells_and_rewrites_fields() {
             "list-nested PressureLoad `face` field must be a ValueRef(__sel*), got {:?}",
             other
         ),
+    }
+}
+
+// ── task 10352: a callee's captured default is not lifted into the caller ────
+
+const CALLEE_DEFAULT_SRC: &str = r#"
+structure def Beam {
+    param load : Load = PointLoad(point: vertex(body, "tip"))
+    let body = box(1000mm, 100mm, 100mm)
+}
+
+structure def NestedAssembly {
+    let primary = Beam()
+}
+"#;
+
+fn template<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    name: &str,
+) -> &'m reify_compiler::TopologyTemplate {
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("{name} template must be present"))
+}
+
+fn default_of<'m>(
+    template: &'m reify_compiler::TopologyTemplate,
+    member: &str,
+) -> &'m reify_ir::CompiledExpr {
+    template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == member)
+        .and_then(|c| c.default_expr.as_ref())
+        .unwrap_or_else(|| panic!("{}.{member} must carry a default", template.name))
+}
+
+fn sel_cells(template: &reify_compiler::TopologyTemplate) -> Vec<&str> {
+    template
+        .value_cells
+        .iter()
+        .map(|c| c.id.member.as_str())
+        .filter(|m| m.starts_with("__sel"))
+        .collect()
+}
+
+/// A let-constructed `Beam()` evaluates its captured `load` default in the
+/// instance's member scope, where a caller-template `__sel_N` is invisible, so
+/// the hoist must leave that default's selector inline. Beam's own template
+/// still hoists it.
+#[test]
+fn hoist_leaves_a_callee_captured_default_inline() {
+    let module = crate::common::compile_with_stdlib_helper(CALLEE_DEFAULT_SRC);
+    let nested = template(&module, "NestedAssembly");
+    assert!(
+        sel_cells(nested).is_empty(),
+        "the caller template must mint no __sel cell for a callee default; got {:?}",
+        sel_cells(nested)
+    );
+
+    let primary_load = match &default_of(nested, "primary").kind {
+        CompiledExprKind::StructureInstanceCtor { defaults, .. } => defaults
+            .iter()
+            .find(|(n, _)| n == "load")
+            .map(|(_, e)| e)
+            .expect("primary's Beam ctor must capture the `load` default"),
+        other => panic!("primary must lower to a StructureInstanceCtor, got {other:?}"),
+    };
+    match &ctor_field_arg(primary_load, "PointLoad", "point").kind {
+        CompiledExprKind::FunctionCall { function, .. } => assert_eq!(function.name, "vertex"),
+        other => {
+            panic!("the captured default's `point` must stay the inline vertex call, got {other:?}")
+        }
+    }
+
+    let beam = template(&module, "Beam");
+    assert!(
+        !sel_cells(beam).is_empty(),
+        "Beam's own template must still hoist"
+    );
+    match &ctor_field_arg(default_of(beam, "load"), "PointLoad", "point").kind {
+        CompiledExprKind::ValueRef(id) => assert!(
+            id.member.starts_with("__sel"),
+            "Beam.load's point must reference a __sel cell, got {id}"
+        ),
+        other => panic!("Beam.load's point must be a ValueRef(__sel*), got {other:?}"),
     }
 }

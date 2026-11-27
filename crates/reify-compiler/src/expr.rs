@@ -3267,53 +3267,15 @@ fn compile_expr_guarded_with_expected_inner(
                     .filter(|(pidx, _)| param_arg[*pidx].is_none())
                     .filter_map(|(_, (n, d))| d.map(|e| ((*n).to_string(), e.clone())))
                     .collect();
-                // Collect the template's Let cells in declaration order (task-4342):
-                // each Let's compiled expr is stored in `default_expr`; the ctor
-                // carries them so eval can eagerly materialize derived members.
-                //
-                // Which Let kinds are intentionally included / excluded (suggestion 3):
-                //   INCLUDED:  all source-declared Let cells, whether Public or Private.
-                //     Private lets are included because they may be intermediate helpers
-                //     referenced by later Public lets (`priv let x = a*2; let y = x+1mm`).
-                //     Excluding them would silently break the Public let's evaluation.
-                //   EXCLUDED:  auto-synthesized `__count_<coll>` lets generated from
-                //     Constraint members (entity.rs:1483-1489).  These are compiler-internal
-                //     collection-count cells keyed by a private naming convention; they are
-                //     used by the engine's collection elaboration, not by ctor-path member
-                //     access, and their RHS may reference sub-component values unavailable
-                //     at ctor time.
-                //   EXCLUDED:  geometry-typed lets (γ, task #4954). Since γ, a top-level
-                //     geometry let ALSO emits a `Type::Geometry` value cell (previously it
-                //     emitted no cell at all, so this exclusion was vacuous — see the stale
-                //     comment this replaces). Eagerly materializing a geometry cell here would
-                //     shift `StructureInstanceCtor` cache identity beyond γ's ratified
-                //     value-cell shape change.
-                //     Mirrors β's `cell_type != Type::Geometry` compute-value_inputs exclusion
-                //     (engine_eval.rs:262).
-                let lets: Vec<(String, CompiledExpr)> = template
-                    .value_cells
-                    .iter()
-                    .filter(|vc| {
-                        matches!(vc.kind, ValueCellKind::Let)
-                            // Exclude auto-synthesized collection-count lets (entity.rs:1482-1493).
-                            // These are compiler-internal cells whose RHS may reference
-                            // sub-component values that are unavailable at ctor construction time.
-                            && !vc.id.member.starts_with("__count_")
-                            && vc.cell_type != Type::Geometry
-                    })
-                    .filter_map(|vc| {
-                        vc.default_expr
-                            .as_ref()
-                            .map(|e| (vc.id.member.clone(), e.clone()))
-                    })
-                    .collect();
+                let members = crate::ctor_members::ctor_template_members(template);
                 return CompiledExpr::structure_instance_ctor(
                     reify_ir::StructureTypeId(0),
                     name.clone(),
                     template.version(),
                     ordered_args,
                     defaults,
-                    lets,
+                    members.lets,
+                    members.geometry_lets,
                     Some(expr.span),
                     Type::StructureRef(name.clone()),
                 );

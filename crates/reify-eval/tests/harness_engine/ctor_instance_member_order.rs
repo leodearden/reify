@@ -14,11 +14,12 @@
 //! be satisfied by every scope degrading together; the literal alone would
 //! let the scopes drift apart.
 
-use reify_core::{Severity, ValueCellId};
 use reify_eval::{Engine, EvalResult};
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::parse_and_compile;
+
+use crate::ctor_instance_support::{assert_no_error_diagnostics, cell, ctor_field, instance_field};
 
 /// Build an Engine with an empty prelude for self-contained tests.
 fn fresh_engine() -> Engine {
@@ -32,39 +33,6 @@ fn fresh_engine() -> Engine {
 
 fn eval_source(source: &str) -> EvalResult {
     fresh_engine().eval(&parse_and_compile(source))
-}
-
-/// The value of a plain cell: a template member or a `sub` member.
-#[track_caller]
-fn cell(result: &EvalResult, entity: &str, member: &str) -> Value {
-    result
-        .values
-        .get(&ValueCellId::new(entity, member))
-        .cloned()
-        .unwrap_or_else(|| panic!("no cell {entity}.{member} after eval"))
-}
-
-/// A field of the structure instance `instance`, described as `what`.
-#[track_caller]
-fn instance_field(instance: &Value, what: &str, member: &str) -> Value {
-    match instance {
-        Value::StructureInstance(data) => data
-            .fields
-            .get(member)
-            .cloned()
-            .unwrap_or_else(|| panic!("{what} has no `{member}` field: {:?}", data.fields)),
-        other => panic!("{what} must hold a StructureInstance, got {other:?}"),
-    }
-}
-
-/// A field of the structure instance held by cell `host.holder`.
-#[track_caller]
-fn ctor_field(result: &EvalResult, host: &str, holder: &str, member: &str) -> Value {
-    instance_field(
-        &cell(result, host, holder),
-        &format!("{host}.{holder}"),
-        member,
-    )
 }
 
 /// The number a resolved numeric field holds; the Real representation is not
@@ -98,19 +66,6 @@ fn assert_ctor_field_agrees(
         "{host}.{holder}.{member} must agree with template Beam.{member}: a \
          ctor-built instance evaluates its members in dependency order, so a \
          forward read must not leave the field Undef"
-    );
-}
-
-#[track_caller]
-fn assert_no_error_diagnostics(result: &EvalResult, what: &str) {
-    let errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "eval must produce no Error diagnostics for {what}; got: {errors:?}"
     );
 }
 

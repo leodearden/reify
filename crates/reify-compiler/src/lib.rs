@@ -14,6 +14,7 @@ mod compile_builder;
 mod conformance;
 mod connect;
 mod constants;
+mod ctor_members;
 /// Forward sub-component adjacency shared by `scc.rs` and `scope_containment.rs`.
 ///
 /// Kept `pub(crate)` (not a public module) to avoid widening the compiler's
