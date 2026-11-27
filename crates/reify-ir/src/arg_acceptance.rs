@@ -1612,6 +1612,40 @@ mod tests {
         }
     }
 
+    /// `accept_field_or_bare` is `accept_field` under the transitional bare
+    /// rule of [`accept_arg_or_bare`]: a bare number is accepted where a
+    /// dimensioned one belongs, a wrong dimension is still refused, and the
+    /// absent / `none` / `Undef` field shapes classify as `accept_field`'s do.
+    #[test]
+    fn accept_field_or_bare_tolerates_a_bare_number_and_refuses_a_wrong_dimension() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+        let alpha = |value: Value| steel_instance(&[("alpha", value)]);
+        let accept = |data: &crate::value::StructureInstanceData| {
+            accept_field_or_bare(data, "alpha", &frequency_spec())
+        };
+        let frequency = Value::Scalar {
+            si_value: 0.5,
+            dimension: DV::FREQUENCY,
+        };
+        assert_eq!(accept(&alpha(frequency)), FieldAcceptance::Accepted(0.5));
+        assert_eq!(
+            accept(&alpha(Value::Real(0.5))),
+            FieldAcceptance::Accepted(0.5)
+        );
+        let length = Value::Scalar {
+            si_value: 0.5,
+            dimension: DV::LENGTH,
+        };
+        assert!(
+            matches!(accept(&alpha(length)), FieldAcceptance::Rejected(_)),
+            "a LENGTH at a Frequency field must be refused"
+        );
+        assert_eq!(accept(&steel_instance(&[])), FieldAcceptance::Absent);
+        assert_eq!(accept(&alpha(Value::Option(None))), FieldAcceptance::Absent);
+        assert_eq!(accept(&alpha(Value::Undef)), FieldAcceptance::Undefined);
+    }
+
     #[test]
     fn accept_field_classifies_the_struct_field_shapes_of_prd5() {
         use crate::value::Value;

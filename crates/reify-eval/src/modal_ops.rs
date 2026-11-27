@@ -7713,24 +7713,9 @@ mod tests {
              ElasticMaterial that does not conform to `Damped`. This is THE \
              signal — it must be None, never Some(0.0)"
         );
-        assert_eq!(
-            extract_loss_factor(&material_with(Value::String("0.02".to_string()))),
-            None,
-            "a present but non-numeric loss_factor must be None — \
-             read_scalar_si's `_ => 0.0` floor is precisely what must not fire \
-             here"
-        );
-        assert_eq!(
-            extract_loss_factor(&material_with(Value::Scalar {
-                si_value: 0.02,
-                dimension: DimensionVector::PRESSURE,
-            })),
-            None,
-            "a DIMENSIONED loss_factor must be None — `loss_factor : Real` is \
-             dimensionless, and read_scalar_si is dimension-blind, so an \
-             ungated Scalar arm would read 0.02 Pa straight through as η and \
-             fabricate ζ = 0.01 for it. The dimension gate is the fence"
-        );
+        // A present loss_factor the dimensionless spec refuses (a String, a
+        // PRESSURE Scalar) is a refused input, not a non-conformer:
+        // `material_damping_refuses_a_loss_factor_the_spec_refuses` pins it.
         assert_eq!(
             extract_loss_factor(&Value::Undef),
             None,
@@ -11478,6 +11463,140 @@ mod tests {
             &run_with_edited_source(0, |_| my_force),
             reify_core::DiagnosticCode::FeaLoadKindUnsupported,
             "MyForce",
+        );
+    }
+
+    // ── S15 α (task 8674): damping and reference_direction decode ──
+
+    /// A free-vibration solve of the [`modal_inputs`] beam with `material` and,
+    /// when given, `damping` as `ModalOptions.damping`.
+    fn run_free_vibration_damped(material: Value, damping: Option<Value>) -> ComputeOutcome {
+        let mut inputs = modal_inputs(0.5, 0.05, 0.05, STEEL_DENSITY, 2, None);
+        inputs[0] = material;
+        if let Some(damping) = damping {
+            inputs[4] = with_field(inputs[4].clone(), "damping", Some(damping));
+        }
+        solve_modal_analysis_trampoline(
+            &inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    fn material_damping() -> Option<Value> {
+        Some(struct_instance("MaterialDamping", vec![]))
+    }
+
+    /// One refusal rule (esc-5791-3): a loss factor the dimensionless spec
+    /// refuses is a refused input naming `Damped.loss_factor`, not a material
+    /// that does not conform to `Damped`.
+    #[test]
+    fn material_damping_refuses_a_loss_factor_the_spec_refuses() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        for refused in [
+            dimensioned(0.02, DimensionVector::PRESSURE),
+            Value::String("0.02".to_string()),
+        ] {
+            let material = with_field(damped_material(0.0006), "loss_factor", Some(refused));
+            assert_one_coded_error(
+                &run_free_vibration_damped(material, material_damping()),
+                reify_core::DiagnosticCode::DimensionedArgRejected,
+                "modal_analysis: Damped.loss_factor argument expects Real",
+            );
+        }
+    }
+
+    /// An absent loss factor, and an accepted but negative or non-finite one,
+    /// still mean the material carries no usable η.
+    #[test]
+    fn material_damping_still_reports_an_unusable_loss_factor_as_not_damped() {
+        for material in [
+            material_with_density(Some(STEEL_DENSITY)),
+            damped_material(-0.5),
+            damped_material(f64::NAN),
+        ] {
+            let outcome = run_free_vibration_damped(material, material_damping());
+            let ComputeOutcome::Completed { diagnostics, .. } = &outcome else {
+                panic!("the not-damped rejection Completes degenerate, got {outcome:?}");
+            };
+            assert!(
+                diagnostics.iter().any(|d| d.severity == Severity::Error
+                    && d.message.contains("E_ModalDampingMaterialNotDamped")),
+                "{diagnostics:?}"
+            );
+        }
+    }
+
+    /// The Rayleigh coefficients read through their declared specs, under the
+    /// transitional bare rule: a wrong dimension is refused by both producers
+    /// that classify the descriptor, and a missing coefficient is malformed.
+    #[test]
+    fn rayleigh_coefficients_decode_in_both_modal_producers() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        use reify_core::DiagnosticCode::{ComputeInputMalformed, DimensionedArgRejected};
+        let length_alpha = with_field(
+            rayleigh_damping(0.5, 1e-6),
+            "alpha",
+            Some(length_value(0.5)),
+        );
+
+        assert_one_coded_error(
+            &run_free_vibration_damped(
+                material_with_density(Some(STEEL_DENSITY)),
+                Some(length_alpha.clone()),
+            ),
+            DimensionedArgRejected,
+            "modal_analysis: RayleighDamping.alpha argument expects Frequency",
+        );
+
+        let mechanism = solve_mechanism_modal_trampoline(
+            &[
+                one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0)),
+                modal_options(vec![("damping".to_string(), length_alpha)]),
+            ],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        assert_one_coded_error(
+            &mechanism,
+            DimensionedArgRejected,
+            "mechanism_modal_analysis: RayleighDamping.alpha argument expects Frequency",
+        );
+
+        let no_beta = with_field(rayleigh_damping(0.5, 1e-6), "beta", None);
+        assert_one_coded_error(
+            &run_free_vibration_damped(material_with_density(Some(STEEL_DENSITY)), Some(no_beta)),
+            ComputeInputMalformed,
+            "RayleighDamping.beta",
+        );
+    }
+
+    /// `ModalOptions.reference_direction` components are dimensionless.
+    #[test]
+    fn free_vibration_refuses_a_dimensioned_reference_direction() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        let mut inputs = modal_inputs(0.5, 0.05, 0.05, STEEL_DENSITY, 2, None);
+        let length_direction =
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), length_value(1.0)]);
+        inputs[4] = with_field(
+            inputs[4].clone(),
+            "reference_direction",
+            Some(length_direction),
+        );
+        assert_one_coded_error(
+            &solve_modal_analysis_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            ),
+            reify_core::DiagnosticCode::DimensionedArgRejected,
+            "modal_analysis: ModalOptions.reference_direction argument expects Real",
         );
     }
 
