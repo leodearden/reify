@@ -112,6 +112,14 @@ impl EntryRecord {
         {
             return Err(format!("`{key}` is blank"));
         }
+        if let Some(need) = self
+            .needs
+            .iter()
+            .enumerate()
+            .find_map(|(at, need)| self.needs[..at].contains(need).then_some(need))
+        {
+            return Err(format!("`needs` lists `{need}` more than once"));
+        }
         if self.expect.is_empty() {
             return Err("an entry needs at least one [[expect]] row".to_string());
         }
@@ -126,5 +134,22 @@ impl EntryRecord {
             }
         }
         Ok(())
+    }
+}
+
+#[test]
+fn a_needs_word_listed_twice_is_refused_by_name() {
+    let text = r#"tests = "t"
+rule = "r"
+provenance = "p"
+needs = ["roots", "instance", "roots"]
+answer_basis = "stated"
+
+[[expect]]
+roots = ["Asm"]
+"#;
+    match EntryRecord::from_toml(text) {
+        Ok(_) => panic!("an entry listing `roots` twice in `needs` must be refused"),
+        Err(error) => assert_eq!(error.to_string(), "`needs` lists `roots` more than once"),
     }
 }

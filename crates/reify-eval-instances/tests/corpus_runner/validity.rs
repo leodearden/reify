@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 
 use crate::bookkeeping::{Built, Disputed, EntryState, Waiting, render_waiting, waiting_counts};
-use crate::corpus_tree::{self, LoadedEntry, Problem};
+use crate::corpus_tree::{self, EntryId, LoadedEntry, Problem};
 use crate::parse_check::{
     bare_scalar_lines, expected_to_parse, first_parse_fault, without_purpose_applications,
 };
@@ -42,7 +42,7 @@ fn the_corpus_is_valid() {
         problems.extend(source_problems(entry, &built));
     }
 
-    let ids: BTreeSet<String> = entries.iter().map(|entry| entry.id.to_string()).collect();
+    let ids: BTreeSet<EntryId> = entries.iter().map(|entry| entry.id.clone()).collect();
     problems.extend(disputed.unknown_entries(&ids));
 
     for entry in &entries {
@@ -125,7 +125,11 @@ fn source_problems(entry: &LoadedEntry, built: &Built) -> Vec<Problem> {
                 }
             }
         };
-        for line in parsing_text.as_deref().map(bare_scalar_lines).unwrap_or_default() {
+        for line in parsing_text
+            .as_deref()
+            .map(bare_scalar_lines)
+            .unwrap_or_default()
+        {
             problems.push(Problem::new(
                 &entry.id,
                 format!("{}:{line} has a bare `Scalar`", file.name),

@@ -129,7 +129,7 @@ struct DisputedFile {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DisputedEntry {
-    entry: String,
+    entry: EntryId,
     path: String,
     catalogue_answer: String,
     believed_answer: String,
@@ -140,7 +140,6 @@ struct DisputedEntry {
 impl DisputedEntry {
     fn blank_fields(&self) -> Vec<&'static str> {
         [
-            ("entry", &self.entry),
             ("path", &self.path),
             ("catalogue_answer", &self.catalogue_answer),
             ("believed_answer", &self.believed_answer),
@@ -183,12 +182,11 @@ impl Disputed {
     }
 
     pub fn lists(&self, id: &EntryId) -> bool {
-        let id = id.to_string();
-        self.0.iter().any(|row| row.entry == id)
+        self.0.iter().any(|row| row.entry == *id)
     }
 
     /// A problem for each row whose entry is not one of `ids`.
-    pub fn unknown_entries(&self, ids: &BTreeSet<String>) -> Vec<Problem> {
+    pub fn unknown_entries(&self, ids: &BTreeSet<EntryId>) -> Vec<Problem> {
         self.0
             .iter()
             .filter(|row| !ids.contains(&row.entry))

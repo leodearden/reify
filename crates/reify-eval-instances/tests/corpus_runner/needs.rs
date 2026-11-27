@@ -6,7 +6,8 @@ use std::fmt;
 use serde::Deserialize;
 
 /// A task id: the task that builds a word.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(transparent)]
 pub struct Owner(pub u32);
 
 impl fmt::Display for Owner {

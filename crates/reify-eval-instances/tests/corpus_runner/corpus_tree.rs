@@ -8,6 +8,8 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+
 use crate::entry::EntryRecord;
 
 pub const BUILT: &str = "built.toml";
@@ -16,13 +18,46 @@ pub const DISPUTED: &str = "disputed.toml";
 
 const BOOKKEEPING: [&str; 3] = [BUILT, DISPUTED, WAITING];
 
+/// The themes of the catalogue, one directory each, sorted.
+const THEMES: [&str; 18] = [
+    "braces",
+    "collections",
+    "constraints-and-summary",
+    "determinacy-tests",
+    "edits",
+    "evaluator-reads",
+    "guards-and-presence",
+    "instances-and-arguments",
+    "made-instances",
+    "one-name-several-guards",
+    "other",
+    "paths",
+    "purposes",
+    "roots",
+    "trial-infeasibility",
+    "unknowns",
+    "values",
+    "waiting-on-geometry",
+];
+
+fn theme_problem(theme: &str) -> Option<String> {
+    (!THEMES.contains(&theme)).then(|| {
+        format!(
+            "`{theme}` is not a theme of the corpus, one of `{}`",
+            THEMES.join("`, `")
+        )
+    })
+}
+
 /// `tests/corpus/` of this crate, in the tree the running test belongs to.
 pub fn corpus_root() -> PathBuf {
     reify_test_support::workspace_root::workspace_root()
         .join("crates/reify-eval-instances/tests/corpus")
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// An entry by theme and name, written `<theme>/<name>`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(try_from = "String")]
 pub struct EntryId {
     pub theme: String,
     pub name: String,
@@ -31,6 +66,26 @@ pub struct EntryId {
 impl fmt::Display for EntryId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.theme, self.name)
+    }
+}
+
+impl TryFrom<String> for EntryId {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let Some((theme, name)) = text.split_once('/') else {
+            return Err(format!("`{text}` is not `<theme>/<name>`"));
+        };
+        if name.is_empty() || name.contains('/') {
+            return Err(format!("`{text}` is not `<theme>/<name>`"));
+        }
+        if let Some(problem) = theme_problem(theme) {
+            return Err(problem);
+        }
+        Ok(EntryId {
+            theme: theme.to_string(),
+            name: name.to_string(),
+        })
     }
 }
 
@@ -92,6 +147,7 @@ pub fn load_corpus(root: &Path) -> (Vec<LoadedEntry>, Vec<Problem>) {
     };
     for (name, path) in listing {
         if path.is_dir() {
+            problems.extend(theme_problem(&name).map(|what| Problem::new(&name, what)));
             let (theme_entries, theme_problems) = load_theme(&name, &path);
             entries.extend(theme_entries);
             problems.extend(theme_problems);
@@ -229,4 +285,30 @@ fn sorted_listing(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     }
     listing.sort();
     Ok(listing)
+}
+
+#[test]
+fn an_entry_id_is_a_theme_of_the_corpus_and_a_name() {
+    let parsed = EntryId::try_from("roots/constructor-call-counts-as-use".to_string());
+    assert_eq!(
+        parsed,
+        Ok(EntryId {
+            theme: "roots".to_string(),
+            name: "constructor-call-counts-as-use".to_string(),
+        })
+    );
+    for (text, what) in [
+        ("roots", "is not `<theme>/<name>`"),
+        ("roots/", "is not `<theme>/<name>`"),
+        ("roots/a/b", "is not `<theme>/<name>`"),
+        ("root/a", "`root` is not a theme of the corpus"),
+    ] {
+        match EntryId::try_from(text.to_string()) {
+            Ok(id) => panic!("`{text}` must be refused, but parsed as {id}"),
+            Err(error) => assert!(
+                error.contains(what),
+                "the refusal of `{text}` must say {what:?}, got: {error}"
+            ),
+        }
+    }
 }

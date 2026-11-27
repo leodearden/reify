@@ -4,6 +4,7 @@
 use serde::Deserialize;
 
 use crate::expected_value::ExpectedValue;
+use crate::needs::Owner;
 
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "RawExpectation")]
@@ -26,7 +27,7 @@ pub enum Form {
     UndeterminedBecause(UndeterminedClass),
     SameAs(String),
     Open {
-        owner: Option<u32>,
+        owner: Option<Owner>,
     },
     Roots(Vec<String>),
     Compile,
@@ -92,7 +93,7 @@ pub struct SummaryCounts {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OpenRow {
-    owner: Option<u32>,
+    owner: Option<Owner>,
 }
 
 /// The one value `compile` takes: the source is accepted.
