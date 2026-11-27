@@ -3324,13 +3324,13 @@ fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
         return Value::Undef;
     }
     match subject {
-        // some(x) -> apply f to the inner value; `dflt` (args[1]) is NOT evaluated.
+        // some(x) -> f(x)
         Value::Option(Some(inner)) => apply_lambda(&f.into_value(ctx), &[*inner], ctx),
-        // none -> dflt; the function arg `f` (args[2]) is NOT evaluated.
+        // none -> dflt
         Value::Option(None) => dflt.into_value(ctx),
-        // undef subject (Kleene INV-2) — propagate Undef; neither branch evaluated.
+        // undef subject (Kleene INV-2) -> Undef
         Value::Undef => Value::Undef,
-        // non-Option subject (type error) — degrade gracefully; neither branch evaluated.
+        // non-Option subject (type error) -> Undef
         _ => Value::Undef,
     }
 }
@@ -3391,7 +3391,7 @@ fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
         return Value::Undef;
     }
     match subject {
-        // Ok{..} -> return the subject unchanged; `f` (args[1]) is NOT evaluated.
+        // Ok{..} -> the subject unchanged
         Value::Enum {
             ref type_name,
             ref variant,
@@ -3432,9 +3432,9 @@ fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
                 payload: vec![("error".to_string(), mapped)],
             }
         }
-        // undef subject (Kleene INV-2) — propagate Undef; f is NOT evaluated.
+        // undef subject (Kleene INV-2) -> Undef
         Value::Undef => Value::Undef,
-        // non-Result subject (type error) — degrade gracefully; f is NOT evaluated.
+        // non-Result subject (type error) -> Undef
         _ => Value::Undef,
     }
 }
