@@ -512,8 +512,8 @@ impl<'u> CompilationScope<'u> {
         }
     }
 
-    /// The reference table of the unit being compiled, in the source-unit mode.
-    pub(crate) fn source_unit(&self) -> Option<&'u SourceUnitRecorder> {
+    /// The unit being compiled, in the source-unit mode.
+    pub(crate) fn source_unit(&self) -> Option<&'u SourceUnitRecorder<'u>> {
         match self.expr_mode {
             ExprMode::Existing => None,
             ExprMode::SourceUnit(recorder) => Some(recorder),

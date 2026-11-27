@@ -9,7 +9,7 @@
 //! compile.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use reify_core::{Diagnostic, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
@@ -26,30 +26,51 @@ use crate::source_unit_tables::{
 pub(crate) enum ExprMode<'u> {
     #[default]
     Existing,
-    SourceUnit(&'u SourceUnitRecorder),
+    SourceUnit(&'u SourceUnitRecorder<'u>),
 }
 
 /// Which scopes a unit's names resolve against.
 #[doc(hidden)]
 #[derive(Clone, Copy)]
-pub enum SourceUnitNames {
+pub enum SourceUnitNames<'s> {
     /// The unit is written in the definition the compile scope describes.
     Own,
+    /// The unit is written in a sub's braces, and the compile scope describes
+    /// the sub's definition. A name is first a `let` of the same braces (one
+    /// of `lets`, with its type), then a member of the sub's definition
+    /// whether present or not, then a member of the definition that wrote the
+    /// braces, which `writer` describes; `self` is the writer (PRD §5.4).
+    Braces {
+        lets: &'s BTreeMap<String, Type>,
+        writer: &'s CompilationScope<'s>,
+    },
 }
 
 #[doc(hidden)]
 pub struct SourceUnitSpec<'s> {
-    pub names: SourceUnitNames,
+    pub names: SourceUnitNames<'s>,
     pub expected_type: Option<&'s Type>,
 }
 
-/// The reference table of the unit being compiled.
-#[derive(Default)]
-pub(crate) struct SourceUnitRecorder {
+/// The unit being compiled: how its names resolve, and the table of the
+/// references it reads.
+pub(crate) struct SourceUnitRecorder<'u> {
+    names: SourceUnitNames<'u>,
     references: RefCell<Vec<LocalReference>>,
 }
 
-impl SourceUnitRecorder {
+impl<'u> SourceUnitRecorder<'u> {
+    fn new(names: SourceUnitNames<'u>) -> Self {
+        SourceUnitRecorder {
+            names,
+            references: RefCell::default(),
+        }
+    }
+
+    pub(crate) fn names(&self) -> SourceUnitNames<'u> {
+        self.names
+    }
+
     /// A read of the reference `(root, steps, read)`, typed `ty`. A reference
     /// read twice is one table entry.
     pub(crate) fn reference(
@@ -109,7 +130,7 @@ pub fn compile_source_unit(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledSourceUnit {
-    let recorder = SourceUnitRecorder::default();
+    let recorder = SourceUnitRecorder::new(spec.names);
     let mut unit_scope = scope.clone();
     unit_scope.expr_mode = ExprMode::SourceUnit(&recorder);
     let tree = compile_expr_guarded_with_expected(

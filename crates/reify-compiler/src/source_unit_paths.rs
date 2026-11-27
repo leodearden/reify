@@ -17,7 +17,7 @@ use crate::expr::{
     keyed_missing_key_poison, make_poison_literal,
 };
 use crate::scope::CompilationScope;
-use crate::source_unit::SourceUnitRecorder;
+use crate::source_unit::{SourceUnitNames, SourceUnitRecorder};
 use crate::source_unit_tables::{ReferenceRead, ReferenceRoot, SourceStep, StructuralQuery};
 use crate::types::{GuardedDeclGroup, TopologyTemplate, ValueCellDecl};
 
@@ -42,9 +42,9 @@ pub(crate) fn compile_bare_name(
     scope: &CompilationScope,
     recorder: &SourceUnitRecorder,
 ) -> Option<CompiledExpr> {
-    let (steps, target) = root_target(name, scope).ok()?;
-    let ty = target.value_type(scope)?;
-    Some(recorder.reference(ReferenceRoot::Own, steps, ReferenceRead::Value, ty))
+    let (root, steps, target) = root_target(name, scope, recorder.names()).ok()?;
+    let ty = target.value_type()?;
+    Some(recorder.reference(root, steps, ReferenceRead::Value, ty))
 }
 
 /// A member read or an index whose receiver is a path, in the source-unit mode.
@@ -54,14 +54,14 @@ pub(crate) fn compile_member_path(
     recorder: &SourceUnitRecorder,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> PathOutcome {
-    let Walked { root, steps, end } = match walk_path(expr, scope, diagnostics) {
+    let Walked { root, steps, end } = match walk_path(expr, scope, recorder.names(), diagnostics) {
         Ok(walked) => walked,
         Err(Halt::Poison(poison)) => return Ok(*poison),
         Err(Halt::NotAPath(why)) => return Err(why),
     };
     match end {
         End::Target(target) => {
-            let ty = target.value_type(scope).ok_or(NotAPath::ByReceiverType)?;
+            let ty = target.value_type().ok_or(NotAPath::ByReceiverType)?;
             Ok(recorder.reference(root, steps, ReferenceRead::Value, ty))
         }
         End::Query(query) => {
@@ -101,11 +101,11 @@ pub(crate) fn compile_presence(
         root,
         steps,
         end: End::Target(target),
-    }) = walk_path(argument, scope, &mut unreported)
+    }) = walk_path(argument, scope, recorder.names(), &mut unreported)
     else {
         return None;
     };
-    target.value_type(scope)?;
+    target.value_type()?;
     Some(recorder.reference(root, steps, ReferenceRead::Presence, Type::Bool))
 }
 
@@ -129,16 +129,17 @@ enum End<'s> {
 /// Resolve `expr` as a path, hop by hop.
 fn walk_path<'s>(
     expr: &reify_ast::Expr,
-    scope: &'s CompilationScope,
+    scope: &'s CompilationScope<'s>,
+    names: SourceUnitNames<'s>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Walked<'s>, Halt> {
     let (name, hops) = path_of(expr).ok_or(Halt::NotAPath(NotAPath::ByReceiverType))?;
-    let (root, mut steps, mut target, hops) =
+    let ((root, mut steps, mut target), hops) =
         match opened_binder(name, &hops, scope, expr.span, diagnostics)? {
-            Some((root, steps, target)) => (root, steps, target, &hops[1..]),
+            Some(root) => (root, &hops[1..]),
             None => {
-                let (steps, target) = root_target(name, scope).map_err(Halt::NotAPath)?;
-                (ReferenceRoot::Own, steps, target, &hops[..])
+                let root = root_target(name, scope, names).map_err(Halt::NotAPath)?;
+                (root, &hops[..])
             }
         };
     let last = hops.len().saturating_sub(1);
@@ -169,10 +170,10 @@ fn walk_path<'s>(
 fn opened_binder<'s>(
     name: &str,
     hops: &[Hop],
-    scope: &'s CompilationScope,
+    scope: &'s CompilationScope<'s>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Result<Option<(ReferenceRoot, Vec<SourceStep>, Target<'s>)>, Halt> {
+) -> Result<Option<Rooted<'s>>, Halt> {
     let not_a_path = Halt::NotAPath(NotAPath::ByReceiverType);
     let Some((id, ty)) = binder(name, scope) else {
         return Ok(None);
@@ -235,23 +236,24 @@ fn path_of(expr: &reify_ast::Expr) -> Option<(&str, Vec<Hop<'_>>)> {
 
 /// The definition whose members a hop looks up.
 #[derive(Clone)]
-enum Definition {
-    /// The one the compile scope describes, read through the scope's maps.
-    Own,
-    /// Any other, read through the scope's template registry.
+enum Definition<'s> {
+    /// The one a scope describes (the compile scope, or the writer of a sub's
+    /// braces), read through that scope's maps.
+    OfScope(&'s CompilationScope<'s>),
+    /// Any other, read through the compile scope's template registry.
     Named(String),
 }
 
 /// What a path's prefix reaches.
 enum Target<'s> {
-    Instance(Definition),
+    Instance(Definition<'s>),
     Collection(String),
     Keyed {
         definition: String,
         keys: DeclaredKeys<'s>,
     },
     Port {
-        definition: Definition,
+        definition: Definition<'s>,
         port: String,
     },
     Cell(Type),
@@ -263,10 +265,10 @@ enum Target<'s> {
 impl Target<'_> {
     /// The type of a read of the thing itself; `None` for a port, which is not
     /// a value.
-    fn value_type(&self, scope: &CompilationScope) -> Option<Type> {
+    fn value_type(&self) -> Option<Type> {
         let instance = |definition: &str| Type::StructureRef(definition.to_string());
         Some(match self {
-            Target::Instance(Definition::Own) => instance(&scope.entity_name),
+            Target::Instance(Definition::OfScope(own)) => instance(&own.entity_name),
             Target::Instance(Definition::Named(definition)) => instance(definition),
             Target::Collection(definition) => Type::List(Box::new(instance(definition))),
             Target::Keyed { definition, .. } => Type::Keyed(Box::new(instance(definition))),
@@ -322,22 +324,53 @@ enum Halt {
     NotAPath(NotAPath),
 }
 
-/// The root of a path: `self`, or a member of the definition.
+/// A path's root: where its steps start, the steps the root itself takes,
+/// and what they reach.
+type Rooted<'s> = (ReferenceRoot, Vec<SourceStep>, Target<'s>);
+
+/// The root of a path, `self` or a bare name, resolved in the order `names`
+/// gives: in a sub's braces a `let` of the braces, then a member of the sub's
+/// definition, then a member of the writer; `self` is the writer.
 fn root_target<'s>(
     name: &str,
-    scope: &'s CompilationScope,
-) -> Result<(Vec<SourceStep>, Target<'s>), NotAPath> {
-    if name == "self" && scope.is_entity_scope {
-        return Ok((Vec::new(), Target::Instance(Definition::Own)));
-    }
+    scope: &'s CompilationScope<'s>,
+    names: SourceUnitNames<'s>,
+) -> Result<Rooted<'s>, NotAPath> {
     if name == "none" || binder(name, scope).is_some() {
         return Err(NotAPath::ByReceiverType);
     }
-    match member_of(&Definition::Own, name, scope) {
-        Some(target) => Ok((vec![SourceStep::Member(name.to_string())], target)),
-        None if name == "meta" => Err(NotAPath::Existing),
-        None => Err(NotAPath::ByReceiverType),
+    let (lets, declaring, (self_root, writer)) = match names {
+        SourceUnitNames::Own => {
+            let own = (ReferenceRoot::Own, scope);
+            (None, vec![own.clone()], own)
+        }
+        SourceUnitNames::Braces { lets, writer } => {
+            let writer = (ReferenceRoot::Writer, writer);
+            let own = (ReferenceRoot::Own, scope);
+            (Some(lets), vec![own, writer.clone()], writer)
+        }
+    };
+    if name == "self" {
+        if !writer.is_entity_scope {
+            return Err(NotAPath::ByReceiverType);
+        }
+        let target = Target::Instance(Definition::OfScope(writer));
+        return Ok((self_root, Vec::new(), target));
     }
+    let steps = vec![SourceStep::Member(name.to_string())];
+    if let Some(ty) = lets.and_then(|lets| lets.get(name)) {
+        return Ok((ReferenceRoot::BracesLet, steps, Target::Cell(ty.clone())));
+    }
+    for (root, declarer) in declaring {
+        if let Some(target) = own_member(name, declarer) {
+            return Ok((root, steps, target));
+        }
+    }
+    Err(if name == "meta" {
+        NotAPath::Existing
+    } else {
+        NotAPath::ByReceiverType
+    })
 }
 
 /// A binder of the unit's own expression (a lambda's, a quantifier's or a
@@ -354,7 +387,7 @@ fn next_target<'s>(
     target: Target<'s>,
     hop: &Hop,
     steps: &mut Vec<SourceStep>,
-    scope: &'s CompilationScope,
+    scope: &'s CompilationScope<'s>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Next<'s>, Halt> {
@@ -429,10 +462,10 @@ fn next_target<'s>(
 
 /// A `.member` hop on an instance of `definition`.
 fn member_hop<'s>(
-    definition: &Definition,
+    definition: &Definition<'s>,
     member: &str,
     steps: &mut Vec<SourceStep>,
-    scope: &'s CompilationScope,
+    scope: &'s CompilationScope<'s>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Next<'s>, Halt> {
@@ -441,7 +474,7 @@ fn member_hop<'s>(
         return Ok(Next::Into(target));
     }
     let name = match definition {
-        Definition::Own => scope.entity_name.clone(),
+        Definition::OfScope(own) => own.entity_name.clone(),
         Definition::Named(name) if template_of(name, scope).is_some() => name.clone(),
         Definition::Named(_) => return Err(Halt::NotAPath(NotAPath::ByReceiverType)),
     };
@@ -500,18 +533,18 @@ fn keyed_hop<'s>(
 
 /// The one lookup of a member of a definition, own or not.
 fn member_of<'s>(
-    definition: &Definition,
+    definition: &Definition<'s>,
     member: &str,
-    scope: &'s CompilationScope,
+    scope: &'s CompilationScope<'s>,
 ) -> Option<Target<'s>> {
     match definition {
-        Definition::Own => own_member(member, scope),
+        Definition::OfScope(own) => own_member(member, own),
         Definition::Named(name) => template_member(template_of(name, scope)?, member),
     }
 }
 
 /// A member of the definition the scope describes, from the scope's maps.
-fn own_member<'s>(member: &str, scope: &'s CompilationScope) -> Option<Target<'s>> {
+fn own_member<'s>(member: &str, scope: &'s CompilationScope<'s>) -> Option<Target<'s>> {
     if let Some((id, ty)) = scope.resolve(member)
         && id.entity == scope.entity_name
     {
@@ -535,7 +568,7 @@ fn own_member<'s>(member: &str, scope: &'s CompilationScope) -> Option<Target<'s
         return Some(Target::Geometry);
     }
     scope.port_names.contains(member).then(|| Target::Port {
-        definition: Definition::Own,
+        definition: Definition::OfScope(scope),
         port: member.to_string(),
     })
 }
@@ -598,7 +631,11 @@ fn cluster<'s>(group: &GuardedDeclGroup) -> Target<'s> {
 /// `member` of a match-arm cluster: what the arms that declare it agree on, or
 /// a `Union` of their types. An arm that lacks it is not an error, since that
 /// arm may not be the one chosen; `None` when no arm declares it.
-fn arm_member<'s>(arms: &[Type], member: &str, scope: &'s CompilationScope) -> Option<Target<'s>> {
+fn arm_member<'s>(
+    arms: &[Type],
+    member: &str,
+    scope: &'s CompilationScope<'s>,
+) -> Option<Target<'s>> {
     let mut found = arms.iter().filter_map(|arm| match arm {
         Type::StructureRef(definition) => {
             member_of(&Definition::Named(definition.clone()), member, scope)
@@ -606,8 +643,8 @@ fn arm_member<'s>(arms: &[Type], member: &str, scope: &'s CompilationScope) -> O
         _ => None,
     });
     let first = found.next()?;
-    let mut types: Vec<Type> = first.value_type(scope).into_iter().collect();
-    for ty in found.filter_map(|target| target.value_type(scope)) {
+    let mut types: Vec<Type> = first.value_type().into_iter().collect();
+    for ty in found.filter_map(|target| target.value_type()) {
         if !types.contains(&ty) {
             types.push(ty);
         }
@@ -630,7 +667,7 @@ fn port_member_type(
     scope: &CompilationScope,
 ) -> Option<Type> {
     match definition {
-        Definition::Own => scope
+        Definition::OfScope(own) => own
             .resolve(&format!("{port}.{member}"))
             .map(|(_, ty)| ty.clone()),
         Definition::Named(name) => template_of(name, scope)?
