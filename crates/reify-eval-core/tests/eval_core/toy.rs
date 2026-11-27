@@ -264,6 +264,10 @@ impl Kind for Scope {
     fn declares(out: &Members, step: &Step) -> Option<Declaration> {
         out.0.get(step).cloned()
     }
+
+    fn steps(out: &Members) -> impl Iterator<Item = Step> {
+        out.0.keys().cloned()
+    }
 }
 
 /// A scope whose members are the host-named input `members`, and nothing
@@ -296,6 +300,10 @@ impl Kind for Guard {
 
     fn declares(out: &Members, step: &Step) -> Option<Declaration> {
         out.0.get(step).cloned()
+    }
+
+    fn steps(out: &Members) -> impl Iterator<Item = Step> {
+        out.0.keys().cloned()
     }
 }
 
@@ -347,6 +355,10 @@ impl Kind for Collection {
             Step::Index(index) if *index < out.count => Some(out.element.clone()),
             _ => None,
         }
+    }
+
+    fn steps(out: &Elements) -> impl Iterator<Item = Step> {
+        (0..out.count).map(Step::index)
     }
 }
 

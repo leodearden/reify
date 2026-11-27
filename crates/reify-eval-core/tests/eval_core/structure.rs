@@ -3,10 +3,11 @@
 //! answers absent.
 
 use std::any::type_name;
+use std::collections::BTreeSet;
 
 use reify_eval_core::{Answer, Budget, Declaration, Erased, Failure, Kind, Outcome, Step, Turn};
 
-use crate::toy::{self, Cell, Scope};
+use crate::toy::{self, Cell, Collection, Elements, Guard, Measure, Members, Scope};
 
 fn is_absent(answer: &Answer<Erased>) -> bool {
     matches!(answer, Answer::Final(Outcome::Absent))
@@ -313,4 +314,58 @@ fn a_ref_computed_from_an_earlier_answer_reads_the_element_it_names() {
             None => assert!(is_absent(&answer), "{answer:?}"),
         }
     }
+}
+
+/// Every step `K::steps` lists for `out` is listed once and declared there,
+/// and no step of `unlisted` is listed or declared (decision D14): `steps`
+/// and `declares` agree.
+fn steps_agree_with_declares<K: Kind>(out: &K::Out, unlisted: &[Step]) {
+    let kind = type_name::<K>();
+    let steps: Vec<Step> = K::steps(out).collect();
+    let distinct: BTreeSet<&Step> = steps.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        steps.len(),
+        "{kind} lists a step twice: {steps:?}"
+    );
+    for step in &steps {
+        assert!(
+            K::declares(out, step).is_some(),
+            "{kind} lists {step:?} but declares nothing there"
+        );
+    }
+    for step in unlisted {
+        assert!(!steps.contains(step), "{kind} lists {step:?}");
+        assert!(
+            K::declares(out, step).is_none(),
+            "{kind} declares {step:?} but does not list it"
+        );
+    }
+}
+
+#[test]
+fn every_step_a_toy_kind_lists_is_one_it_declares_and_it_declares_no_other() {
+    let mut mixed = toy::members([("a", toy::cell(&["x"])), ("b", toy::cell(&["y"]))]);
+    mixed.0.insert(Step::index(2), toy::cell(&["z"]));
+    let probes = [Step::named("missing"), Step::index(0), Step::index(7)];
+    for members in [mixed, Members::default()] {
+        steps_agree_with_declares::<Scope>(&members, &probes);
+        steps_agree_with_declares::<Guard>(&members, &probes);
+        let listed = <Scope as Kind>::steps(&members).count();
+        assert_eq!(listed, members.0.len(), "{members:?}");
+    }
+
+    for count in [0, 3] {
+        let elements = Elements {
+            count,
+            element: toy::cell(&["x"]),
+        };
+        let probes = [Step::index(count), Step::index(count + 5), Step::named("0")];
+        steps_agree_with_declares::<Collection>(&elements, &probes);
+        let listed: Vec<Step> = <Collection as Kind>::steps(&elements).collect();
+        assert_eq!(listed, (0..count).map(Step::index).collect::<Vec<_>>());
+    }
+
+    assert_eq!(<Cell as Kind>::steps(&5).count(), 0);
+    assert_eq!(<Measure as Kind>::steps(&5).count(), 0);
 }
