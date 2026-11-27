@@ -170,7 +170,8 @@ impl Trial {
 
 /// The answers of one snapshot, or of one trial under it.
 pub struct Reference {
-    inputs: Inputs,
+    /// The snapshot's inputs, shared with each trial under it.
+    inputs: Rc<Inputs>,
     /// The snapshot's depth setting.
     depth: Option<u64>,
     /// The snapshot's children-per-node setting.
@@ -200,10 +201,10 @@ pub struct Reference {
 
 impl Reference {
     pub fn new(inputs: Inputs) -> Self {
-        Self::supposing(inputs, None)
+        Self::supposing(Rc::new(inputs), None)
     }
 
-    fn supposing(inputs: Inputs, supposition: Option<Supposition>) -> Self {
+    fn supposing(inputs: Rc<Inputs>, supposition: Option<Supposition>) -> Self {
         Self {
             depth: setting(&inputs, Limit::Depth),
             children: setting(&inputs, Limit::ChildrenPerNode),
@@ -834,7 +835,7 @@ impl Reference {
             supposed,
         };
         let mut trial = Trial {
-            reference: Reference::supposing(self.inputs.clone(), Some(supposition)),
+            reference: Reference::supposing(Rc::clone(&self.inputs), Some(supposition)),
             demand: Vec::new(),
         };
         let held = self.constraints_hold(at, decl, &mut trial, constraints);
