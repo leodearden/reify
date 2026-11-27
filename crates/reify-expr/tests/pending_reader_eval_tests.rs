@@ -16,7 +16,7 @@ use reify_core::{Diagnostic, DimensionVector, Type, ValueCellId};
 use reify_expr::{CellRead, EvalContext, Evaluated, PendingReader, eval_expr, eval_expr_or_pending};
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledMatchArm, CompiledPattern,
-    ComputeDispatch, ComputeDispatchOutcome, Value, ValueMap,
+    ComputeDispatch, ComputeDispatchOutcome, SelectorKind, Value, ValueMap,
 };
 use reify_test_support::builders::{compiled_function, conditional_expr, list_expr, std_call};
 
@@ -769,4 +769,118 @@ fn map_err_on_err_applies_its_function_as_the_old_entry_does() {
     let expected = old_eval(&expr, &reader);
     assert!(!expected.is_undef(), "the old entry gives a value");
     assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(expected));
+}
+
+// ── flat_map, worst_case, method calls and ad-hoc selectors ────────────────
+
+/// `|x| if x == 1 then 0 else <panic sentinel>`: reaching any element but 1
+/// panics.
+fn panics_unless_one() -> CompiledExpr {
+    lambda(
+        conditional_expr(
+            binop(BinOp::Eq, read_int(&lambda_param()), int(1), Type::Bool),
+            int(0),
+            panic_on_eval_sentinel(),
+        ),
+        &[],
+    )
+}
+
+/// `flat_map([1, 2], panics_unless_one)`: the first element's result is not
+/// a list, which decides the call.
+fn flat_map_decided_by_its_first_element() -> CompiledExpr {
+    std_call(
+        "flat_map",
+        vec![list_expr(vec![int(1), int(2)]), panics_unless_one()],
+        Type::List(Box::new(Type::Int)),
+    )
+}
+
+#[test]
+#[should_panic(expected = "MetaAccess evaluation requires meta context")]
+fn flat_map_applies_its_function_to_every_element_under_the_new_entry() {
+    pending_eval(&flat_map_decided_by_its_first_element(), &TestReader::new());
+}
+
+#[test]
+fn flat_map_stops_at_the_first_non_list_result_under_the_old_entry() {
+    let expr = flat_map_decided_by_its_first_element();
+    assert_eq!(old_eval(&expr, &TestReader::new()), Value::Undef);
+}
+
+/// `worst_case({ "cases": { 0: 1, "a": 2 } }, panics_unless_one)`: `Int`
+/// sorts before `String` in `Value`'s order, so the first case's key is not
+/// a String, which decides the call; reaching case "a" panics.
+fn worst_case_decided_by_its_first_key() -> CompiledExpr {
+    let mut cases = std::collections::BTreeMap::new();
+    cases.insert(Value::Int(0), Value::Int(1));
+    cases.insert(Value::String("a".to_string()), Value::Int(2));
+    let mut outer = std::collections::BTreeMap::new();
+    outer.insert(Value::String("cases".to_string()), Value::Map(cases));
+    let ty = Type::Map(Box::new(Type::String), Box::new(Type::Int));
+    std_call(
+        "worst_case",
+        vec![
+            CompiledExpr::literal(Value::Map(outer), ty),
+            panics_unless_one(),
+        ],
+        Type::String,
+    )
+}
+
+#[test]
+#[should_panic(expected = "MetaAccess evaluation requires meta context")]
+fn worst_case_applies_its_function_to_every_case_under_the_new_entry() {
+    pending_eval(&worst_case_decided_by_its_first_key(), &TestReader::new());
+}
+
+#[test]
+fn worst_case_stops_at_the_first_non_string_key_under_the_old_entry() {
+    let expr = worst_case_decided_by_its_first_key();
+    assert_eq!(old_eval(&expr, &TestReader::new()), Value::Undef);
+}
+
+#[test]
+fn a_method_call_with_an_argument_evaluates_its_object_and_argument() {
+    let (a, o) = (cell("a"), cell("o"));
+    let reader = TestReader::new()
+        .with(&o, Value::List(vec![Value::Int(1)]))
+        .with(&a, Value::Int(0));
+    let expr = CompiledExpr::method_call(
+        read(&o, Type::List(Box::new(Type::Int))),
+        "len".to_string(),
+        vec![read_int(&a)],
+        Type::Int,
+    );
+    assert_eq!(old_eval(&expr, &reader), Value::Undef);
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(Value::Undef));
+    assert_eq!(asked(&reader), ids(&[&o, &a]));
+}
+
+#[test]
+fn a_point_selector_evaluates_every_coordinate() {
+    let (y, z) = (cell("y"), cell("z"));
+    let reader = TestReader::new()
+        .with(&y, millimetres(1.0))
+        .with(&z, millimetres(2.0));
+    let expr = CompiledExpr::ad_hoc_selector(
+        int(0),
+        SelectorKind::Point,
+        vec![int(7), read(&y, Type::length()), read(&z, Type::length())],
+    );
+    assert_eq!(old_eval(&expr, &reader), Value::Undef);
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(Value::Undef));
+    assert_eq!(asked(&reader), ids(&[&y, &z]));
+}
+
+#[test]
+fn a_face_or_edge_selector_evaluates_its_arguments() {
+    let n = cell("n");
+    for kind in [SelectorKind::Face, SelectorKind::Edge] {
+        let reader = TestReader::new().with(&n, Value::String("top".to_string()));
+        let expr = CompiledExpr::ad_hoc_selector(int(0), kind, vec![read(&n, Type::String)]);
+        assert_eq!(old_eval(&expr, &reader), Value::Undef);
+        assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(Value::Undef));
+        assert_eq!(asked(&reader), ids(&[&n]));
+    }
 }
