@@ -1082,7 +1082,11 @@ fn structural_queries_are_typed_as_values() {
         let (reference, ty) = sole_reference(&unit);
         assert_eq!(
             shape(reference),
-            (ReferenceRoot::Own, members(path), ReferenceRead::Query(query)),
+            (
+                ReferenceRoot::Own,
+                members(path),
+                ReferenceRead::Query(query)
+            ),
             "{text}"
         );
         assert_eq!(ty, &instances, "{text}");

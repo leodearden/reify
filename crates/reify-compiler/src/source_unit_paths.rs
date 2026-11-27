@@ -59,6 +59,12 @@ pub(crate) fn compile_member_path(
             let ty = target.value_type(scope).ok_or(NotAPath::ByReceiverType)?;
             Ok(recorder.reference(ReferenceRoot::Own, steps, ReferenceRead::Value, ty))
         }
+        Ok(Walked::Query { steps, query }) => {
+            let instance = Type::StructureRef(WILDCARD_STRUCTURE_KIND.to_string());
+            let ty = Type::List(Box::new(instance));
+            let read = ReferenceRead::Query(query);
+            Ok(recorder.reference(ReferenceRoot::Own, steps, read, ty))
+        }
         Ok(Walked::Datum { steps, name, ty }) => {
             let ty_of_prefix = Type::StructureRef(name.definition);
             let receiver = recorder.reference(
@@ -113,6 +119,11 @@ enum Walked<'s> {
         steps: Vec<SourceStep>,
         target: Target<'s>,
     },
+    /// The path ends in a structural query of the instance the steps reach.
+    Query {
+        steps: Vec<SourceStep>,
+        query: StructuralQuery,
+    },
     /// The path ends in an intrinsic datum of the instance the steps reach.
     Datum {
         steps: Vec<SourceStep>,
@@ -136,7 +147,12 @@ fn walk_path<'s>(
             Next::Datum { name, ty } if position == last => {
                 return Ok(Walked::Datum { steps, name, ty });
             }
-            Next::Datum { .. } => return Err(Halt::NotAPath(NotAPath::ByReceiverType)),
+            Next::Query(query) if position == last => {
+                return Ok(Walked::Query { steps, query });
+            }
+            Next::Datum { .. } | Next::Query(_) => {
+                return Err(Halt::NotAPath(NotAPath::ByReceiverType));
+            }
         }
     }
     Ok(Walked::Reached { steps, target })
@@ -250,6 +266,8 @@ enum Next<'s> {
         name: DatumName,
         ty: Type,
     },
+    /// A structural query of the prefix, which also can only end a path.
+    Query(StructuralQuery),
 }
 
 /// Why a path stops before its last hop.
@@ -302,14 +320,12 @@ fn next_target<'s>(
         (Target::Cell(Type::StructureRef(definition)), Hop::Member(member))
             if definition != WILDCARD_STRUCTURE_KIND =>
         {
-            member_hop(
-                &Definition::Named(definition),
-                member,
-                steps,
-                scope,
-                span,
-                diagnostics,
-            )
+            let definition = Definition::Named(definition);
+            match member_hop(&definition, member, steps, scope, span, diagnostics)? {
+                // A structural query is asked of an instance, not of a value.
+                Next::Query(_) => by_receiver_type,
+                next => Ok(next),
+            }
         }
         (Target::Cell(Type::TypeParam(param)), Hop::Member(member)) => {
             let bounds = scope.type_param_bounds.get(&param);
@@ -392,8 +408,8 @@ fn member_hop<'s>(
         };
         return Ok(Next::Datum { name, ty });
     }
-    if StructuralQuery::from_member(member).is_some() {
-        return Err(Halt::NotAPath(NotAPath::ByReceiverType));
+    if let Some(query) = StructuralQuery::from_member(member) {
+        return Ok(Next::Query(query));
     }
     Err(member_not_found(
         &format!("structure '{name}'"),
