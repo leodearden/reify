@@ -360,7 +360,8 @@ impl fmt::Display for Mismatch {
 fn blocking_read(reference: &mut Reference, cell: &ModelPath, at: &Ref) -> Option<Expect> {
     let decl = reference.declaration_at(cell).ok()??;
     let mut reads: Vec<ModelRef> = decl.bindings.into_keys().map(read_of).collect();
-    if let Ok(Expect::Value(Out::Int(pick))) = reference.read_at(cell, &read_of(String::from("pick")))
+    let pick = reference.read_at(cell, &read_of(String::from("pick")));
+    if let Ok(Expect::Value(Out::Int(pick))) = pick
         && let Ok(pick) = u64::try_from(pick)
     {
         reads.push(ModelRef {

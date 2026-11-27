@@ -1,9 +1,12 @@
 //! Seeded random cases: a toy design of cells and, as features allow,
-//! scopes, guards, collections, dividing cells, and shapes and measures on
-//! the toy kernel, and a sequence of host events on it. With dividing
+//! scopes, guards, collections, dividing cells, shapes and measures on the
+//! toy kernel, and limit settings, and a sequence of host events on it,
+//! whose edits may set or remove a limit setting. With dividing
 //! cells on, every members input the generator makes ends in a pair: a
 //! cell dividing by an input held at zero, and a sibling cell blocked by
-//! it.
+//! it. With limits on, a members input at times holds, before that pair,
+//! the deep pair: a collection, and a sibling cell reading its first
+//! element, a read a depth setting can cut.
 //! With cycles off every design is acyclic by construction (the ordinal
 //! rule: member m_k reaches through its declarer only the declarer itself
 //! or members m_j with j < k). With cycles on, a member cell's term may
@@ -15,13 +18,13 @@
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
-use reify_eval_core::Step;
+use reify_eval_core::{Limit, Step};
 
 use super::case::{Case, HostEvent, Then, edited};
 use super::design::{
-    Decl, Inputs, Key, ModelPath, ToyKind, Val, cell, collection, declaration, declarer, divided,
-    flag, guard, index, input, int, measure, members, named, passed, path, picker, root, scope,
-    shape, step,
+    Decl, Inputs, Key, ModelPath, ToyKind, Val, bound, cell, collection, declaration, declarer,
+    divided, flag, guard, index, input, int, measure, members, named, passed, path, picker, root,
+    scope, shape, step,
 };
 use super::rng::XorShift64Star;
 
@@ -53,6 +56,8 @@ pub struct Features {
     pub kernel: bool,
     /// Member cells naming a sibling at their own ordinal or a later one.
     pub cycles: bool,
+    /// Limit settings, in the initial design and set or removed by edits.
+    pub limits: bool,
 }
 
 impl Features {
@@ -65,6 +70,7 @@ impl Features {
             divide: false,
             kernel: false,
             cycles: false,
+            limits: false,
         }
     }
 
@@ -74,6 +80,7 @@ impl Features {
             divide: true,
             kernel: true,
             cycles: true,
+            limits: true,
             ..Self::structure()
         }
     }
@@ -154,6 +161,7 @@ enum Change {
     Member,
     Remove,
     Root,
+    Limit,
 }
 
 struct Generator {
@@ -204,7 +212,27 @@ impl Generator {
             self.roots.push(name);
         }
         self.paths.push(path("nowhere", []));
+        if self.features.limits {
+            for limit in [Limit::Depth, Limit::ChildrenPerNode] {
+                if self.rng.chance(1, 2) {
+                    needed.push((Key::Limit(limit), bound(self.limit_value(limit))));
+                }
+            }
+        }
         needed.into_iter().collect()
+    }
+
+    /// A setting of `limit` that cuts into the design's nesting without
+    /// failing most of it. Members sit at depth 1, their members and
+    /// elements at 2, and those members' elements at 3. A level holds up
+    /// to four drawn members, the deep pair and the blocked pair; a count
+    /// reads up to 4.
+    fn limit_value(&mut self, limit: Limit) -> u64 {
+        let least = match limit {
+            Limit::Depth => 1,
+            Limit::ChildrenPerNode => 5,
+        };
+        least + self.rng.below(3) as u64
     }
 
     /// A root's declaration: mostly a scope.
@@ -379,7 +407,8 @@ impl Generator {
     }
 
     /// A new members input for the node at `at`: one to four drawn members,
-    /// then, with divide on, the blocked pair.
+    /// then, with limits on and at times, the deep pair, then, with divide
+    /// on, the blocked pair.
     fn level(&mut self, at: &ModelPath, depth: usize, kind: ToyKind, needed: &mut Needed) -> Level {
         let count = 1 + self.rng.below(4);
         let mut level = Level {
@@ -396,11 +425,42 @@ impl Generator {
             earlier.push((ordinal, decl.kind));
             held.insert(member_step(ordinal), decl);
         }
+        if self.features.limits && self.rng.chance(1, 2) {
+            self.deep_pair(&mut level, &mut held, needed);
+        }
         if self.features.divide {
             self.blocked_pair(&mut level, &mut held, needed);
         }
         needed.push((named(&level.input), members(held)));
         level
+    }
+
+    /// Appends to `held`, the members of `level`, a collection of one to
+    /// four elements and a sibling cell whose only term reads its first
+    /// element, one level deeper than the cell: a read a depth setting can
+    /// cut while leaving the cell itself within it.
+    fn deep_pair(
+        &mut self,
+        level: &mut Level,
+        held: &mut BTreeMap<Step, Decl>,
+        needed: &mut Needed,
+    ) {
+        let counted = member_step(level.ordinals);
+        let reader = member_step(level.ordinals + 1);
+        level.ordinals += 2;
+        let count = self.fresh("n");
+        needed.push((named(&count), int(1 + self.rng.below(4) as i64)));
+        self.counts.push(count.clone());
+        let element = self.fresh("e");
+        needed.push((named(&element), declaration(self.element())));
+        held.insert(counted.clone(), collection(input(&count), input(&element)));
+        held.insert(
+            reader.clone(),
+            cell([declarer([counted.clone(), index(0)])]),
+        );
+        let elements = level.at.child(counted);
+        self.paths
+            .extend([elements.child(index(0)), elements, level.at.child(reader)]);
     }
 
     /// Appends to `held`, the members of `level`, a cell dividing by a new
@@ -533,6 +593,9 @@ impl Generator {
         if !self.levels.is_empty() {
             sorts.extend([Change::Member; 3]);
         }
+        if self.features.limits {
+            sorts.push(Change::Limit);
+        }
         let mut needed = Needed::new();
         let mut changes = match *self.rng.choose(&sorts) {
             Change::Int => {
@@ -563,9 +626,21 @@ impl Generator {
                 let decl = self.root_decl(&name, &mut needed);
                 vec![(root(&name), Some(declaration(decl)))]
             }
+            Change::Limit => vec![self.limit_change(current)],
         };
         changes.extend(needed.into_iter().map(|(key, value)| (key, Some(value))));
         changes
+    }
+
+    /// A limit setting set to a new value, or, at times where it is set,
+    /// removed.
+    fn limit_change(&mut self, current: &Inputs) -> (Key, Option<Val>) {
+        let limit = *self.rng.choose(&[Limit::Depth, Limit::ChildrenPerNode]);
+        let key = Key::Limit(limit);
+        if current.contains_key(&key) && self.rng.chance(1, 2) {
+            return (key, None);
+        }
+        (key, Some(bound(self.limit_value(limit))))
     }
 
     /// A member of some level added at the next ordinal, replaced, or

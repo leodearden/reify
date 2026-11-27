@@ -1,9 +1,9 @@
 //! The G0 gate: random sequences of host events, edits among them, over
 //! every toy kind registered so far (cells that divide, scopes, guards,
 //! collections, and shapes and measures on the toy kernel) in designs that
-//! may hold rings of waits, at the gate's fixed seeds, pass check 1,
-//! check 2 and the order check, and together reach every shape the census
-//! names, so the run is not vacuous.
+//! may hold rings of waits and limit settings, at the gate's fixed seeds,
+//! pass check 1, check 2 and the order check, and together reach every
+//! shape the census names, so the run is not vacuous.
 //! REIFY_EVAL_CORE_SEQUENCES=N widens the run to seeds 1..=N outside the
 //! gate (PRD 5.5).
 
