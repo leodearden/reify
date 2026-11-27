@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use reify_ast::QuantifierKind;
-use reify_core::{Diagnostic, DimensionVector, Type, ValueCellId};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_expr::{
     CellRead, EvalContext, Evaluated, PendingReader, eval_expr, eval_expr_or_pending,
 };
@@ -833,6 +833,83 @@ fn map_err_on_err_applies_its_function_as_the_old_entry_does() {
     let expected = old_eval(&expr, &reader);
     assert!(!expected.is_undef(), "the old entry gives a value");
     assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(expected));
+}
+
+#[test]
+fn map_or_on_some_with_a_pending_default_does_not_apply_its_function() {
+    let d = cell("d");
+    let reader = TestReader::new().not_yet(&d);
+    let subject = CompiledExpr::option_some(int(1), option_int());
+    let expr = map_or(subject, read_int(&d), lambda(panic_on_eval_sentinel(), &[]));
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&d]));
+}
+
+#[test]
+fn map_err_on_err_with_a_pending_capture_does_not_apply_its_function() {
+    let c = cell("c");
+    let reader = TestReader::new().not_yet(&c);
+    let err = result_value("Err", "error", 4);
+    let expr = map_err(
+        CompiledExpr::literal(err, result_type()),
+        lambda(panic_on_eval_sentinel(), &[&c]),
+    );
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&c]));
+}
+
+// ── solve_load_cases ────────────────────────────────────────────────────────
+
+/// `solve_load_cases([read(m)], 1, 1, 1, [])`: every argument is defined
+/// whatever `m` reads, and the solve, given no load case, reports
+/// `MultiLoadEmptyCases` to the runtime sink.
+fn solve_with_no_cases(m: &ValueCellId) -> CompiledExpr {
+    let no_cases = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+    CompiledExpr::user_function_call(
+        "solve_load_cases".to_string(),
+        vec![
+            list_expr(vec![read_int(m)]),
+            int(1),
+            int(1),
+            int(1),
+            no_cases,
+        ],
+        Type::Int,
+    )
+}
+
+/// `expr` under the new entry over `reader`, and the codes of the runtime
+/// diagnostics it pushed.
+fn pending_eval_with_diagnostics(
+    expr: &CompiledExpr,
+    reader: &TestReader,
+) -> (Evaluated, Vec<Option<DiagnosticCode>>) {
+    let empty = ValueMap::new();
+    let sink = RefCell::new(Vec::new());
+    let ctx = EvalContext::simple(&empty).with_runtime_diagnostics(&sink);
+    let evaluated = eval_expr_or_pending(expr, &ctx, reader);
+    let codes = sink.into_inner().iter().map(|d| d.code).collect();
+    (evaluated, codes)
+}
+
+#[test]
+fn solve_load_cases_is_not_run_when_an_argument_holds_a_pending_read() {
+    let m = cell("m");
+    let expr = solve_with_no_cases(&m);
+
+    let reader = TestReader::new().with(&m, Value::Int(1));
+    let (evaluated, codes) = pending_eval_with_diagnostics(&expr, &reader);
+    assert_eq!(evaluated, Evaluated::Value(Value::Undef));
+    assert_eq!(
+        codes,
+        vec![Some(DiagnosticCode::MultiLoadEmptyCases)],
+        "with every cell here the solve is run"
+    );
+
+    let reader = TestReader::new().not_yet(&m);
+    let (evaluated, codes) = pending_eval_with_diagnostics(&expr, &reader);
+    assert_eq!(evaluated, Evaluated::Pending);
+    assert_eq!(codes, vec![], "the solve is not run");
 }
 
 // ── flat_map, worst_case, method calls and ad-hoc selectors ────────────────
