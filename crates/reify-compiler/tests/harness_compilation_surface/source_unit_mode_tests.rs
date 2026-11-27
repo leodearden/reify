@@ -14,8 +14,12 @@
 
 use std::collections::HashMap;
 
-use reify_compiler::{CompilationScope, CompiledModule, TopologyTemplate};
-use reify_core::{Diagnostic, Severity, ValueCellId};
+use reify_compiler::{
+    CompilationScope, CompiledModule, CompiledSourceUnit, LOCAL_REFERENCE_ENTITY, LocalReference,
+    ReferenceRead, ReferenceRoot, SourceStep, SourceUnitNames, SourceUnitSpec, TopologyTemplate,
+};
+use reify_core::{Diagnostic, DiagnosticCode, Severity, Type, ValueCellId};
+use reify_ir::CompiledExprKind;
 
 /// Parse `text` as one expression, by wrapping it in a throwaway definition.
 ///
@@ -181,5 +185,251 @@ fn compile_expr_is_callable_from_another_crate() {
     assert_eq!(
         refs,
         vec![ValueCellId::new("Asm", "k"), ValueCellId::new("Asm.p", "t")]
+    );
+}
+
+/// Compile `text` in the source-unit mode, written in the definition `scope`
+/// describes.
+fn compile_unit(
+    text: &str,
+    scope: &CompilationScope,
+    module: &CompiledModule,
+) -> (CompiledSourceUnit, Vec<Diagnostic>) {
+    let expr = parse_expr(text);
+    let mut diagnostics = Vec::new();
+    let spec = SourceUnitSpec {
+        names: SourceUnitNames::Own,
+        expected_type: None,
+    };
+    let unit = reify_compiler::compile_source_unit(
+        &expr,
+        scope,
+        &spec,
+        &module.enum_defs,
+        &module.functions,
+        &mut diagnostics,
+    );
+    (unit, diagnostics)
+}
+
+fn reference_of<'u>(unit: &'u CompiledSourceUnit, id: &ValueCellId) -> &'u LocalReference {
+    unit.references
+        .iter()
+        .find(|r| &r.id == id)
+        .unwrap_or_else(|| panic!("{id:?} is not in the table {:?}", unit.references))
+}
+
+/// The reference a unit whose whole tree is one read reads, with the tree's type.
+fn sole_reference(unit: &CompiledSourceUnit) -> (&LocalReference, &Type) {
+    match &unit.expr.kind {
+        CompiledExprKind::ValueRef(id) => (reference_of(unit, id), &unit.expr.result_type),
+        other => panic!("expected a single read, got {other:?}"),
+    }
+}
+
+fn members(names: &[&str]) -> Vec<SourceStep> {
+    names
+        .iter()
+        .map(|n| SourceStep::Member((*n).to_string()))
+        .collect()
+}
+
+fn own_value(steps: Vec<SourceStep>) -> (ReferenceRoot, Vec<SourceStep>, ReferenceRead) {
+    (ReferenceRoot::Own, steps, ReferenceRead::Value)
+}
+
+fn shape(reference: &LocalReference) -> (ReferenceRoot, Vec<SourceStep>, ReferenceRead) {
+    (
+        reference.root.clone(),
+        reference.steps.clone(),
+        reference.read.clone(),
+    )
+}
+
+fn has_error_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> bool {
+    errors_of(diagnostics).iter().any(|d| d.code == Some(code))
+}
+
+fn quantifier_variable(tree: &reify_ir::CompiledExpr) -> ValueCellId {
+    match &tree.kind {
+        CompiledExprKind::Quantifier { variable_id, .. } => variable_id.clone(),
+        other => panic!("expected a quantifier, got {other:?}"),
+    }
+}
+
+const BOLTS_PLATE_ASM: &str = "
+structure def Bolt {
+    param length : Real = 5
+}
+structure def Plate {
+    param t : Real = 3
+}
+structure def Asm {
+    param k : Real = 1
+    sub p : Plate
+    sub bolts : List<Bolt>
+    constraint bolts.count == 2
+}
+";
+
+#[test]
+fn bare_names_and_self_are_local_references() {
+    let module = compile_clean(BOLTS_PLATE_ASM);
+    let registry = template_registry(&module);
+    let scope = definition_scope(&module, &registry, "Asm");
+
+    let (unit, diagnostics) = compile_unit("k + k", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let refs = unit.expr.collect_value_refs();
+    assert!(
+        refs.iter().all(|id| id.entity == LOCAL_REFERENCE_ENTITY),
+        "{refs:?}"
+    );
+    assert_eq!(unit.references.len(), 1, "{:?}", unit.references);
+    assert_eq!(shape(&unit.references[0]), own_value(members(&["k"])));
+
+    let (unit, _) = compile_unit("self", &scope, &module);
+    let (reference, ty) = sole_reference(&unit);
+    assert_eq!(shape(reference), own_value(vec![]));
+    assert_eq!(ty, &Type::StructureRef("Asm".into()));
+
+    let (unit, _) = compile_unit("p", &scope, &module);
+    let (reference, ty) = sole_reference(&unit);
+    assert_eq!(shape(reference), own_value(members(&["p"])));
+    assert_eq!(ty, &Type::StructureRef("Plate".into()));
+
+    let (unit, _) = compile_unit("bolts", &scope, &module);
+    let (reference, ty) = sole_reference(&unit);
+    assert_eq!(shape(reference), own_value(members(&["bolts"])));
+    assert_eq!(
+        ty,
+        &Type::List(Box::new(Type::StructureRef("Bolt".into())))
+    );
+
+    let (unit, diagnostics) = compile_unit("forall x in [1, 2, 3]: x < k", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let variable = quantifier_variable(&unit.expr);
+    assert!(!variable.entity.contains("Asm"), "{variable:?}");
+    let binder_reads: Vec<_> = unit
+        .expr
+        .collect_value_refs()
+        .into_iter()
+        .filter(|id| id.entity != LOCAL_REFERENCE_ENTITY)
+        .collect();
+    assert!(!binder_reads.is_empty());
+    assert!(
+        binder_reads.iter().all(|id| !id.entity.contains("Asm")),
+        "{binder_reads:?}"
+    );
+    assert_eq!(unit.references.len(), 1, "{:?}", unit.references);
+    assert_eq!(shape(&unit.references[0]), own_value(members(&["k"])));
+
+    let (_, diagnostics) = compile_unit("nosuch + 1", &scope, &module);
+    assert!(has_error_code(&diagnostics, DiagnosticCode::UnresolvedName), "{diagnostics:?}");
+
+    // The existing compile, on the same scope.
+    let (tree, _) = compile_existing("k + k", &scope, &module);
+    assert!(
+        tree.collect_value_refs()
+            .iter()
+            .all(|id| id == &ValueCellId::new("Asm", "k"))
+    );
+    let (tree, _) = compile_existing("bolts", &scope, &module);
+    assert!(
+        matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm", "__list_bolts__length")),
+        "{tree:?}"
+    );
+    assert_eq!(tree.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
+    let (tree, _) = compile_existing("forall x in [1, 2, 3]: x < k", &scope, &module);
+    assert!(quantifier_variable(&tree).entity.contains("Asm"));
+    let (_, diagnostics) = compile_existing("nosuch + 1", &scope, &module);
+    assert!(has_error_code(&diagnostics, DiagnosticCode::UnresolvedName), "{diagnostics:?}");
+}
+
+/// PRD §10 C4: the source-unit mode is off unless the second output sets it.
+#[test]
+fn scenario_c4() {
+    let source = "
+structure def Bolt {
+    param length : Real = 5
+}
+structure def Plate {
+    param t : Real = 3
+}
+structure def Asm {
+    param k : Real = 1
+    sub p : Plate
+    sub bolts : List<Bolt>
+    constraint bolts.count == 2
+    sub s : Plate { t = k }
+    let c = Plate()
+    let a = self.p.t
+    let n = bolts.count
+    let q = self.children
+    let b = Plate(t: auto)
+    let r = present(self.p)
+}
+";
+    let module = compile_clean(source);
+
+    let mut local_reads = Vec::new();
+    let mut note_local_reads = |tree: &reify_ir::CompiledExpr| {
+        tree.walk(&mut |node| match &node.kind {
+            CompiledExprKind::ValueRef(id)
+            | CompiledExprKind::DeterminacyPredicate { cell: id, .. }
+                if id.entity == LOCAL_REFERENCE_ENTITY =>
+            {
+                local_reads.push(id.clone());
+            }
+            _ => {}
+        });
+    };
+    for template in &module.templates {
+        for cell in &template.value_cells {
+            if let Some(default) = &cell.default_expr {
+                note_local_reads(default);
+            }
+        }
+        for constraint in &template.constraints {
+            note_local_reads(&constraint.expr);
+        }
+        for sub in &template.sub_components {
+            for (_, argument) in &sub.args {
+                note_local_reads(argument);
+            }
+        }
+    }
+    assert!(local_reads.is_empty(), "{local_reads:?}");
+
+    let asm = template(&module, "Asm");
+    let c = asm
+        .value_cells
+        .iter()
+        .find(|cell| cell.id.member == "c")
+        .and_then(|cell| cell.default_expr.as_ref())
+        .expect("`c` has a default");
+    match &c.kind {
+        CompiledExprKind::StructureInstanceCtor { defaults, .. } => {
+            assert!(defaults.iter().any(|(name, _)| name == "t"), "{defaults:?}")
+        }
+        other => panic!("expected a constructor, got {other:?}"),
+    }
+
+    assert!(
+        module
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedFunction)),
+        "{:?}",
+        module.diagnostics
+    );
+
+    let mut fresh = CompilationScope::new("Asm");
+    fresh.register("k", Type::dimensionless_scalar());
+    fresh.is_entity_scope = true;
+    let (tree, _) = compile_existing("k", &fresh, &module);
+    assert!(
+        matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm", "k")),
+        "{tree:?}"
     );
 }
