@@ -401,7 +401,9 @@ impl Executor {
     /// each that wants a node waiting on `key`, directly or through other
     /// waits. Each whose budget allows no more is ended instead, by the
     /// route `end` takes; whether `key` is still needed. Nothing is charged
-    /// while no live request on the snapshot has a bounded budget.
+    /// while no live request on the snapshot has a bounded budget. Finding
+    /// the requests walks every node waiting on `key`, so under a bounded
+    /// budget a chain of n waiting bodies costs on the order of n² steps.
     fn charge_resolution(&mut self, key: NodeKey) -> bool {
         if !self.requests.any_bounded_on(key.snapshot) {
             return true;

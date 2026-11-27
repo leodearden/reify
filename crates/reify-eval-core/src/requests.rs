@@ -11,7 +11,7 @@ use crate::snapshot::SnapshotId;
 
 /// The host's handle on a request, given back to end it.
 #[derive(Debug)]
-#[must_use = "a request stays live until it is passed to `Core::end`"]
+#[must_use = "a request stays live until it is passed to `Core::end` or its budget ends it"]
 pub struct Request {
     id: RequestId,
 }
@@ -26,7 +26,10 @@ pub(crate) struct Requests {
     core: CoreId,
     on: BTreeMap<RequestId, SnapshotId>,
     /// How many live requests are on each snapshot that has one.
-    live_on: BTreeMap<SnapshotId, usize>,
+    live_on: CountOn,
+    /// How many live requests with a bounded budget are on each snapshot
+    /// that has one.
+    bounded_on: CountOn,
     wants: BTreeMap<RequestId, BTreeSet<NodeKey>>,
     wanted_by: BTreeMap<NodeKey, BTreeSet<RequestId>>,
     /// What each live request has spent of its budget.
@@ -39,7 +42,8 @@ impl Requests {
         Self {
             core,
             on: BTreeMap::new(),
-            live_on: BTreeMap::new(),
+            live_on: CountOn::default(),
+            bounded_on: CountOn::default(),
             wants: BTreeMap::new(),
             wanted_by: BTreeMap::new(),
             allowances: BTreeMap::new(),
@@ -55,9 +59,13 @@ impl Requests {
             serial: self.opened,
         };
         self.on.insert(id, snapshot);
-        *self.live_on.entry(snapshot).or_default() += 1;
+        self.live_on.add(snapshot);
+        let allowance = Allowance::new(budget);
+        if allowance.is_bounded() {
+            self.bounded_on.add(snapshot);
+        }
         self.wants.insert(id, BTreeSet::new());
-        self.allowances.insert(id, Allowance::new(budget));
+        self.allowances.insert(id, allowance);
         Request { id }
     }
 
@@ -67,9 +75,7 @@ impl Requests {
 
     /// Whether a live request on `snapshot` has a bounded budget.
     pub fn any_bounded_on(&self, snapshot: SnapshotId) -> bool {
-        self.allowances
-            .iter()
-            .any(|(id, allowance)| allowance.is_bounded() && self.on[id] == snapshot)
+        self.bounded_on.any(snapshot)
     }
 
     /// Spends one path resolved from each live request in `needing`, and
@@ -97,7 +103,7 @@ impl Requests {
 
     /// Whether a live request is on `snapshot`.
     pub fn any_on(&self, snapshot: SnapshotId) -> bool {
-        self.live_on.contains_key(&snapshot)
+        self.live_on.any(snapshot)
     }
 
     /// The live requests that want `key`.
@@ -142,17 +148,17 @@ impl Requests {
     /// Ends the request `id`, for the core's own use; ending it again does
     /// nothing.
     pub fn end_id(&mut self, id: RequestId) {
-        if let Some(snapshot) = self.on.remove(&id) {
-            let live = self
-                .live_on
-                .get_mut(&snapshot)
-                .expect("a live request is counted on its snapshot");
-            *live -= 1;
-            if *live == 0 {
-                self.live_on.remove(&snapshot);
-            }
+        let Some(snapshot) = self.on.remove(&id) else {
+            return;
+        };
+        self.live_on.remove(snapshot);
+        let allowance = self
+            .allowances
+            .remove(&id)
+            .expect("a live request has an allowance");
+        if allowance.is_bounded() {
+            self.bounded_on.remove(snapshot);
         }
-        self.allowances.remove(&id);
         for key in self.wants.remove(&id).unwrap_or_default() {
             if let Some(wanting) = self.wanted_by.get_mut(&key) {
                 wanting.remove(&id);
@@ -161,5 +167,30 @@ impl Requests {
                 }
             }
         }
+    }
+}
+
+/// A count of live requests on each snapshot that has one.
+#[derive(Default)]
+struct CountOn(BTreeMap<SnapshotId, usize>);
+
+impl CountOn {
+    fn add(&mut self, snapshot: SnapshotId) {
+        *self.0.entry(snapshot).or_default() += 1;
+    }
+
+    fn remove(&mut self, snapshot: SnapshotId) {
+        let count = self
+            .0
+            .get_mut(&snapshot)
+            .expect("a live request is counted on its snapshot");
+        *count -= 1;
+        if *count == 0 {
+            self.0.remove(&snapshot);
+        }
+    }
+
+    fn any(&self, snapshot: SnapshotId) -> bool {
+        self.0.contains_key(&snapshot)
     }
 }
