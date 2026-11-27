@@ -13,7 +13,8 @@ use std::thread::{self, ThreadId};
 use reify_eval_core::{
     Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event,
     Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Outcome, OutsideFailure, Path,
-    Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot, Step, Turn, Value,
+    Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot, Space, Step, StepKey,
+    Turn, Value,
 };
 
 /// The content a test gives the core for one of its values: a hash of
@@ -53,12 +54,18 @@ impl Contented for Declaration {
     }
 }
 
-/// A test's own encoding of a step: a tag, then the name or the index.
-fn step_bytes(step: &Step) -> Vec<u8> {
-    match step {
-        Step::Named(name) => [b"n", &name.len().to_le_bytes()[..], name.as_bytes()].concat(),
-        Step::Index(index) => [b"i", &index.to_le_bytes()[..]].concat(),
-    }
+/// A test's own encoding of a step: its space, then a tag and the name or
+/// the index.
+pub fn step_bytes(step: &Step) -> Vec<u8> {
+    let space = match step.space() {
+        Space::Default => b"d".to_vec(),
+        Space::Named(name) => [b"s", &name.len().to_le_bytes()[..], name.as_bytes()].concat(),
+    };
+    let key = match step.key() {
+        StepKey::Name(name) => [b"n", &name.len().to_le_bytes()[..], name.as_bytes()].concat(),
+        StepKey::Index(index) => [b"i", &index.to_le_bytes()[..]].concat(),
+    };
+    [space, key].concat()
 }
 
 impl Contented for Members {
@@ -357,8 +364,10 @@ impl Kind for Collection {
     }
 
     fn declares(out: &Elements, step: &Step) -> Option<Declaration> {
-        match step {
-            Step::Index(index) if *index < out.count => Some(out.element.clone()),
+        match (step.space(), step.key()) {
+            (Space::Default, StepKey::Index(index)) if *index < out.count => {
+                Some(out.element.clone())
+            }
             _ => None,
         }
     }

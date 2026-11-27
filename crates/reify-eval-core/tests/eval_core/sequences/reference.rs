@@ -11,7 +11,7 @@ use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use reify_eval_core::{Declaration, Failure, Kind, Limit, Step};
+use reify_eval_core::{Declaration, Failure, Kind, Limit, Space, Step, StepKey};
 
 use super::case::Case;
 use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, ToyKind, Val};
@@ -504,10 +504,12 @@ impl Reference {
 fn declares(kind: ToyKind, out: &Out, step: &Step) -> Option<Decl> {
     match (kind, out) {
         (ToyKind::Scope | ToyKind::Guard, Out::Members(members)) => members.get(step).cloned(),
-        (ToyKind::Collection, Out::Elements { count, element }) => match step {
-            Step::Index(index) if index < count => Some(element.clone()),
-            _ => None,
-        },
+        (ToyKind::Collection, Out::Elements { count, element }) => {
+            match (step.space(), step.key()) {
+                (Space::Default, StepKey::Index(index)) if index < count => Some(element.clone()),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }

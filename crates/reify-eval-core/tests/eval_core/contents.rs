@@ -2,7 +2,7 @@
 //! the declaration's representation (contract 5.2): it follows the kind and
 //! what each binding names, never the order the bindings were set in.
 
-use reify_eval_core::{Binding, Declaration, InputKey, Kind, KindId, Ref, Step};
+use reify_eval_core::{Binding, Declaration, InputKey, Kind, KindId, Ref, Space, Step, StepKey};
 
 use crate::toy::{self, Cell};
 
@@ -43,6 +43,16 @@ fn a_declaration_s_content_follows_its_kind_and_bindings() {
         (
             "a declarer step's sort",
             base().bind("1", Binding::Declarer(vec![Step::index(0)])),
+        ),
+        (
+            "a declarer step's space",
+            base().bind(
+                "1",
+                Binding::Declarer(vec![Step::new(
+                    Space::Named("toy.other"),
+                    StepKey::Name("b".into()),
+                )]),
+            ),
         ),
         (
             "a passed ref",

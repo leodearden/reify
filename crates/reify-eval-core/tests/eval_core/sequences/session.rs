@@ -13,7 +13,7 @@ use std::fmt;
 
 use reify_eval_core::{
     Answer, Budget, Core, Demand, Erased, Event, Failure, Kind, Path, Ref, Request, RequestError,
-    RequestId, Snapshot, SnapshotId, Step, Store,
+    RequestId, Snapshot, SnapshotId, Space, Step, StepKey, Store,
 };
 
 use super::case::{Case, HostEvent, Then};
@@ -931,12 +931,15 @@ impl Session {
         if let Some((parent, step)) = path.parent()
             && let Ok(above) = reference.answer(&parent)
         {
-            match (above.node, &above.outcome, step) {
-                (Some(ToyKind::Guard), Expect::Absent, _) => reached.push(Shape::UnderAbsentGuard),
+            match (above.node, &above.outcome, step.space(), step.key()) {
+                (Some(ToyKind::Guard), Expect::Absent, _, _) => {
+                    reached.push(Shape::UnderAbsentGuard)
+                }
                 (
                     Some(ToyKind::Collection),
                     Expect::Value(Out::Elements { count, .. }),
-                    Step::Index(at),
+                    Space::Default,
+                    StepKey::Index(at),
                 ) => {
                     if expected.node.is_some() {
                         reached.push(Shape::CollectionElement);

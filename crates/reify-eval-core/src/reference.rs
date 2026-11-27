@@ -26,11 +26,11 @@ impl Ref {
         self
     }
 
-    pub(crate) fn binding_name(&self) -> &str {
+    pub fn binding_name(&self) -> &str {
         &self.binding
     }
 
-    pub(crate) fn steps(&self) -> &[Step] {
+    pub fn steps(&self) -> &[Step] {
         &self.steps
     }
 
