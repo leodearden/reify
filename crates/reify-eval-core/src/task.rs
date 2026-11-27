@@ -82,11 +82,7 @@ impl Task {
     /// Replies to its read, which its chain records, with the children it
     /// declared.
     pub fn answer_read(&mut self, answers: Answers) {
-        for (step, declaration) in answers.children() {
-            self.children
-                .entry(step.clone())
-                .or_insert_with(|| Arc::clone(declaration));
-        }
+        answers.record_children(&mut self.children);
         self.chain
             .read(Arc::clone(answers.wanted()), answers.contents());
         self.mailbox.reply(Reply::Outcomes(answers.into_outcomes()));

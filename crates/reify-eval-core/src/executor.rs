@@ -46,7 +46,6 @@ use crate::snapshot::{Snapshot, SnapshotId, SnapshotTokens};
 use crate::store::{Store, Stored, StoredResult};
 use crate::task::Task;
 use crate::waits::Waits;
-use crate::wanted::Wanted;
 
 /// What is left after a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -622,7 +621,7 @@ impl Executor {
                     &mut self.paths,
                     index,
                 );
-                let mut reading = match served {
+                let reading = match served {
                     Ok(reading) => reading,
                     Err(Conflict { step }) => {
                         let conflict = Failure::ConflictingChild { step };
@@ -634,13 +633,8 @@ impl Executor {
                     task.answer_read(reading.reply(index));
                     return self.queue(key);
                 }
-                let to_declare = reading.take_to_declare();
-                if !to_declare.is_empty() {
-                    let snapshot = key.snapshot;
-                    self.indexes.file_declarer(snapshot, key.path, declaration);
-                }
-                self.readings.insert(key, reading);
-                self.await_nodes(key, awaited, to_declare);
+                let declaration = Arc::clone(declaration);
+                self.await_reading(key, reading, awaited, &declaration);
             }
             Posted::Ask(Ask::Exclusive(ask)) => {
                 let cancel = task.cancel_flag();
@@ -664,8 +658,10 @@ impl Executor {
     /// each request stored can be answered at once. A result found is the
     /// node's answer, with the node's own declaration, and no body runs; a
     /// request that awaits a node makes the lookup wait as a body would;
-    /// a key where nothing is filed, or a request that declares a child,
-    /// starts the body from its beginning.
+    /// a request that declares a child declares it at the lookup's own path
+    /// and awaits it; a key where nothing is filed, or a request in
+    /// conflict with the children the lookup declared, starts the body from
+    /// its beginning.
     fn step_lookup(&mut self, key: NodeKey) {
         let Some(lookup) = self.lookups.get_mut(&key) else {
             return;
@@ -680,37 +676,60 @@ impl Executor {
         loop {
             self.counters.count_store_lookup();
             let wanted = match self.store.probe(lookup.key()) {
-                Some(Stored::Next(wanted)) if wanted.iter().any(declares_a_child) => {
-                    return self.miss(key);
-                }
                 Some(Stored::Next(wanted)) => Arc::clone(wanted),
                 Some(Stored::Result(result)) => {
+                    let (outcome, content) = (result.outcome.clone(), result.content);
+                    let found = self.lookups.remove(&key);
+                    let (declaration, children) = found.expect("a lookup stepped is held").found();
                     let entry = Entry {
-                        outcome: result.outcome.clone(),
-                        declaration: Some(Arc::clone(lookup.declaration())),
-                        content: result.content,
-                        children_declared: Arc::new([]),
+                        outcome,
+                        declaration: Some(declaration),
+                        content,
+                        children_declared: children,
                     };
-                    self.lookups.remove(&key);
                     return self.work(Work::Answered(key, entry));
                 }
                 None => return self.miss(key),
             };
-            let declaration = lookup.declaration();
-            let none = BTreeMap::new();
-            let paths = &mut self.paths;
-            let Ok(reading) =
-                serve::read::serve(key.path, declaration, wanted, &none, paths, index)
-            else {
+            let served = serve::read::serve(
+                key.path,
+                lookup.declaration(),
+                wanted,
+                lookup.children(),
+                &mut self.paths,
+                index,
+            );
+            let Ok(reading) = served else {
                 return self.miss(key);
             };
             let awaited = reading.awaited();
             if !awaited.is_empty() {
-                self.readings.insert(key, reading);
-                return self.await_nodes(key, awaited, Vec::new());
+                let declaration = Arc::clone(lookup.declaration());
+                return self.await_reading(key, reading, awaited, &declaration);
             }
             lookup.advance(&reading.reply(index));
         }
+    }
+
+    /// Keeps the reading of the reader at `key`, declared `declaration`,
+    /// until each node in `awaited` is answered, and makes the reader wait
+    /// on them, declaring the children the reading lists. The reader's
+    /// declaration is filed first, so a child's passed binding can be read
+    /// through it.
+    fn await_reading(
+        &mut self,
+        key: NodeKey,
+        mut reading: Reading,
+        awaited: BTreeSet<PathId>,
+        declaration: &Arc<Declaration>,
+    ) {
+        let to_declare = reading.take_to_declare();
+        if !to_declare.is_empty() {
+            let snapshot = key.snapshot;
+            self.indexes.file_declarer(snapshot, key.path, declaration);
+        }
+        self.readings.insert(key, reading);
+        self.await_nodes(key, awaited, to_declare);
     }
 
     /// Makes the reader at `key` wait on each node in `awaited` before any
@@ -876,11 +895,6 @@ impl Executor {
             Report::Released => self.resources.acknowledge_release(),
         }
     }
-}
-
-/// Whether `wanted` declares a child.
-fn declares_a_child(wanted: &Wanted) -> bool {
-    matches!(wanted, Wanted::Child(..))
 }
 
 impl Drop for Executor {

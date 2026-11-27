@@ -3,7 +3,7 @@
 //! its answers, each outcome with its content; and the children the
 //! request declares that are still to be worked out.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::sync::Arc;
 
@@ -41,12 +41,16 @@ impl Answers {
         &self.wanted
     }
 
-    /// The step and declaration of each child the request declared.
-    pub fn children(&self) -> impl Iterator<Item = (&Step, &Arc<Declaration>)> {
-        self.wanted.iter().filter_map(|wanted| match wanted {
-            Wanted::Child(step, declaration) => Some((step, declaration)),
-            Wanted::Ref(_) => None,
-        })
+    /// Adds each child the request declared to `children`, the children
+    /// of the run that made it, by step.
+    pub fn record_children(&self, children: &mut BTreeMap<Step, Arc<Declaration>>) {
+        for wanted in self.wanted.iter() {
+            if let Wanted::Child(step, declaration) = wanted {
+                children
+                    .entry(step.clone())
+                    .or_insert_with(|| Arc::clone(declaration));
+            }
+        }
     }
 
     pub fn contents(&self) -> &[Content] {
