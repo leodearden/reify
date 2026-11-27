@@ -8,10 +8,11 @@
 use std::collections::BTreeMap;
 
 use reify_eval_core::{
-    Binding, Declaration, Input, InputKey, Kind, KindId, Limit, Link, Path, Ref, Root, Step,
+    Binding, Declaration, Input, InputKey, Kind, KindId, Limit, Path, Ref, Root, Step,
 };
 
 use crate::toy;
+pub use crate::toy::call_step;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ToyKind {
@@ -336,13 +337,6 @@ pub fn site(sites: &[u64], each: bool, offset: i64, callee: Decl) -> Site {
         argument: String::from("0"),
         callee,
     }
-}
-
-/// The step of a call's child: the chain of `sites`, then the iteration
-/// index `each` if the site loops.
-pub fn call_step(sites: &[u64], each: Option<u64>) -> Step {
-    let sites = sites.iter().copied().map(Link::Site);
-    Step::chain(toy::CALL_SPACE, sites.chain(each.map(Link::Iteration)))
 }
 
 /// A binding to the constant `value`.
