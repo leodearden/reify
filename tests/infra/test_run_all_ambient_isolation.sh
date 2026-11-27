@@ -48,6 +48,16 @@
 # verify_env exists only in the orchestrator's process env, and the plan-line
 # prefix sits upstream of run_all.sh.
 #
+# Task 10716: a FOURTH source -- the Environment= of the orchestrator's systemd
+# unit, read from the reify-tracked drop-ins under
+# deploy/systemd/orchestrator-reify.service.d/ by systemd_unit_env.py, because
+# dark-factory hands its whole process environment to verify
+# (REIFY_LANE_LEAK_STATUS_CMD reached the pool that way and redded
+# test_warm_lane_audit.sh R12b). A ledger row may now read `<KEY> strip`: an
+# upstream key run_all.sh removes before any member spawns. Every strip row is
+# proved behaviourally by run_all_stripped_env_keys, and a live key's
+# missing-row failure names the source that injected it.
+#
 # Coverage-shape note: closing the ledger-drift gap (full set-equality over
 # every ledger var, above) is a DIFFERENT claim from broadening
 # isolation-bug coverage. Of the ledger's entries, only
@@ -143,7 +153,18 @@ kv_key_member() {
 }
 
 # ---------------------------------------------------------------------------
-# Derivation (source 1 of 3): the run_all.sh plan line's prefix env.
+# note_origin <key> <origin>
+#
+# Records <origin> (a source's name) against <key> in LIVE_ORIGIN, joining
+# several origins of one key with ", ". Fork-free.
+# ---------------------------------------------------------------------------
+declare -A LIVE_ORIGIN=()
+note_origin() {
+    LIVE_ORIGIN["$1"]="${LIVE_ORIGIN["$1"]:+${LIVE_ORIGIN["$1"]}, }$2"
+}
+
+# ---------------------------------------------------------------------------
+# Derivation (source 1 of 4): the run_all.sh plan line's prefix env.
 #
 # Direct-REPO_ROOT `verify.sh ... --print-plan` capture (no git fixture) --
 # mirrors tests/infra/test_verify_gate_exclude_heavy.sh:63-64. --print-plan is
@@ -156,7 +177,7 @@ kv_key_member() {
 # it here is belt-and-braces.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Derivation (1/3): run_all.sh plan-line prefix env (scripts/verify.sh --print-plan) ---"
+echo "--- Derivation (1/4): run_all.sh plan-line prefix env (scripts/verify.sh --print-plan) ---"
 
 PLAN_DUMP=""
 capture_print_plan PLAN_DUMP 3 \
@@ -202,10 +223,11 @@ PLAN_LINE_KEYS=""
 while IFS= read -r _kv; do
     [ -z "$_kv" ] && continue
     PLAN_LINE_KEYS+="${_kv%%=*}"$'\n'
+    note_origin "${_kv%%=*}" "scripts/verify.sh run_all.sh plan line"
 done <<< "$PLAN_LINE_KV"
 
 # ---------------------------------------------------------------------------
-# Derivation (source 2 of 3): dark-factory-orchestrator.yaml's verify_env block.
+# Derivation (source 2 of 4): dark-factory-orchestrator.yaml's verify_env block.
 #
 # verify_env_exports is the awk form of the parse contract stated in the
 # docstring of test_verify_env_ambient_isolation.py::verify_env_exports.
@@ -214,7 +236,7 @@ done <<< "$PLAN_LINE_KV"
 # and that function together.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Derivation (2/3): dark-factory-orchestrator.yaml verify_env block (verify_env_exports) ---"
+echo "--- Derivation (2/4): dark-factory-orchestrator.yaml verify_env block (verify_env_exports) ---"
 
 verify_env_exports() {
     local yaml_file="$1"
@@ -265,10 +287,11 @@ VERIFY_ENV_KEYS=""
 while IFS= read -r _kv; do
     [ -z "$_kv" ] && continue
     VERIFY_ENV_KEYS+="${_kv%%=*}"$'\n'
+    note_origin "${_kv%%=*}" "dark-factory-orchestrator.yaml verify_env"
 done <<< "$VERIFY_ENV_KV"
 
 # ---------------------------------------------------------------------------
-# Derivation (source 3 of 3): what run_all.sh itself -- and every lib it
+# Derivation (source 3 of 4): what run_all.sh itself -- and every lib it
 # sources, transitively -- injects into a pool member it spawns (task 7234).
 # OBSERVED, not grepped: run_all_injected_env_keys (run_all_ambient_isolation_lib.sh)
 # spawns the real run_all.sh against a one-member fixture and diffs that
@@ -280,7 +303,7 @@ done <<< "$VERIFY_ENV_KV"
 # would re-route this member off its pinned via:test_run_all.sh (FC6a).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Derivation (3/3): what run_all.sh itself (and every lib it sources) injects into a spawned pool member ---"
+echo "--- Derivation (3/4): what run_all.sh itself (and every lib it sources) injects into a spawned pool member ---"
 
 PROBE_KEYS=""
 _probe_rc=0
@@ -298,37 +321,87 @@ echo "run_all.sh injects: ${PROBE_KEYS//$'\n'/ }"
 # concatenates line-wise like the other *_KEYS below.
 [ -z "$PROBE_KEYS" ] || PROBE_KEYS+=$'\n'
 
+while IFS= read -r _probe_key; do
+    [ -z "$_probe_key" ] && continue
+    note_origin "$_probe_key" "tests/infra/run_all.sh member-env probe"
+done <<< "$PROBE_KEYS"
+
 # ---------------------------------------------------------------------------
-# LIVE_KEYS: sort-unique union of all three injection sources. LIVE_KV mirrors
+# Derivation (source 4 of 4): the orchestrator systemd unit's Environment=
+# (task 10716). Every *.conf drop-in reify tracks under
+# deploy/systemd/orchestrator-reify.service.d/ is merged into the unit the
+# orchestrator runs as (scripts/install-warm-lane-units.sh copies it
+# verbatim), and dark-factory hands that process environment to verify.
+# Read from the tracked files, never `systemctl show`, so the verdict is the
+# same on every host; systemd_unit_env.py fails closed on any directive whose
+# keys the tracked text cannot answer. Each key's origin is the file:line of
+# the assignment that left it in effect.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Derivation (4/4): orchestrator systemd unit Environment= (deploy/systemd/orchestrator-reify.service.d) ---"
+
+UNIT_ENV_LINES=""
+_unit_rc=0
+UNIT_ENV_LINES="$(python3 "$SCRIPT_DIR/systemd_unit_env.py" "$REPO_ROOT/deploy/systemd/orchestrator-reify.service.d")" || _unit_rc=$?
+
+assert "orchestrator unit Environment= parse succeeded (non-vacuity; systemd_unit_env.py's diagnostic is on stderr above) [rc=$_unit_rc]" \
+    test "$_unit_rc" -eq 0
+
+UNIT_ENV_KEYS=""
+while IFS=$'\t' read -r _unit_key _unit_site; do
+    [ -z "$_unit_key" ] && continue
+    UNIT_ENV_KEYS+="$_unit_key"$'\n'
+    note_origin "$_unit_key" "${_unit_site#"$REPO_ROOT/"}"
+done <<< "$UNIT_ENV_LINES"
+
+assert "orchestrator unit Environment= contains REIFY_LANE_LEAK_STATUS_CMD (parse sanity)" \
+    kv_key_member REIFY_LANE_LEAK_STATUS_CMD "$UNIT_ENV_KEYS"
+
+# ---------------------------------------------------------------------------
+# LIVE_KEYS: sort-unique union of all four injection sources. LIVE_KV mirrors
 # the union of the two greppable sources at the KEY=VALUE level so the
 # hostile-ambient loop below can look up a live value for a verify_env-only
 # ledger var, not just a plan-line one. The probe yields keys only, and no
-# HOSTILE_LOOP_KEYS entry is probe-only, so LIVE_KV needs nothing from it.
+# HOSTILE_LOOP_KEYS entry is probe-only or unit-only, so LIVE_KV needs nothing
+# from either.
 # ---------------------------------------------------------------------------
 LIVE_KV="${PLAN_LINE_KV}${VERIFY_ENV_KV}"
-LIVE_KEYS="$(sort -u <<< "${PLAN_LINE_KEYS}${VERIFY_ENV_KEYS}${PROBE_KEYS}")"
+LIVE_KEYS="$(sort -u <<< "${PLAN_LINE_KEYS}${VERIFY_ENV_KEYS}${PROBE_KEYS}${UNIT_ENV_KEYS}")"
 
 # ---------------------------------------------------------------------------
-# Ledger: tests/infra/run-all-ambient-vars.manifest (keys only, one per
-# line). Read defensively -- strip comment/blank lines -- mirroring
-# run-all-classification-lib.sh's manifest-reading convention.
+# Ledger: tests/infra/run-all-ambient-vars.manifest. Each row is `<KEY>` or
+# `<KEY> strip`; comment/blank lines are skipped, mirroring
+# run-all-classification-lib.sh's manifest-reading convention. The
+# disposition is parsed here, once: MANIFEST_KEYS holds every key (so
+# set-equality and ambient_isolation_check_one's unset list see them all),
+# MANIFEST_STRIP_KEYS the strip rows. Any other row shape fails closed.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Ledger: tests/infra/run-all-ambient-vars.manifest ---"
 
 MANIFEST_KEYS=""
+MANIFEST_STRIP_KEYS=""
 while IFS= read -r _line; do
     case "$_line" in
         ''|'#'*) continue ;;
     esac
-    MANIFEST_KEYS+="$_line"$'\n'
+    read -r _row_key _row_disposition _row_extra <<< "$_line"
+    case "${_row_disposition:-}:${_row_extra:-}" in
+        ':') ;;
+        'strip:') MANIFEST_STRIP_KEYS+="$_row_key"$'\n' ;;
+        *)
+            assert "run-all-ambient-vars.manifest row '$_line' is \`<KEY>\` or \`<KEY> strip\`" false
+            continue
+            ;;
+    esac
+    MANIFEST_KEYS+="$_row_key"$'\n'
 done < "$MANIFEST"
 
 assert "run-all-ambient-vars.manifest declares at least one var" \
     test -n "$MANIFEST_KEYS"
 
 # Full set-equality guard (upgraded from the step-1 plan-line-only subset
-# guard, task 5152): every LIVE var (the union of all three sources) must be
+# guard, task 5152): every LIVE var (the union of all four sources) must be
 # declared in the ledger, AND every ledger var must still be part of the
 # LIVE set -- together these two directions are full set equality, so a var
 # newly injected by any source without a matching ledger entry, or a
@@ -337,7 +410,7 @@ assert "run-all-ambient-vars.manifest declares at least one var" \
 # subset).
 while IFS= read -r _live_key; do
     [ -z "$_live_key" ] && continue
-    assert "live var $_live_key is declared in run-all-ambient-vars.manifest (add it there)" \
+    assert "live var $_live_key [injected by: ${LIVE_ORIGIN["$_live_key"]}] is declared in run-all-ambient-vars.manifest (add it there)" \
         kv_key_member "$_live_key" "$MANIFEST_KEYS"
 done <<< "$LIVE_KEYS"
 
@@ -346,6 +419,30 @@ while IFS= read -r _manifest_key; do
     assert "run-all-ambient-vars.manifest's $_manifest_key is still part of the live injected set (remove if stale)" \
         kv_key_member "$_manifest_key" "$LIVE_KEYS"
 done <<< "$MANIFEST_KEYS"
+
+# ---------------------------------------------------------------------------
+# Strip rows, proved behaviourally (task 10716): run_all_stripped_env_keys
+# spawns the real run_all.sh with every strip-row key set to a sentinel and
+# reports which the member never saw. The runner path is a LITERAL argument,
+# for the same Section F / FC6a reason as source 3's probe above.
+# ---------------------------------------------------------------------------
+if [ -n "$MANIFEST_STRIP_KEYS" ]; then
+    echo ""
+    echo "--- Strip rows: run_all.sh removes each before spawning a member ---"
+
+    STRIPPED_KEYS=""
+    _strip_rc=0
+    STRIPPED_KEYS="$(run_all_stripped_env_keys "$SCRIPT_DIR/run_all.sh" "$MANIFEST_STRIP_KEYS")" || _strip_rc=$?
+
+    assert "run_all.sh strip probe ran (non-vacuity) [rc=$_strip_rc]" \
+        test "$_strip_rc" -eq 0
+
+    while IFS= read -r _strip_key; do
+        [ -z "$_strip_key" ] && continue
+        assert "run_all.sh strips $_strip_key before spawning a member, as its 'strip' row in run-all-ambient-vars.manifest records" \
+            kv_key_member "$_strip_key" "$STRIPPED_KEYS"
+    done <<< "$MANIFEST_STRIP_KEYS"
+fi
 
 # ---------------------------------------------------------------------------
 # Hostile-ambient RE-RUN allow-list (task 5152 reviewer follow-up): vars
