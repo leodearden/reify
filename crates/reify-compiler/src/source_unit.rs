@@ -17,8 +17,8 @@ use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction};
 use crate::expr::compile_expr_guarded_with_expected;
 use crate::scope::CompilationScope;
 use crate::source_unit_tables::{
-    CompiledSourceUnit, LOCAL_REFERENCE_ENTITY, LocalReference, ReferenceRead, ReferenceRoot,
-    SourceStep,
+    CompiledSourceUnit, InstanceRequest, LOCAL_REFERENCE_ENTITY, LocalReference, ReferenceRead,
+    ReferenceRoot, RequestArgument, SourceStep,
 };
 
 /// Which compile an expression gets.
@@ -110,11 +110,49 @@ pub fn compile_source_unit(
         .into_iter()
         .filter(|r| read.contains(&r.id))
         .collect();
+    let instance_requests = instance_requests(&tree);
     CompiledSourceUnit {
         expr: tree,
         references,
-        instance_requests: Vec::new(),
+        instance_requests,
     }
+}
+
+/// One request per constructor node of the tree, in pre-order. A request is
+/// keyed by its place, the child indices from the root in
+/// `CompiledExpr::for_each_child` order, because a unit's content holds no
+/// source position (PRD §5.2).
+fn instance_requests(tree: &CompiledExpr) -> Vec<InstanceRequest> {
+    fn visit(node: &CompiledExpr, place: &mut Vec<usize>, requests: &mut Vec<InstanceRequest>) {
+        if let CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } = &node.kind
+        {
+            requests.push(InstanceRequest {
+                place: place.clone(),
+                definition: type_name.clone(),
+                arguments: ordered_args
+                    .iter()
+                    .map(|(parameter, _)| RequestArgument {
+                        parameter: parameter.clone(),
+                        unknown: None,
+                    })
+                    .collect(),
+            });
+        }
+        let mut index = 0;
+        node.for_each_child(&mut |child| {
+            place.push(index);
+            visit(child, place, requests);
+            place.pop();
+            index += 1;
+        });
+    }
+    let mut requests = Vec::new();
+    visit(tree, &mut Vec::new(), &mut requests);
+    requests
 }
 
 /// Every cell id the tree reads, lambda bodies included. A table entry minted

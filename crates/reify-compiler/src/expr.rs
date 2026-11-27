@@ -151,6 +151,17 @@ pub(crate) fn keyed_computed_index_poison(
     CompiledExpr::literal(Value::Undef, result_type)
 }
 
+/// A parameter the structure declares: a `Param` cell, or an `Auto` cell whose
+/// visibility says param. This is the structure-ctor branch's view (b); its
+/// comment there says why a `Private` `Auto` cell is read as an auto `let`.
+fn is_declared_param(cell: &ValueCellDecl) -> bool {
+    match cell.kind {
+        ValueCellKind::Param => true,
+        ValueCellKind::Auto { .. } => cell.visibility == Visibility::Public,
+        _ => false,
+    }
+}
+
 /// Return a `Type::Error` poison sentinel for ICE-path producer sites that
 /// assign a `Type` to a local variable rather than returning a `CompiledExpr`.
 ///
@@ -2951,10 +2962,20 @@ fn compile_expr_guarded_with_expected_inner(
                 && let Some(template) = registry.get(name.as_str())
                 && template.entity_kind == EntityKind::Structure
             {
+                // The source-unit mode binds over the declared parameters, view
+                // (b) below, so an argument for an `auto` parameter reaches the
+                // instance request instead of a lenient `__arg{i}` slot.
+                let in_source_unit = scope.source_unit().is_some();
                 let params: Vec<(&str, Option<&CompiledExpr>)> = template
                     .value_cells
                     .iter()
-                    .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
+                    .filter(|vc| {
+                        if in_source_unit {
+                            is_declared_param(vc)
+                        } else {
+                            matches!(vc.kind, ValueCellKind::Param)
+                        }
+                    })
                     .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
                     .collect();
                 // ── Two read-only VIEWS for the ε diagnostics below ───────────
@@ -3019,11 +3040,7 @@ fn compile_expr_guarded_with_expected_inner(
                 let declared_count = template
                     .value_cells
                     .iter()
-                    .filter(|vc| match vc.kind {
-                        ValueCellKind::Param => true,
-                        ValueCellKind::Auto { .. } => vc.visibility == Visibility::Public,
-                        _ => false,
-                    })
+                    .filter(|vc| is_declared_param(vc))
                     .count();
                 // --- By-name binder (task-4522) ---
                 // Named arg `p` binds to the template param named `p`;
@@ -3267,6 +3284,22 @@ fn compile_expr_guarded_with_expected_inner(
                     ));
                 }
 
+                // In the source-unit mode the made instance reads its own
+                // defaults and lets from its own member table, so the caller's
+                // unit holds only the arguments it wrote.
+                if in_source_unit {
+                    return CompiledExpr::structure_instance_ctor(
+                        reify_ir::StructureTypeId(0),
+                        name.clone(),
+                        template.version(),
+                        ordered_args,
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Some(expr.span),
+                        Type::StructureRef(name.clone()),
+                    );
+                }
                 // Compute defaults: uncovered params with a default_expr.
                 let defaults: Vec<(String, CompiledExpr)> = params
                     .iter()
