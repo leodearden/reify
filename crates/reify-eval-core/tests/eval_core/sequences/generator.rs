@@ -1,6 +1,7 @@
 //! Seeded random cases: a toy design of cells and, as features allow,
 //! scopes, guards, collections, dividing cells, shapes and measures on the
-//! toy kernel, and limit settings, and a sequence of host events on it,
+//! toy kernel, calls whose runs declare children, and limit settings, and
+//! a sequence of host events on it,
 //! whose edits may set or remove a limit setting and whose evaluations may
 //! be given a paths budget. With dividing
 //! cells on, every members input the generator makes ends in a pair: a
@@ -12,20 +13,24 @@
 //! rule: member m_k reaches through its declarer only the declarer itself
 //! or members m_j with j < k). With cycles on, a member cell's term may
 //! name a sibling at its own ordinal or a later one, so a design may hold
-//! rings of waits, which answer "cycle". A feature that is off draws
+//! rings of waits, which answer "cycle". A call's child reads constants,
+//! inputs and its call's first term, and, with cycles on, its call; a
+//! callee is a cell or a call of cells, so no call recurses. A feature
+//! that is off draws
 //! nothing from the rng, so a later leaf's feature leaves this feature
 //! set's stream unchanged.
 
 use std::collections::BTreeMap;
+use std::iter;
 use std::ops::RangeInclusive;
 
 use reify_eval_core::{Limit, Step};
 
 use super::case::{Case, HostEvent, Then, edited};
 use super::design::{
-    Decl, Inputs, Key, ModelPath, ToyKind, Val, bound, cell, collection, declaration, declarer,
-    divided, flag, guard, index, input, int, measure, members, named, passed, path, picker, root,
-    scope, shape, step,
+    Bind, Decl, Inputs, Key, ModelPath, Site, ToyKind, Val, bound, call, call_step, calls_value,
+    cell, collection, constant, declaration, declarer, divided, flag, guard, index, input, int,
+    measure, members, named, passed, path, picker, root, scope, shape, site, step, when,
 };
 use super::rng::XorShift64Star;
 
@@ -61,6 +66,8 @@ pub struct Features {
     pub limits: bool,
     /// Evaluations given a paths budget.
     pub budgets: bool,
+    /// Calls, whose runs declare children.
+    pub call: bool,
 }
 
 impl Features {
@@ -75,6 +82,7 @@ impl Features {
             cycles: false,
             limits: false,
             budgets: false,
+            call: false,
         }
     }
 
@@ -86,6 +94,7 @@ impl Features {
             cycles: true,
             limits: true,
             budgets: true,
+            call: true,
             ..Self::structure()
         }
     }
@@ -102,6 +111,8 @@ pub fn generate(seed: u64, features: Features, events: usize) -> Case {
         counts: Vec::new(),
         levels: Vec::new(),
         roots: Vec::new(),
+        calls: Vec::new(),
+        call_steps: BTreeMap::new(),
         paths: Vec::new(),
         named: 0,
     };
@@ -116,6 +127,24 @@ const BLOCKED_PAIR_ZERO: &str = "z";
 /// The deepest a node that declares members may sit: a root is at depth
 /// 0, so the design nests at most three levels of nodes.
 const DEEPEST_DECLARER: usize = 1;
+
+/// The chains a call's sites are drawn from: two outer sites, and one inner
+/// site reached from each, so one inner site is reached from two outer
+/// calls.
+const CHAINS: [&[u64]; 4] = [&[1], &[2], &[1, 7], &[2, 7]];
+
+/// A `Calls` input and the calls that read it.
+#[derive(Clone)]
+struct CallsInput {
+    name: String,
+    /// The paths of calls that read it whose children go into `paths`.
+    calls: Vec<ModelPath>,
+    /// How many terms each of those calls has.
+    terms: usize,
+    /// Whether its sites declare only cells: it is a callee's, so no call
+    /// nests deeper.
+    inner: bool,
+}
 
 /// A members input and the node that binds it.
 struct Level {
@@ -167,6 +196,7 @@ enum Change {
     Remove,
     Root,
     Limit,
+    Calls,
 }
 
 struct Generator {
@@ -177,6 +207,10 @@ struct Generator {
     counts: Vec<String>,
     levels: Vec<Level>,
     roots: Vec<String>,
+    calls: Vec<CallsInput>,
+    /// The steps of the children each member call's sites declare, last
+    /// drawn.
+    call_steps: BTreeMap<ModelPath, Vec<Step>>,
     /// Every path the design has declared, and a few it never declares.
     paths: Vec<ModelPath>,
     named: usize,
@@ -203,7 +237,7 @@ impl Generator {
             needed.push((named(&name), int(self.int_value())));
             self.ints.push(name);
         }
-        if self.features.guard {
+        if self.features.guard || self.features.call {
             for _ in 0..1 + self.rng.below(2) {
                 let name = self.fresh("f");
                 needed.push((named(&name), flag(self.rng.chance(1, 2))));
@@ -260,6 +294,7 @@ impl Generator {
             ToyKind::Guard => self.guard_at(&at, 0, None, needed),
             ToyKind::Collection => self.collection_at(&at, &[], needed),
             ToyKind::Shape | ToyKind::Measure => unreachable!("a root is never on the kernel"),
+            ToyKind::Call => unreachable!("no call is drawn here"),
         }
     }
 
@@ -285,6 +320,9 @@ impl Generator {
         if self.features.collection {
             kinds.push(ToyKind::Collection);
         }
+        if self.features.call {
+            kinds.push(ToyKind::Call);
+        }
         match *self.rng.choose(&kinds) {
             ToyKind::Cell if self.features.kernel && self.rng.chance(1, 3) => {
                 self.on_kernel(earlier)
@@ -293,8 +331,120 @@ impl Generator {
             ToyKind::Scope => self.scope_at(&at, depth, needed),
             ToyKind::Guard => self.guard_at(&at, depth, Some(level.kind), needed),
             ToyKind::Collection => self.collection_at(&at, earlier, needed),
+            ToyKind::Call => self.member_call(&at, level, earlier, needed),
             ToyKind::Shape | ToyKind::Measure => unreachable!("the kernel takes a cell's place"),
         }
+    }
+
+    /// A call of terms drawn as a member cell's are, at times only while a
+    /// flag reads true, over a new `Calls` input.
+    fn member_call(
+        &mut self,
+        at: &ModelPath,
+        level: &Level,
+        earlier: &[Sibling],
+        needed: &mut Needed,
+    ) -> Decl {
+        let siblings = self.nameable(level, earlier);
+        let terms = self.term_binds(at, &siblings, Some(level.kind));
+        let calls = CallsInput {
+            name: self.fresh("k"),
+            calls: vec![at.clone()],
+            terms: terms.len(),
+            inner: false,
+        };
+        let sites = self.sites(&calls, needed);
+        let steps = sites
+            .iter()
+            .flat_map(|site| child_steps(&site.sites, site.each, calls.terms))
+            .collect();
+        self.call_steps.insert(at.clone(), steps);
+        let called = call(terms, input(&calls.name));
+        needed.push((named(&calls.name), calls_value(sites)));
+        self.calls.push(calls);
+        if self.rng.chance(2, 3) {
+            return when(called, input(&self.rng.choose(&self.flags).clone()));
+        }
+        called
+    }
+
+    /// One or two sites for the calls `calls` names.
+    fn sites(&mut self, calls: &CallsInput, needed: &mut Needed) -> Vec<Site> {
+        let count = 1 + self.rng.below(2);
+        (0..count).map(|_| self.site(calls, needed)).collect()
+    }
+
+    /// A site at one of `CHAINS`, at times looping, whose callee is a cell
+    /// or, outside an inner `Calls`, at times a call of cells. The paths of
+    /// the children it declares in each of the calls go into `paths`.
+    fn site(&mut self, calls: &CallsInput, needed: &mut Needed) -> Site {
+        let chain = *self.rng.choose(&CHAINS);
+        let each = self.rng.chance(1, 2);
+        let offset = self.offset();
+        let children = self.site_children(calls, chain, each);
+        let callee = if !calls.inner && self.rng.chance(1, 4) {
+            self.inner_call(&children, needed)
+        } else {
+            cell(self.callee_terms())
+        };
+        site(chain, each, offset, callee)
+    }
+
+    /// A site's small offset.
+    fn offset(&mut self) -> i64 {
+        self.rng.below(5) as i64 - 2
+    }
+
+    /// The paths of the children a site at `chain` declares in each of the
+    /// calls `calls` names, put into `paths` with, at times, a path below
+    /// each.
+    fn site_children(&mut self, calls: &CallsInput, chain: &[u64], each: bool) -> Vec<ModelPath> {
+        let steps = child_steps(chain, each, calls.terms);
+        let children: Vec<ModelPath> = calls
+            .calls
+            .iter()
+            .flat_map(|call| steps.iter().map(|step| call.child(step.clone())))
+            .collect();
+        for child in &children {
+            self.paths.push(child.clone());
+            if self.rng.chance(1, 4) {
+                self.paths.push(child.child(step("x")));
+            }
+        }
+        children
+    }
+
+    /// A callee call, declared at each of `at`, of a cell's terms, over a
+    /// new inner `Calls` input whose children's paths go into `paths` below
+    /// one of `at`.
+    fn inner_call(&mut self, at: &[ModelPath], needed: &mut Needed) -> Decl {
+        let terms = self.callee_terms();
+        let calls = CallsInput {
+            name: self.fresh("k"),
+            calls: vec![self.rng.choose(at).clone()],
+            terms: terms.len(),
+            inner: true,
+        };
+        let sites = self.sites(&calls, needed);
+        needed.push((named(&calls.name), calls_value(sites)));
+        let callee = call(terms, input(&calls.name));
+        self.calls.push(calls);
+        callee
+    }
+
+    /// A callee's terms: its argument at "0", bound by its call, then up to
+    /// two of inputs, its call's first term and, with cycles on, its call.
+    fn callee_terms(&mut self) -> Vec<Bind> {
+        let sources = if self.features.cycles { 4 } else { 3 };
+        let count = self.rng.below(3);
+        let others: Vec<_> = (0..count)
+            .map(|_| match self.rng.below(sources) {
+                0 | 1 => input(&self.some_int()),
+                2 => passed("0", []),
+                _ => declarer([]),
+            })
+            .collect();
+        iter::once(constant(int(0))).chain(others).collect()
     }
 
     /// A measure of an earlier shape, or a shape over an int input.
@@ -327,8 +477,24 @@ impl Generator {
             return picker(pick, from);
         }
         let siblings = self.nameable(level, earlier);
-        let terms = self.terms(at, &siblings, Some(level.kind));
-        self.maybe_divided(terms, earlier, needed)
+        let mut terms = self.term_binds(at, &siblings, Some(level.kind));
+        terms.extend(self.call_child_read(level, earlier));
+        self.maybe_divided(cell(terms), earlier, needed)
+    }
+
+    /// At times, a read of a child an earlier sibling call declares.
+    fn call_child_read(&mut self, level: &Level, earlier: &[Sibling]) -> Option<Bind> {
+        let calls = of_kind(earlier, ToyKind::Call);
+        if calls.is_empty() || !self.rng.chance(1, 2) {
+            return None;
+        }
+        let called = member_step(*self.rng.choose(&calls));
+        let steps = self
+            .call_steps
+            .get(&level.at.child(called.clone()))?
+            .clone();
+        let child = self.rng.choose(&steps).clone();
+        Some(declarer([called, child]))
     }
 
     /// The ordinals of the siblings a term of a member of `level` may
@@ -365,11 +531,21 @@ impl Generator {
         siblings: &[usize],
         declarer_kind: Option<ToyKind>,
     ) -> Decl {
+        cell(self.term_binds(at, siblings, declarer_kind))
+    }
+
+    /// Up to three terms for a node at `at`, as `terms` draws them.
+    fn term_binds(
+        &mut self,
+        at: &ModelPath,
+        siblings: &[usize],
+        declarer_kind: Option<ToyKind>,
+    ) -> Vec<Bind> {
         if self.rng.chance(1, 4) {
             self.paths.push(at.child(step("x")));
         }
         let count = self.rng.below(4);
-        let terms: Vec<_> = (0..count)
+        (0..count)
             .map(|_| match self.rng.below(10) {
                 5..=7 if !siblings.is_empty() => {
                     declarer([member_step(*self.rng.choose(siblings))])
@@ -381,8 +557,7 @@ impl Generator {
                 9 => passed("members", []),
                 _ => input(&self.some_int()),
             })
-            .collect();
-        cell(terms)
+            .collect()
     }
 
     fn scope_at(&mut self, at: &ModelPath, depth: usize, needed: &mut Needed) -> Decl {
@@ -612,6 +787,9 @@ impl Generator {
         if self.features.limits {
             sorts.push(Change::Limit);
         }
+        if !self.calls.is_empty() {
+            sorts.extend([Change::Calls; 2]);
+        }
         let mut needed = Needed::new();
         let mut changes = match *self.rng.choose(&sorts) {
             Change::Int => {
@@ -643,6 +821,7 @@ impl Generator {
                 vec![(root(&name), Some(declaration(decl)))]
             }
             Change::Limit => vec![self.limit_change(current)],
+            Change::Calls => vec![self.calls_change(current, &mut needed)],
         };
         changes.extend(needed.into_iter().map(|(key, value)| (key, Some(value))));
         changes
@@ -657,6 +836,28 @@ impl Generator {
             return (key, None);
         }
         (key, Some(bound(self.limit_value(limit))))
+    }
+
+    /// Some `Calls` input with one site replaced, its `each` toggled or its
+    /// offset changed; new sites where the input is removed or holds none.
+    fn calls_change(&mut self, current: &Inputs, needed: &mut Needed) -> (Key, Option<Val>) {
+        let calls = self.rng.choose(&self.calls).clone();
+        let key = named(&calls.name);
+        let mut sites = match current.get(&key) {
+            Some(Val::Calls(sites)) if !sites.is_empty() => sites.clone(),
+            _ => return (key, Some(calls_value(self.sites(&calls, needed)))),
+        };
+        let at = self.rng.below(sites.len());
+        match self.rng.below(3) {
+            0 => sites[at] = self.site(&calls, needed),
+            1 => {
+                let changed = &mut sites[at];
+                changed.each = !changed.each;
+                self.site_children(&calls, &changed.sites.clone(), changed.each);
+            }
+            _ => sites[at].offset = self.offset(),
+        }
+        (key, Some(calls_value(sites)))
     }
 
     /// A member of some level added at the next ordinal, replaced, or
@@ -695,6 +896,19 @@ impl Generator {
 
 fn member_step(ordinal: usize) -> Step {
     step(&format!("m{ordinal}"))
+}
+
+/// The steps of the children a site at `chain` declares in a call of
+/// `terms` terms: one, or, for a site that loops, one per term and one past
+/// the last.
+fn child_steps(chain: &[u64], each: bool, terms: usize) -> Vec<Step> {
+    if !each {
+        return vec![call_step(chain, None)];
+    }
+    let past = u64::try_from(terms).expect("a count of terms fits in a u64");
+    (0..=past)
+        .map(|index| call_step(chain, Some(index)))
+        .collect()
 }
 
 /// The members of `present` below `ordinal`.
@@ -745,6 +959,7 @@ mod tests {
             match value {
                 Val::Decl(decl) => vec![decl],
                 Val::Members(members) => members.values().collect(),
+                Val::Calls(sites) => sites.iter().map(|site| &site.callee).collect(),
                 Val::Int(_) | Val::Bool(_) | Val::Bound(_) => Vec::new(),
             }
         }
@@ -804,11 +1019,13 @@ mod tests {
             cycles: true,
             limits: true,
             budgets: true,
+            call: true,
         };
         assert_eq!(Features::every(), every);
         assert!(!Features::structure().cycles);
         assert!(!Features::structure().limits);
         assert!(!Features::structure().budgets);
+        assert!(!Features::structure().call);
         for seed in GATE_SEEDS {
             let case = generate(seed, every, GATE_EVENTS);
             assert_eq!(gate_case(seed), case, "seed {seed}");
@@ -823,6 +1040,7 @@ mod tests {
             ToyKind::Guard => features.guard,
             ToyKind::Collection => features.collection,
             ToyKind::Shape | ToyKind::Measure => features.kernel,
+            ToyKind::Call => features.call,
         }
     }
 
@@ -837,6 +1055,7 @@ mod tests {
             cycles: false,
             limits: false,
             budgets: false,
+            call: false,
         };
         let every = Features::every();
         let some_off = [
@@ -848,6 +1067,10 @@ mod tests {
             },
             Features {
                 kernel: false,
+                ..every
+            },
+            Features {
+                call: false,
                 ..every
             },
         ];
@@ -1046,6 +1269,7 @@ mod tests {
             ToyKind::Collection,
             ToyKind::Shape,
             ToyKind::Measure,
+            ToyKind::Call,
         ];
         assert_eq!(kinds, BTreeSet::from(all));
         let counts = [

@@ -18,6 +18,7 @@ use crate::core_id::CoreId;
 use crate::counters::Counters;
 use crate::cycle;
 use crate::declaration::Declaration;
+use crate::declared_children::Conflict;
 use crate::demand::Demand;
 use crate::event::{Event, RequestError, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
@@ -343,16 +344,8 @@ impl Executor {
 
     /// Works out what the path at `key` is: a root from its snapshot input,
     /// read with the typed read a body uses (decision D11); any other path
-    /// from its parent's final answer. A declaration of a node too deep for
-    /// the snapshot's depth setting answers that failure; any other
-    /// declaration starts a lookup; any other outcome is the path's answer.
-    /// A path no live request needs once its resolution is charged is not
-    /// worked out.
+    /// from its parent's final answer.
     fn resolve(&mut self, key: NodeKey) -> Option<Work> {
-        if !self.charge_resolution(key) {
-            return None;
-        }
-        self.counters.count_path_resolved();
         let index = self.indexes.of(key.snapshot);
         let declared = match self.paths.parent(key.path) {
             None => {
@@ -372,10 +365,25 @@ impl Executor {
                 declaration_of(step, entry, &self.kinds)
             }
         };
+        self.work_out(key, declared)
+    }
+
+    /// Works out the path at `key`, which resolved to `declared`, or which
+    /// a body declared so (contract 7.1). A declaration of a node too deep
+    /// for the snapshot's depth setting answers that failure; any other
+    /// declaration starts a lookup; any other outcome is the path's answer.
+    /// A path no live request needs once its resolution is charged is not
+    /// worked out.
+    fn work_out(&mut self, key: NodeKey, declared: Outcome<Declaration>) -> Option<Work> {
+        if !self.charge_resolution(key) {
+            return None;
+        }
+        self.counters.count_path_resolved();
         let declared = match declared {
             Outcome::Value(_) => {
                 let depth = self.paths.depth(key.path);
-                limit_check::depth(depth, index.limits()).map_or(declared, Outcome::Failure)
+                let limits = self.indexes.of(key.snapshot).limits();
+                limit_check::depth(depth, limits).map_or(declared, Outcome::Failure)
             }
             other => other,
         };
@@ -387,14 +395,38 @@ impl Executor {
             Outcome::Failure(failure) => (Content::of_failure(&failure), Outcome::Failure(failure)),
             Outcome::Absent => (Content::absent(), Outcome::Absent),
         };
-        Some(Work::Answered(
-            key,
-            Entry {
-                content,
-                outcome,
-                declaration: None,
-            },
-        ))
+        Some(Work::Answered(key, Entry::settled(outcome, content)))
+    }
+
+    /// Works out the child at `path`, which the reader at `reader`, its
+    /// parent, declared `declaration` and awaits. The reader's own
+    /// declaration, `declarer`, is filed first, so that the child's passed
+    /// bindings can be read through it while the reader runs. A path
+    /// already answered, or already a lookup or a body, is left as it is; a
+    /// path waiting on its parent is taken over, its wait on the parent
+    /// ended, since the parent's run is what declares it.
+    fn declare(
+        &mut self,
+        reader: NodeKey,
+        declarer: &Arc<Declaration>,
+        path: PathId,
+        declaration: Arc<Declaration>,
+    ) {
+        self.indexes
+            .file_declarer(reader.snapshot, reader.path, declarer);
+        let key = NodeKey {
+            snapshot: reader.snapshot,
+            path,
+        };
+        if self.answered(key) || self.is_reader(key) {
+            return;
+        }
+        if self.resolving.remove(&key) {
+            self.waits.forget(key);
+        }
+        if let Some(work) = self.work_out(key, Outcome::Value(declaration)) {
+            self.work(work);
+        }
     }
 
     /// Charges the resolution of `key` to every live request that needs it:
@@ -591,18 +623,32 @@ impl Executor {
             }
         };
         match posted {
-            Posted::Ask(Ask::Read(refs)) => {
+            Posted::Ask(Ask::Read(wanted)) => {
                 let index = self.indexes.of(key.snapshot);
                 let declaration = task.declaration();
-                let reading =
-                    serve::read::serve(key.path, declaration, refs.into(), &mut self.paths, index);
+                let children = task.children();
+                let served = serve::read::serve(
+                    key.path,
+                    declaration,
+                    wanted.into(),
+                    children,
+                    &mut self.paths,
+                    index,
+                );
+                let reading = match served {
+                    Ok(reading) => reading,
+                    Err(Conflict { step }) => {
+                        let conflict = Failure::ConflictingChild { step };
+                        return self.finish(key, Outcome::Failure(conflict));
+                    }
+                };
                 let awaited = reading.awaited();
                 if awaited.is_empty() {
                     task.answer_read(reading.reply(index));
                     return self.queue(key);
                 }
-                self.readings.insert(key, reading);
-                self.await_nodes(key, awaited);
+                let declaration = Arc::clone(declaration);
+                self.await_reading(key, reading, awaited, &declaration);
             }
             Posted::Ask(Ask::Exclusive(ask)) => {
                 let cancel = task.cancel_flag();
@@ -626,7 +672,12 @@ impl Executor {
     /// each request stored can be answered at once. A result found is the
     /// node's answer, with the node's own declaration, and no body runs; a
     /// request that awaits a node makes the lookup wait as a body would;
-    /// a key where nothing is filed starts the body from its beginning.
+    /// a request that declares a child declares it at the lookup's own path
+    /// and awaits it; a key where nothing is filed starts the body from its
+    /// beginning, and so would a request in conflict with the children the
+    /// lookup declared. Only keys that collide could file one: a key hashes
+    /// every child item of the requests on the way to it, so those requests
+    /// are one run's, and that run met no conflict among them.
     fn step_lookup(&mut self, key: NodeKey) {
         let Some(lookup) = self.lookups.get_mut(&key) else {
             return;
@@ -636,48 +687,87 @@ impl Executor {
         }
         let index = self.indexes.of(key.snapshot);
         if let Some(reading) = self.readings.remove(&key) {
-            lookup.advance(&reading.reply(index));
+            lookup.advance(reading.reply(index));
         }
         loop {
             self.counters.count_store_lookup();
-            let refs = match self.store.probe(lookup.key()) {
-                Some(Stored::Next(refs)) => Arc::clone(refs),
+            let wanted = match self.store.probe(lookup.key()) {
+                Some(Stored::Next(wanted)) => Arc::clone(wanted),
                 Some(Stored::Result(result)) => {
+                    let (outcome, content) = (result.outcome.clone(), result.content);
+                    let found = self.lookups.remove(&key);
+                    let (declaration, children) = found.expect("a lookup stepped is held").found();
                     let entry = Entry {
-                        outcome: result.outcome.clone(),
-                        declaration: Some(Arc::clone(lookup.declaration())),
-                        content: result.content,
+                        outcome,
+                        declaration: Some(declaration),
+                        content,
+                        children_declared: children,
                     };
-                    self.lookups.remove(&key);
                     return self.work(Work::Answered(key, entry));
                 }
                 None => return self.miss(key),
             };
-            let reading =
-                serve::read::serve(key.path, lookup.declaration(), refs, &mut self.paths, index);
+            let served = serve::read::serve(
+                key.path,
+                lookup.declaration(),
+                wanted,
+                lookup.children(),
+                &mut self.paths,
+                index,
+            );
+            let Ok(reading) = served else {
+                return self.miss(key);
+            };
             let awaited = reading.awaited();
             if !awaited.is_empty() {
-                self.readings.insert(key, reading);
-                return self.await_nodes(key, awaited);
+                let declaration = Arc::clone(lookup.declaration());
+                return self.await_reading(key, reading, awaited, &declaration);
             }
-            lookup.advance(&reading.reply(index));
+            lookup.advance(reading.reply(index));
         }
     }
 
-    /// Makes the reader at `key` wait on each node in `awaited` before any
-    /// of them is worked out, so that none can answer the reading early.
-    /// Stops once the reader is dropped: a node that fails outside the
-    /// inputs as it is worked out drops it at once.
-    fn await_nodes(&mut self, key: NodeKey, awaited: BTreeSet<PathId>) {
-        let nodes: Vec<_> = awaited
-            .into_iter()
-            .map(|path| NodeKey {
-                snapshot: key.snapshot,
-                path,
-            })
-            .collect();
+    /// Keeps the reading of the reader at `key`, declared `declaration`,
+    /// until each node in `awaited` is answered, and makes the reader wait
+    /// on them, declaring the children the reading lists.
+    fn await_reading(
+        &mut self,
+        key: NodeKey,
+        mut reading: Reading,
+        awaited: BTreeSet<PathId>,
+        declaration: &Arc<Declaration>,
+    ) {
+        let to_declare = reading.take_to_declare();
+        self.readings.insert(key, reading);
+        self.await_nodes(key, awaited, to_declare, declaration);
+    }
+
+    /// Makes the reader at `key`, declared `declaration`, wait on each node
+    /// in `awaited` before any of them is worked out, so that none can
+    /// answer the reading early; then declares each child in `to_declare`,
+    /// and sees that each other node will be answered. Stops once the
+    /// reader is dropped: a node that fails outside the inputs as it is
+    /// worked out drops it at once.
+    fn await_nodes(
+        &mut self,
+        key: NodeKey,
+        awaited: BTreeSet<PathId>,
+        to_declare: Vec<(PathId, Arc<Declaration>)>,
+        declaration: &Arc<Declaration>,
+    ) {
+        let at = |path| NodeKey {
+            snapshot: key.snapshot,
+            path,
+        };
+        let nodes: Vec<_> = awaited.into_iter().map(at).collect();
         for node in &nodes {
             self.waits.add(key, *node);
+        }
+        for (path, child) in to_declare {
+            if !self.is_reader(key) {
+                return;
+            }
+            self.declare(key, declaration, path, child);
         }
         for node in nodes {
             if !self.is_reader(key) {
@@ -708,8 +798,9 @@ impl Executor {
         let Some(task) = self.remove_reader(key) else {
             return;
         };
-        let (declaration, chain) = task.finish();
-        let entry = finish::filed(declaration, chain, outcome, &self.kinds, &mut self.store);
+        let (declaration, chain, children) = task.finish();
+        let store = &mut self.store;
+        let entry = finish::filed(declaration, chain, children, outcome, &self.kinds, store);
         self.work(Work::Answered(key, entry));
     }
 

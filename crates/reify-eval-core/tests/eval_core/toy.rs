@@ -11,10 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
-    Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event,
-    Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Outcome, OutsideFailure, Path,
-    Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot, Space, Step, StepKey,
-    Turn, Value,
+    Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, Description, DuplicateKind,
+    Erased, Event, Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Link, Outcome,
+    OutsideFailure, Path, Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot,
+    Space, Step, StepKey, Turn, Value, Wanted,
 };
 
 /// The content a test gives the core for one of its values: a hash of
@@ -54,8 +54,8 @@ impl Contented for Declaration {
     }
 }
 
-/// A test's own encoding of a step: its space, then a tag and the name or
-/// the index.
+/// A test's own encoding of a step: its space, then a tag and the name,
+/// the index or the chain's links.
 pub fn step_bytes(step: &Step) -> Vec<u8> {
     let space = match step.space() {
         Space::Default => b"d".to_vec(),
@@ -64,6 +64,18 @@ pub fn step_bytes(step: &Step) -> Vec<u8> {
     let key = match step.key() {
         StepKey::Name(name) => [b"n", &name.len().to_le_bytes()[..], name.as_bytes()].concat(),
         StepKey::Index(index) => [b"i", &index.to_le_bytes()[..]].concat(),
+        StepKey::Chain(links) => {
+            let mut bytes = [&b"c"[..], &links.len().to_le_bytes()].concat();
+            for link in links.iter() {
+                let (tag, number) = match link {
+                    Link::Site(site) => (b's', site),
+                    Link::Iteration(index) => (b't', index),
+                };
+                bytes.push(tag);
+                bytes.extend_from_slice(&number.to_le_bytes());
+            }
+            bytes
+        }
     };
     [space, key].concat()
 }
@@ -120,15 +132,22 @@ async fn read_term(cx: &Cx, r: &Ref) -> Result<Option<i64>, Failure> {
     }
 }
 
-/// A cell's sum, with the picked element; none where the cell is absent.
-async fn sum(cx: &Cx) -> Result<Option<i64>, Failure> {
-    let mut sum = 0;
+/// The i64s bound at "0", "1", … until a binding reads absent; a failure
+/// is the reader's answer, as `read_term` gives it.
+async fn terms(cx: &Cx) -> Result<Vec<i64>, Failure> {
+    let mut terms = Vec::new();
     for index in 0_u32.. {
         match read_term(cx, &Ref::binding(index.to_string())).await? {
-            Some(value) => sum += value,
+            Some(value) => terms.push(value),
             None => break,
         }
     }
+    Ok(terms)
+}
+
+/// A cell's sum, with the picked element; none where the cell is absent.
+async fn sum(cx: &Cx) -> Result<Option<i64>, Failure> {
+    let sum: i64 = terms(cx).await?.into_iter().sum();
     let Some(pick) = read_term(cx, &Ref::binding("pick")).await? else {
         return Ok(Some(sum));
     };
@@ -175,7 +194,7 @@ impl Kind for Pair {
     const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
-        let refs = [Ref::binding("0"), Ref::binding("1")];
+        let refs = [Ref::binding("0"), Ref::binding("1")].map(Wanted::from);
         let mut sum = 0;
         for read in cx.read_all::<i64>(&refs).await {
             match read {
@@ -199,6 +218,177 @@ pub fn cell_over(terms: impl IntoIterator<Item = Binding>) -> Declaration {
         .fold(Declaration::new(Cell::ID), |declaration, (index, term)| {
             declaration.bind(index.to_string(), term)
         })
+}
+
+/// The space the steps of a call's children are in.
+pub const CALL_SPACE: Space = Space::Named("toy.call");
+
+/// The code of a call's failure when a child it declared failed: it is
+/// blocked by its child, whose step its description holds.
+pub const CHILD_FAILED: &str = "blocked by its child";
+
+/// One site of a call: where it declares children, and what each is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallSite {
+    /// The call sites from the call's own expression to this one.
+    pub sites: Vec<u64>,
+    /// Whether the site declares a child per term, at the term's index,
+    /// or one child.
+    pub each: bool,
+    /// What the site's one child is given beside the call's sum.
+    pub offset: i64,
+    /// The callee's binding the argument is bound at.
+    pub argument: String,
+    pub callee: Declaration,
+}
+
+/// A call's sites, in the order it declares their children.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Calls(pub Vec<CallSite>);
+
+impl Contented for Calls {
+    fn content(&self) -> Hash128 {
+        let mut bytes = self.0.len().to_le_bytes().to_vec();
+        for site in &self.0 {
+            bytes.extend_from_slice(&site.sites.len().to_le_bytes());
+            for number in &site.sites {
+                bytes.extend_from_slice(&number.to_le_bytes());
+            }
+            bytes.push(u8::from(site.each));
+            bytes.extend_from_slice(&site.offset.to_le_bytes());
+            bytes.extend_from_slice(&site.argument.len().to_le_bytes());
+            bytes.extend_from_slice(site.argument.as_bytes());
+            bytes.extend_from_slice(&site.callee.content().as_u128().to_le_bytes());
+        }
+        Hash128::of_bytes(&bytes)
+    }
+}
+
+impl CallSite {
+    /// The step and the argument of each child the site declares, for a
+    /// call whose terms are `terms` and whose sum is `sum`.
+    fn children(&self, terms: &[i64], sum: i64) -> Vec<(Step, i64)> {
+        let sites = self.sites.iter().copied().map(Link::Site);
+        if !self.each {
+            return vec![(Step::chain(CALL_SPACE, sites), sum + self.offset)];
+        }
+        (0_u64..)
+            .zip(terms)
+            .map(|(index, term)| {
+                let links = sites.clone().chain([Link::Iteration(index)]);
+                (Step::chain(CALL_SPACE, links), *term)
+            })
+            .collect()
+    }
+
+    /// The declaration of a child given `argument`: the callee, with the
+    /// argument bound as a constant.
+    fn child(&self, argument: i64) -> Declaration {
+        let constant = Binding::Constant(input_of(argument));
+        self.callee.clone().bind(self.argument.as_str(), constant)
+    }
+}
+
+/// Reads its terms "0", "1", … as i64 until one reads absent, with the
+/// cell's rule for a read that fails. Then "when", if bound: false declares
+/// nothing and answers the sum; absent counts as true; any other outcome
+/// is its answer. Then "calls": absent declares nothing and answers the
+/// sum; any other outcome but `Calls` is its answer. Then, for each site
+/// in order, it declares the site's children with `cx.child`, one request
+/// at a time: with `each` false one child at the chain of the site's
+/// numbers as `Link::Site`, given the sum plus `offset`; with `each` true
+/// one child per term i at that chain then `Link::Iteration(i)`, given
+/// term i. A child is the callee with `argument` bound to what it is given,
+/// as a constant. It answers the sum plus each child's i64: a child that
+/// answers absent adds nothing, a child's wrong type is its answer, and any
+/// other failure of a child makes it blocked by that child
+/// (`blocked_by_child`).
+pub struct Call;
+
+impl Kind for Call {
+    type Out = i64;
+    const ID: KindId = KindId("toy.call");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        Produced::Outcome(match called(cx).await {
+            Ok(total) => Outcome::of(total),
+            Err(failure) => Outcome::Failure(failure),
+        })
+    }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(out.content())
+    }
+}
+
+/// A call's sum with what its children add, or its failure.
+async fn called(cx: &Cx) -> Result<i64, Failure> {
+    let terms = terms(cx).await?;
+    let sum: i64 = terms.iter().sum();
+    match cx.read::<bool>(&Ref::binding("when")).await {
+        Outcome::Value(holds) if !*holds => return Ok(sum),
+        Outcome::Value(_) | Outcome::Absent => {}
+        Outcome::Failure(failure) => return Err(failure),
+    }
+    let calls = match cx.read::<Calls>(&Ref::binding("calls")).await {
+        Outcome::Value(calls) => calls,
+        Outcome::Absent => return Ok(sum),
+        Outcome::Failure(failure) => return Err(failure),
+    };
+    let mut total = sum;
+    for site in &calls.0 {
+        for (step, argument) in site.children(&terms, sum) {
+            match cx.child::<i64>(step.clone(), site.child(argument)).await {
+                Outcome::Value(value) => total += *value,
+                Outcome::Absent => {}
+                Outcome::Failure(wrong @ Failure::WrongType { .. }) => return Err(wrong),
+                Outcome::Failure(_) => return Err(blocked_by_child(step)),
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// A call's failure when its child at `step` failed.
+pub fn blocked_by_child(step: Step) -> Failure {
+    let content = Hash128::of_bytes(&step_bytes(&step));
+    Failure::Described {
+        kind: Call::ID,
+        code: CHILD_FAILED,
+        description: Description::of(step, content),
+    }
+}
+
+/// A call adding what `terms` name, bound at "0", "1", … in order, whose
+/// sites are what `calls` names.
+pub fn call(terms: impl IntoIterator<Item = Binding>, calls: Binding) -> Declaration {
+    let call = Declaration::new(Call::ID).bind("calls", calls);
+    terms
+        .into_iter()
+        .enumerate()
+        .fold(call, |call, (index, term)| {
+            call.bind(index.to_string(), term)
+        })
+}
+
+/// A call site at the chain `sites` declaring `callee`, its argument bound
+/// at "0".
+pub fn site(sites: &[u64], each: bool, offset: i64, callee: Declaration) -> CallSite {
+    CallSite {
+        sites: sites.to_vec(),
+        each,
+        offset,
+        argument: String::from("0"),
+        callee,
+    }
+}
+
+/// The step of a call's child: the chain of `sites`, then the iteration
+/// index `each` if the site loops.
+pub fn call_step(sites: &[u64], each: Option<u64>) -> Step {
+    let sites = sites.iter().copied().map(Link::Site);
+    Step::chain(CALL_SPACE, sites.chain(each.map(Link::Iteration)))
 }
 
 /// A cell over the host-named inputs `names`, bound at "0", "1", … in order.
@@ -400,6 +590,13 @@ pub fn with_scope() -> Builder {
         .expect("toy kind ids are distinct")
 }
 
+/// A builder with cells, scopes and calls.
+pub fn with_calls() -> Builder {
+    with_scope()
+        .kind::<Call>()
+        .expect("toy kind ids are distinct")
+}
+
 /// A builder with every toy kind of structure: cells, scopes, guards and
 /// collections.
 pub fn with_structure() -> Builder {
@@ -510,13 +707,14 @@ pub type Register = fn(Builder) -> Result<Builder, DuplicateKind>;
 /// Every PRD toy kind built so far (PRD 5.4), with its registration: the
 /// one list `with_every_kind` registers and the two-places table must
 /// cover. A kind added here needs a two-places entry.
-pub const TOY_KINDS: [(KindId, Register); 6] = [
+pub const TOY_KINDS: [(KindId, Register); 7] = [
     (Cell::ID, Builder::kind::<Cell>),
     (Scope::ID, Builder::kind::<Scope>),
     (Guard::ID, Builder::kind::<Guard>),
     (Collection::ID, Builder::kind::<Collection>),
     (Shape::ID, Builder::kind::<Shape>),
     (Measure::ID, Builder::kind::<Measure>),
+    (Call::ID, Builder::kind::<Call>),
 ];
 
 pub fn with_every_kind() -> Builder {

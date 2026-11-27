@@ -1,7 +1,7 @@
 //! What an answer was seen to be, in one form both the core's answers and
 //! the reference interpreter's outcomes convert to, so the two compare.
 
-use std::any::Any;
+use std::any::{Any, type_name};
 use std::collections::BTreeMap;
 
 use reify_eval_core::{Answer, Declaration, Erased, Failure, Outcome, OutsideFailure, Step, Value};
@@ -55,6 +55,7 @@ impl Seen {
             },
             Expect::Value(Out::Decl(decl)) => Seen::Declaration(decl.to_core()),
             Expect::Value(Out::Shape { volume }) => Seen::Shape { volume: *volume },
+            Expect::Value(Out::Calls(_)) => Seen::Other(type_name::<toy::Calls>()),
         }
     }
 

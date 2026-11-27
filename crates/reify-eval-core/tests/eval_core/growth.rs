@@ -4,6 +4,7 @@
 
 use reify_eval_core::{
     Answer, Binding, Budget, Cx, Declaration, Kind, KindId, Outcome, Produced, Ref, Step, Turn,
+    Wanted,
 };
 
 use crate::toy::{self, Cell, Scope};
@@ -102,7 +103,7 @@ impl Kind for Total {
             other => return Produced::Outcome(other),
         };
         let refs: Vec<_> = (0..count)
-            .map(|i| Ref::binding("over").step(Step::index(i)))
+            .map(|i| Wanted::from(Ref::binding("over").step(Step::index(i))))
             .collect();
         let mut sum = 0;
         for read in cx.read_all::<i64>(&refs).await {

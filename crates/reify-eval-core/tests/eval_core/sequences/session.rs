@@ -9,402 +9,21 @@
 //! counted, so a test can show it is not vacuous.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use reify_eval_core::{
-    Answer, Budget, Core, Demand, Erased, Event, Failure, Kind, Path, Ref, Request, RequestError,
-    RequestId, Snapshot, SnapshotId, Space, Step, StepKey, Store,
+    Answer, Budget, Core, Demand, Erased, Event, Failure, Kind, Link, Path, Ref, Request,
+    RequestError, RequestId, Snapshot, SnapshotId, Space, Step, StepKey, Store,
 };
 
 use super::case::{Case, HostEvent, Then};
+use super::charge::surely_charged;
 use super::design::{Inputs, Key, ModelPath, ModelRef, ToyKind, Val, to_core};
 use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
-use super::reference::{Expect, Expected, Invalid, Out, Reference};
+use super::mismatch::Mismatch;
+use super::reach::{Reach, Shape};
+use super::reference::{Expect, Expected, Out, Reference};
 use super::seen::Seen;
 use crate::toy;
-
-/// Declares `Shape` and `Shape::ALL` from one list, so every shape the
-/// enum names is one the census looks for.
-macro_rules! shapes {
-    ($($(#[$doc:meta])* $shape:ident,)*) => {
-        /// A shape of design or event a run reached, counted to show the run
-        /// is not vacuous (PRD 12.1 rule 9).
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-        pub enum Shape {
-            $($(#[$doc])* $shape,)*
-        }
-
-        impl Shape {
-            /// Every shape, in the order declared.
-            pub const ALL: &'static [Shape] = &[$(Shape::$shape),*];
-        }
-    };
-}
-
-shapes! {
-    /// A cell's value.
-    CellValue,
-    ScopeValue,
-    GuardValue,
-    /// A guard answering absent because its condition reads false.
-    GuardAbsentOnFalse,
-    /// A path below a guard that answers absent.
-    UnderAbsentGuard,
-    CollectionValue,
-    /// A node a collection declares at an index.
-    CollectionElement,
-    /// An index at or past a collection's count, answering absent.
-    IndexPastCount,
-    /// The value of a cell that picks an element.
-    PickerValue,
-    /// A failure naming the type read and the type found.
-    WrongType,
-    /// A cell answering its own failure: its divisor reads zero.
-    DivisionByZero,
-    /// A cell blocked by the failure at a ref it read.
-    BlockedBy,
-    /// "cycle" at a path where a node is declared: a node on a ring of
-    /// waits, or one that answers what it read there.
-    Cycle,
-    /// "cycle" at a path with no declaration of its own: one whose
-    /// declaration waited on a ring.
-    CycleThroughStructure,
-    /// A node deeper than the depth setting, or a path below one.
-    TooDeep,
-    /// A node declaring more children than the children-per-node setting,
-    /// or a path below one.
-    TooManyChildren,
-    /// A cell blocked by a ref whose answer is a limit failure.
-    BlockedByLimit,
-    /// A box a shape made on the toy kernel.
-    BoxValue,
-    /// The volume a measure read from the toy kernel.
-    MeasureValue,
-    /// An answer checked for a request left live after a Drive of no
-    /// turns, told after a later event.
-    LeftLiveAnswer,
-    /// A Drive of no turns whose request is then ended.
-    DriveZeroEnded,
-    /// An Edit from a snapshot other than the latest.
-    EditFromNonLatest,
-    /// An Edit that sets or removes a limit setting.
-    LimitEdited,
-    /// A request given a budget, which the core ended when it ran out.
-    EndedByBudget,
-    /// A request given a budget, answered at every path it demanded.
-    AnsweredWithinBudget,
-    /// An answer the order check compared.
-    OrderComparison,
-}
-
-/// What a run reached.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Reach {
-    /// Final answers checked, by snapshot index.
-    checked: BTreeMap<usize, u64>,
-    shapes: BTreeMap<Shape, u64>,
-    /// Distinct paths of a snapshot answered.
-    answered: u64,
-}
-
-impl Reach {
-    fn reached(&mut self, shape: Shape) {
-        *self.shapes.entry(shape).or_default() += 1;
-    }
-
-    /// How many final answers were checked on snapshot `snapshot`.
-    pub fn checked_on(&self, snapshot: usize) -> u64 {
-        self.checked.get(&snapshot).copied().unwrap_or(0)
-    }
-
-    /// How many distinct paths of a snapshot were answered.
-    pub fn answered(&self) -> u64 {
-        self.answered
-    }
-
-    /// How many answers the order check compared.
-    pub fn order_compared(&self) -> u64 {
-        self.count(Shape::OrderComparison)
-    }
-
-    /// Adds what another run reached.
-    pub fn add(&mut self, other: &Reach) {
-        for (snapshot, checked) in &other.checked {
-            *self.checked.entry(*snapshot).or_default() += checked;
-        }
-        for (shape, count) in &other.shapes {
-            *self.shapes.entry(*shape).or_default() += count;
-        }
-        self.answered += other.answered;
-    }
-
-    /// The shapes never reached, in the order of `Shape::ALL`.
-    pub fn missing(&self) -> Vec<Shape> {
-        Shape::ALL
-            .iter()
-            .copied()
-            .filter(|shape| self.count(*shape) == 0)
-            .collect()
-    }
-
-    /// How often `shape` was reached.
-    pub fn count(&self, shape: Shape) -> u64 {
-        self.shapes.get(&shape).copied().unwrap_or(0)
-    }
-}
-
-/// What a check found wrong. `event` is the index of the host event after
-/// which it was seen, `snapshot` the index of the snapshot concerned.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Mismatch {
-    /// The core's answer is not the reference interpreter's.
-    Reference {
-        event: usize,
-        snapshot: usize,
-        path: ModelPath,
-        core: Box<Seen>,
-        reference: Box<Seen>,
-    },
-    /// The core is idle and a live request holds no answer at a path it
-    /// demanded.
-    Unanswered {
-        event: usize,
-        snapshot: usize,
-        path: ModelPath,
-    },
-    /// An answer at a path its request did not demand.
-    Unasked {
-        event: usize,
-        snapshot: usize,
-        path: Path,
-    },
-    /// A second answer at one path of one request.
-    Twice {
-        event: usize,
-        snapshot: usize,
-        path: ModelPath,
-    },
-    /// The core ended a request otherwise than by the budget it was given.
-    Ended {
-        event: usize,
-        snapshot: usize,
-        error: RequestError,
-    },
-    /// An answer told to a request after the core ended it.
-    AnsweredAfterEnd {
-        event: usize,
-        snapshot: usize,
-        path: Path,
-    },
-    /// An Evaluate given a budget of `budget` paths, whose demand needs
-    /// `needed` resolved, was `ended` by the core, or answered, when the
-    /// budget does not allow it: ended within its budget, or, as the first
-    /// request on its snapshot, answered past it.
-    Budget {
-        event: usize,
-        snapshot: usize,
-        budget: u64,
-        needed: u64,
-        ended: bool,
-    },
-    /// A fresh core built on the session core's selection (check 2),
-    /// asked in the session's order, answered otherwise.
-    Fresh {
-        snapshot: usize,
-        path: ModelPath,
-        session: Box<Seen>,
-        fresh: Box<Seen>,
-    },
-    /// A fresh core built on the session core's selection told no answer
-    /// at a path the session answered: it ended the request with `ended`,
-    /// or left it with neither.
-    FreshUnanswered {
-        snapshot: usize,
-        path: ModelPath,
-        ended: Option<RequestError>,
-    },
-    /// A fresh core, asked in another order, answered otherwise.
-    Order {
-        snapshot: usize,
-        path: ModelPath,
-        session: Box<Seen>,
-        fresh: Box<Seen>,
-    },
-    /// A fresh core, asked in another order, told no answer at a path the
-    /// session answered: it ended the request with `ended`, or left it
-    /// with neither.
-    OrderUnanswered {
-        snapshot: usize,
-        path: ModelPath,
-        ended: Option<RequestError>,
-    },
-    /// The reference interpreter has no answer: the case is not one the
-    /// checks can judge.
-    Invalid {
-        event: usize,
-        snapshot: usize,
-        invalid: Invalid,
-    },
-}
-
-/// Which check a mismatch failed, for keeping a shrunk case on the same
-/// fault.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MismatchKind {
-    Reference,
-    Unanswered,
-    Unasked,
-    Twice,
-    Ended,
-    AnsweredAfterEnd,
-    Budget,
-    Fresh,
-    FreshUnanswered,
-    Order,
-    OrderUnanswered,
-    Invalid,
-}
-
-impl Mismatch {
-    pub fn kind(&self) -> MismatchKind {
-        match self {
-            Mismatch::Reference { .. } => MismatchKind::Reference,
-            Mismatch::Unanswered { .. } => MismatchKind::Unanswered,
-            Mismatch::Unasked { .. } => MismatchKind::Unasked,
-            Mismatch::Twice { .. } => MismatchKind::Twice,
-            Mismatch::Ended { .. } => MismatchKind::Ended,
-            Mismatch::AnsweredAfterEnd { .. } => MismatchKind::AnsweredAfterEnd,
-            Mismatch::Budget { .. } => MismatchKind::Budget,
-            Mismatch::Fresh { .. } => MismatchKind::Fresh,
-            Mismatch::FreshUnanswered { .. } => MismatchKind::FreshUnanswered,
-            Mismatch::Order { .. } => MismatchKind::Order,
-            Mismatch::OrderUnanswered { .. } => MismatchKind::OrderUnanswered,
-            Mismatch::Invalid { .. } => MismatchKind::Invalid,
-        }
-    }
-}
-
-impl fmt::Display for Mismatch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Mismatch::Reference {
-                event,
-                snapshot,
-                path,
-                core,
-                reference,
-            } => write!(
-                f,
-                "after event {event}, at {path:?} on snapshot {snapshot}: the core answered \
-                 {core:?}, the reference interpreter {reference:?}"
-            ),
-            Mismatch::Unanswered {
-                event,
-                snapshot,
-                path,
-            } => write!(
-                f,
-                "after event {event}, the core is idle with no answer at {path:?} on snapshot \
-                 {snapshot}"
-            ),
-            Mismatch::Unasked {
-                event,
-                snapshot,
-                path,
-            } => write!(
-                f,
-                "after event {event}, an answer at {path:?} on snapshot {snapshot}, which its \
-                 request did not demand"
-            ),
-            Mismatch::Twice {
-                event,
-                snapshot,
-                path,
-            } => write!(
-                f,
-                "after event {event}, a second answer at {path:?} on snapshot {snapshot} to one \
-                 request"
-            ),
-            Mismatch::Ended {
-                event,
-                snapshot,
-                error,
-            } => write!(
-                f,
-                "after event {event}, the core ended a request on snapshot {snapshot}: {error:?}"
-            ),
-            Mismatch::AnsweredAfterEnd {
-                event,
-                snapshot,
-                path,
-            } => write!(
-                f,
-                "after event {event}, an answer at {path:?} on snapshot {snapshot} to a request \
-                 the core had ended"
-            ),
-            Mismatch::Budget {
-                event,
-                snapshot,
-                budget,
-                needed,
-                ended,
-            } => {
-                let outcome = if *ended { "ended" } else { "answered" };
-                write!(
-                    f,
-                    "after event {event}, a request on snapshot {snapshot} given a budget of \
-                     {budget} paths, whose demand needs {needed} resolved, was {outcome}"
-                )
-            }
-            Mismatch::Fresh {
-                snapshot,
-                path,
-                session,
-                fresh,
-            } => write!(
-                f,
-                "at {path:?} on snapshot {snapshot}: the session answered {session:?}, a fresh \
-                 core built on the session's selection {fresh:?}"
-            ),
-            Mismatch::FreshUnanswered {
-                snapshot,
-                path,
-                ended,
-            } => write!(
-                f,
-                "at {path:?} on snapshot {snapshot}: a fresh core built on the session's \
-                 selection told no answer, the request ended with {ended:?}"
-            ),
-            Mismatch::Order {
-                snapshot,
-                path,
-                session,
-                fresh,
-            } => write!(
-                f,
-                "at {path:?} on snapshot {snapshot}: the session answered {session:?}, a fresh \
-                 core asked in reverse order {fresh:?}"
-            ),
-            Mismatch::OrderUnanswered {
-                snapshot,
-                path,
-                ended,
-            } => write!(
-                f,
-                "at {path:?} on snapshot {snapshot}: a fresh core asked in reverse order told no \
-                 answer, the request ended with {ended:?}"
-            ),
-            Mismatch::Invalid {
-                event,
-                snapshot,
-                invalid,
-            } => write!(
-                f,
-                "after event {event}, snapshot {snapshot} has no reference answer: {invalid:?}"
-            ),
-        }
-    }
-}
 
 /// What the cell at `cell` reads at `at`, the ref it is blocked by: one of
 /// its bindings, or the element "from"/[i] its "pick" reads i for.
@@ -430,6 +49,37 @@ fn read_of(binding: String) -> ModelRef {
         binding,
         steps: Vec::new(),
     }
+}
+
+/// The shapes the answer `outcome` at `path`, one step below the call at
+/// `call`, reached: a child the call's run declared, and where, or a path
+/// at a site step of a call that declared nothing on its "when".
+fn below_call(
+    reference: &mut Reference,
+    call: &ModelPath,
+    path: &ModelPath,
+    outcome: &Expect,
+) -> Vec<Shape> {
+    let when = reference.read_at(call, &read_of(String::from("when")));
+    let when_reads = |holds| when == Ok(Expect::Value(Out::Bool(holds)));
+    let step = path.steps.last().expect("a path below a call has a step");
+    if !reference.declared_by_run(path) {
+        let at_site = step.space() == toy::CALL_SPACE;
+        return match at_site && *outcome == Expect::Absent && when_reads(false) {
+            true => vec![Shape::ChildOnUntakenBranch],
+            false => Vec::new(),
+        };
+    }
+    let mut reached = vec![Shape::BodyDeclaredChild];
+    if let StepKey::Chain(links) = step.key()
+        && links.iter().any(|link| matches!(link, Link::Iteration(_)))
+    {
+        reached.push(Shape::ChildDeclaredInLoop);
+    }
+    if when_reads(true) {
+        reached.push(Shape::ChildOnTakenBranch);
+    }
+    reached
 }
 
 /// Whether `read` is the failure of a limit setting.
@@ -606,7 +256,7 @@ impl Session {
             .map_err(|mismatch| self.fresh_mismatch(check, mismatch))?;
         if let FreshCheck::Order = check {
             let compared = u64::try_from(compared).expect("a count fits u64");
-            *self.reach.shapes.entry(Shape::OrderComparison).or_default() += compared;
+            self.reach.reached_times(Shape::OrderComparison, compared);
         }
         Ok(())
     }
@@ -767,7 +417,10 @@ impl Session {
     /// more paths resolved than its budget allows, and, for the first
     /// request on its snapshot, whose resolutions no other request shares,
     /// always then. What the demand needs is what a fresh reference
-    /// resolves answering it.
+    /// resolves answering it. A call may run on once nothing waits on it,
+    /// so what it reaches then may be charged to no request: the demand
+    /// needs at least what is surely charged, and which of the rest are
+    /// charged depends on the order of the core's work.
     fn within_budget(&mut self, at: usize, request: RequestId) -> Result<(), Mismatch> {
         let opened = &self.requests[&request];
         let Some(budget) = opened.budget else {
@@ -782,12 +435,14 @@ impl Session {
                 invalid,
             })?;
         }
-        let needed = u64::try_from(fresh.paths_resolved()).expect("a count fits u64");
-        let past = budget < needed;
-        let allowed = if opened.first_on_snapshot {
-            ended == past
-        } else {
-            !ended || past
+        let count = |count: usize| u64::try_from(count).expect("a count fits u64");
+        let needed = count(fresh.paths_resolved());
+        let demanded: Vec<ModelPath> = opened.demanded.values().cloned().collect();
+        let least = count(surely_charged(&fresh, &demanded));
+        let allowed = match (opened.first_on_snapshot, ended) {
+            (_, true) => budget < needed,
+            (true, false) => budget >= least,
+            (false, false) => true,
         };
         if !allowed {
             return Err(Mismatch::Budget {
@@ -795,6 +450,7 @@ impl Session {
                 snapshot,
                 budget,
                 needed,
+                least,
                 ended,
             });
         }
@@ -865,13 +521,13 @@ impl Session {
                 reference: Box::new(reference),
             });
         }
-        *self.reach.checked.entry(snapshot).or_default() += 1;
+        self.reach.answer_checked(snapshot);
         self.census(snapshot, &model_path, &expected);
         if late_for_left_live {
             self.reach.reached(Shape::LeftLiveAnswer);
         }
         if self.answered.insert((snapshot, path.clone())) {
-            self.reach.answered += 1;
+            self.reach.path_answered();
             self.first.push(Answered {
                 snapshot,
                 path,
@@ -908,6 +564,7 @@ impl Session {
             (Some(ToyKind::Collection), Expect::Value(_)) => reached.push(Shape::CollectionValue),
             (Some(ToyKind::Shape), Expect::Value(_)) => reached.push(Shape::BoxValue),
             (Some(ToyKind::Measure), Expect::Value(_)) => reached.push(Shape::MeasureValue),
+            (Some(ToyKind::Call), Expect::Value(_)) => reached.push(Shape::CallValue),
             (_, Expect::Failure(Failure::WrongType { .. })) => reached.push(Shape::WrongType),
             (Some(ToyKind::Cell), Expect::Failure(Failure::OfKind { kind, code }))
                 if *kind == toy::Cell::ID && *code == toy::DIVISION_BY_ZERO =>
@@ -949,6 +606,9 @@ impl Session {
                     }
                 }
                 _ => {}
+            }
+            if above.node == Some(ToyKind::Call) {
+                reached.extend(below_call(reference, &parent, path, &expected.outcome));
             }
         }
         for shape in reached {
@@ -992,9 +652,11 @@ mod tests {
 
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::*;
+    use super::super::mismatch::Mismatch;
+    use super::super::reach::Shape;
     use super::super::reference::Invalid;
     use super::super::seen::Seen;
-    use super::{Mismatch, Shape, check, toy_core};
+    use super::{check, toy_core};
     use crate::toy;
 
     /// Root scope "r" with a cell "a" over "x" and a cell "b" adding "a"
@@ -1167,6 +829,126 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_call_its_children_in_a_loop_and_on_each_branch_are_counted() {
+        let calls = calls_value([
+            site(&[1], true, 0, cell([])),
+            site(&[2], false, 1, cell([])),
+        ]);
+        let over = |flag| when(call([input("x")], input("k")), input(flag));
+        let case = Case {
+            inputs: inputs([
+                (root("r"), declaration(scope("r.m"))),
+                (
+                    named("r.m"),
+                    members([(step("p"), over("on")), (step("q"), over("off"))]),
+                ),
+                (named("k"), calls),
+                (named("x"), int(3)),
+                (named("on"), flag(true)),
+                (named("off"), flag(false)),
+            ]),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![
+                    r(&["p"]),
+                    path("r", [step("p"), call_step(&[1], Some(0))]),
+                    path("r", [step("p"), call_step(&[2], None)]),
+                    path("r", [step("q"), call_step(&[1], Some(0))]),
+                ],
+                budget: None,
+                then: Then::End,
+            }],
+        };
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        let shapes = [
+            (Shape::CallValue, 1),
+            (Shape::BodyDeclaredChild, 2),
+            (Shape::ChildDeclaredInLoop, 1),
+            (Shape::ChildOnTakenBranch, 2),
+            (Shape::ChildOnUntakenBranch, 1),
+        ];
+        for (shape, count) in shapes {
+            assert_eq!(reach.count(shape), count, "{shape:?}: {reach:?}");
+        }
+    }
+
+    /// Root scope "r1" whose one member is a call over "i2" with two
+    /// looping sites, the second declaring a call: demanding the first
+    /// site's child, with `budget`, as G0 found at seed 1362.
+    fn child_demanded_before_its_call_runs_on(budget: u64) -> Case {
+        let sites = calls_value([
+            site(&[2, 7], true, -2, cell([constant(int(0)), input("i4")])),
+            site(&[1], true, 2, call([constant(int(0))], input("k9"))),
+        ]);
+        Case {
+            inputs: inputs([
+                (root("r1"), declaration(scope("s7"))),
+                (named("i2"), int(0)),
+                (named("k8"), sites),
+                (
+                    named("s7"),
+                    members([(step("m0"), call([input("i2")], input("k8")))]),
+                ),
+            ]),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![path("r1", [step("m0"), call_step(&[2, 7], Some(0))])],
+                budget: Some(budget),
+                then: Then::End,
+            }],
+        }
+    }
+
+    /// The child is answered once r1, its call and the child are resolved;
+    /// the call then declares its second child for no request, so a budget
+    /// of three is enough though answering the call needs four.
+    #[test]
+    fn a_child_answered_before_its_call_runs_on_is_answered_within_the_paths_before_it() {
+        let case = child_demanded_before_its_call_runs_on(3);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::AnsweredWithinBudget), 1, "{reach:?}");
+    }
+
+    /// `child_demanded_before_its_call_runs_on`'s design with a member
+    /// cell "m1" reading the call's first child: demanding the cell, with
+    /// `budget`.
+    fn cell_reading_a_child_before_its_call_runs_on(budget: u64) -> Case {
+        let mut case = child_demanded_before_its_call_runs_on(budget);
+        let reader = cell([declarer([step("m0"), call_step(&[2, 7], Some(0))])]);
+        let Some(Val::Members(members)) = case.inputs.get_mut(&named("s7")) else {
+            unreachable!("the design's root scope holds its members at s7")
+        };
+        members.insert(step("m1"), reader);
+        let HostEvent::Evaluate { paths, .. } = &mut case.events[0] else {
+            unreachable!("the case evaluates once")
+        };
+        *paths = vec![path("r1", [step("m1")])];
+        case
+    }
+
+    /// The cell is answered once r1, the cell, the call and its first
+    /// child are resolved; the call then declares its second child for no
+    /// request, so a budget of four is enough though answering the cell
+    /// and the call needs five (found while tightening the budget check).
+    #[test]
+    fn a_cell_reading_a_child_answered_before_its_call_runs_on_is_answered_within_the_paths_before_it()
+     {
+        let case = cell_reading_a_child_before_its_call_runs_on(4);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::AnsweredWithinBudget), 1, "{reach:?}");
+        let case = cell_reading_a_child_before_its_call_runs_on(3);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::EndedByBudget), 1, "{reach:?}");
+    }
+
+    #[test]
+    fn a_child_whose_own_paths_exceed_the_budget_ends_the_first_request() {
+        let case = child_demanded_before_its_call_runs_on(2);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::EndedByBudget), 1, "{reach:?}");
+    }
+
     /// Root cell "c" over two inputs, evaluated with `budgets` in turn.
     fn sum_of_two_within(budgets: &[Option<u64>]) -> Case {
         let evaluate = |budget| HostEvent::Evaluate {
@@ -1252,6 +1034,7 @@ mod tests {
             snapshot: 0,
             budget: 2,
             needed: 2,
+            least: 2,
             ended: true,
         };
         assert_eq!(

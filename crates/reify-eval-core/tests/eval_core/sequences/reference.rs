@@ -6,6 +6,14 @@
 //! path whose answer needs its own answer is on a ring and answers "cycle"
 //! (contract 7.7); arithmetic past i64, which no evaluation can answer, it
 //! reports as invalid rather than as an outcome.
+//!
+//! A call declares its children as it runs (contract 7.1), so each child is
+//! answered before its call, with its own outcome. A child path asked
+//! before its call ran is resolving, waiting on its call's answer, when
+//! the call declares it: the call takes it over and works it out in its own
+//! frame, as the core takes a waiting path over, and a ring the child then
+//! closes through a frame outside the resolution is finished from the
+//! child's own frame once its call has read the child's "cycle".
 
 use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,7 +22,7 @@ use std::rc::Rc;
 use reify_eval_core::{Declaration, Failure, Kind, Limit, Space, Step, StepKey};
 
 use super::case::Case;
-use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, ToyKind, Val};
+use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, Site, ToyKind, Val, call_step};
 use crate::toy;
 
 /// What a path answers: the kind of the node declared there, if any, and
@@ -41,6 +49,7 @@ pub enum Out {
     Elements { count: u64, element: Decl },
     Decl(Decl),
     Shape { volume: i64 },
+    Calls(Vec<Site>),
 }
 
 /// Why a path has no answer in this snapshot.
@@ -103,6 +112,22 @@ enum Declared {
     Settled(Expect),
 }
 
+/// A place a node's work reached: one a read named, or a child its run
+/// declared and read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reached {
+    Read(ModelPath),
+    Child(ModelPath),
+}
+
+impl Reached {
+    pub fn path(&self) -> &ModelPath {
+        match self {
+            Reached::Read(path) | Reached::Child(path) => path,
+        }
+    }
+}
+
 /// A read typed as the Rust type the core reads it as.
 enum Typed<T> {
     Value(T),
@@ -119,7 +144,20 @@ pub struct Reference {
     children: Option<u64>,
     answers: BTreeMap<ModelPath, Result<Rc<Expected>, Invalid>>,
     declared: BTreeMap<ModelPath, Declared>,
-    in_progress: BTreeSet<ModelPath>,
+    /// Each path whose answer is being worked out, at its height in the
+    /// recursion: the number of such paths when it was entered.
+    in_progress: BTreeMap<ModelPath, usize>,
+    /// Each path whose declaration waits on its parent's answer, at the
+    /// height its resolution began.
+    resolving: BTreeMap<ModelPath, usize>,
+    /// Each child taken over whose ring is still to be finished from its
+    /// own frame, with the path the ring entered.
+    deferred: BTreeMap<ModelPath, ModelPath>,
+    /// The distinct steps each call's run declared a child at, in the
+    /// order it first declared them.
+    run_children: BTreeMap<ModelPath, Vec<Step>>,
+    /// What each node's work reached, in order.
+    reached: BTreeMap<ModelPath, Vec<Reached>>,
     work_outs: usize,
 }
 
@@ -131,7 +169,11 @@ impl Reference {
             inputs,
             answers: BTreeMap::new(),
             declared: BTreeMap::new(),
-            in_progress: BTreeSet::new(),
+            in_progress: BTreeMap::new(),
+            resolving: BTreeMap::new(),
+            deferred: BTreeMap::new(),
+            run_children: BTreeMap::new(),
+            reached: BTreeMap::new(),
             work_outs: 0,
         }
     }
@@ -145,27 +187,26 @@ impl Reference {
     /// The answer at `path`, shared with the memo. A path re-entered while
     /// it is in progress halts the recursion; each path the halt passes
     /// back through is on the ring and answers "cycle", and the re-entered
-    /// path's own frame returns that answer to its reader.
+    /// path's own frame returns that answer to its reader. A child its call
+    /// took over with a ring still to finish passes the halt on from here.
     fn shared(&mut self, path: &ModelPath) -> Result<Rc<Expected>, Halt> {
         if let Some(known) = self.answers.get(path) {
             return Ok(Rc::clone(known.as_ref().map_err(Invalid::clone)?));
         }
-        if !self.in_progress.insert(path.clone()) {
+        if self.in_progress.contains_key(path) {
             return Err(Halt::Ring {
                 entered: path.clone(),
             });
         }
+        self.in_progress
+            .insert(path.clone(), self.in_progress.len());
         let worked = self.work_out(path);
         self.in_progress.remove(path);
         let answer = match worked {
             Ok(answer) => Ok(Rc::new(answer)),
             Err(Halt::Invalid(invalid)) => Err(invalid),
             Err(Halt::Ring { entered }) => {
-                let on_ring = Rc::new(Expected {
-                    node: self.node_declared(path),
-                    outcome: Expect::Failure(Failure::Cycle),
-                });
-                self.answers.insert(path.clone(), Ok(Rc::clone(&on_ring)));
+                let on_ring = self.on_ring(path);
                 return if entered == *path {
                     Ok(on_ring)
                 } else {
@@ -174,7 +215,20 @@ impl Reference {
             }
         };
         self.answers.insert(path.clone(), answer.clone());
+        if let Some(entered) = self.deferred.remove(path) {
+            return Err(Halt::Ring { entered });
+        }
         answer.map_err(Halt::from)
+    }
+
+    /// Answers `path` "cycle", as a node on a ring.
+    fn on_ring(&mut self, path: &ModelPath) -> Rc<Expected> {
+        let on_ring = Rc::new(Expected {
+            node: self.node_declared(path),
+            outcome: Expect::Failure(Failure::Cycle),
+        });
+        self.answers.insert(path.clone(), Ok(Rc::clone(&on_ring)));
+        on_ring
     }
 
     /// The kind of the node declared at `path`, if its declaration has
@@ -199,6 +253,41 @@ impl Reference {
         self.declared.len()
     }
 
+    /// Whether a call's run declared a child at `path`, as answering it
+    /// found.
+    pub fn declared_by_run(&self, path: &ModelPath) -> bool {
+        path.parent()
+            .is_some_and(|(call, step)| self.steps_declared_by(&call).contains(step))
+    }
+
+    /// The distinct steps the run of the call at `call` declared a child
+    /// at, in the order it first declared them; none if no run did.
+    pub fn steps_declared_by(&self, call: &ModelPath) -> &[Step] {
+        self.run_children.get(call).map_or(&[], Vec::as_slice)
+    }
+
+    /// Each node whose work reached a place, with what it reached in order.
+    pub fn reaches(&self) -> impl Iterator<Item = (&ModelPath, &[Reached])> {
+        self.reached
+            .iter()
+            .map(|(node, reached)| (node, reached.as_slice()))
+    }
+
+    /// What the work of the node at `node` reached, in order.
+    pub fn reached_by(&self, node: &ModelPath) -> &[Reached] {
+        self.reached.get(node).map_or(&[], Vec::as_slice)
+    }
+
+    fn reach(&mut self, node: &ModelPath, reached: Reached) {
+        self.reached.entry(node.clone()).or_default().push(reached);
+    }
+
+    /// Whether the reference has worked out the declaration of `path`,
+    /// resolving it.
+    pub fn resolved(&self, path: &ModelPath) -> bool {
+        self.declared.contains_key(path)
+    }
+
     /// The declaration of the node at `path`, if one is declared there.
     pub fn declaration_at(&mut self, path: &ModelPath) -> Result<Option<Decl>, Invalid> {
         Ok(match self.declaration(path).map_err(Halt::invalid)? {
@@ -218,14 +307,25 @@ impl Reference {
         read.map_err(Halt::invalid)
     }
 
+    /// The answer at `path`: what its declaration works out to, or, where
+    /// its call took it over while it was resolving, the answer given then.
     fn work_out(&mut self, path: &ModelPath) -> Result<Expected, Halt> {
         self.work_outs += 1;
-        let decl = match self.declaration(path)? {
-            Declared::Node(decl) => decl,
+        let declared = self.declaration(path)?;
+        if let Some(taken) = self.answers.get(path) {
+            return Ok(Expected::clone(taken.as_ref().map_err(Invalid::clone)?));
+        }
+        self.run(path, &declared)
+    }
+
+    /// What the node `declared` at `path` works out to.
+    fn run(&mut self, path: &ModelPath, declared: &Declared) -> Result<Expected, Halt> {
+        let decl = match declared {
+            Declared::Node(decl) => Rc::clone(decl),
             Declared::Settled(outcome) => {
                 return Ok(Expected {
                     node: None,
-                    outcome,
+                    outcome: outcome.clone(),
                 });
             }
         };
@@ -236,16 +336,18 @@ impl Reference {
             ToyKind::Collection => self.collection(path, &decl)?,
             ToyKind::Shape => self.shape(path, &decl)?,
             ToyKind::Measure => self.measure(path, &decl)?,
+            ToyKind::Call => self.call(path, &decl)?,
         };
         Ok(Expected {
             node: Some(decl.kind),
-            outcome: self.within_children(decl.kind, outcome),
+            outcome: self.within_children(path, decl.kind, outcome),
         })
     }
 
-    /// A root from its snapshot input, read as a declaration; any other
-    /// path from what its parent's answer declares at its step. A node
-    /// deeper than the depth setting is that failure instead.
+    /// A root from its snapshot input, read as a declaration; a child its
+    /// parent's run declared as that run declared it; any other path from
+    /// what its parent's answer declares at its step. A node deeper than
+    /// the depth setting is that failure instead.
     fn declaration(&mut self, path: &ModelPath) -> Result<Declared, Halt> {
         if let Some(known) = self.declared.get(path) {
             return Ok(known.clone());
@@ -257,7 +359,13 @@ impl Reference {
                 Typed::Failure(failure) => Declared::Settled(Expect::Failure(failure)),
             },
             Some((parent, step)) => {
-                let above = self.shared(&parent)?;
+                self.resolving.insert(path.clone(), self.in_progress.len());
+                let above = self.shared(&parent);
+                self.resolving.remove(path);
+                let above = above?;
+                if let Some(by_run) = self.declared.get(path) {
+                    return Ok(by_run.clone());
+                }
                 match (above.node, &above.outcome) {
                     (_, Expect::Failure(failure)) => {
                         Declared::Settled(Expect::Failure(failure.clone()))
@@ -286,17 +394,18 @@ impl Reference {
         (depth > limit).then_some(Failure::TooDeep { limit })
     }
 
-    /// `outcome`, what a node of `kind` works out, or the failure of a
-    /// value that declares more children than the children setting allows.
-    fn within_children(&self, kind: ToyKind, outcome: Expect) -> Expect {
+    /// `outcome`, what a node of `kind` at `path` works out, or the failure
+    /// of a node that declares more children than the children setting
+    /// allows: by its value, or, for a call, by its run.
+    fn within_children(&self, path: &ModelPath, kind: ToyKind, outcome: Expect) -> Expect {
         let (Some(limit), Expect::Value(out)) = (self.children, &outcome) else {
             return outcome;
         };
+        let count = |count: usize| u64::try_from(count).expect("a count of children fits in a u64");
         let children = match (kind, out) {
-            (ToyKind::Scope | ToyKind::Guard, Out::Members(members)) => {
-                u64::try_from(members.len()).expect("a count of members fits in a u64")
-            }
+            (ToyKind::Scope | ToyKind::Guard, Out::Members(members)) => count(members.len()),
             (ToyKind::Collection, Out::Elements { count, .. }) => *count,
+            (ToyKind::Call, _) => count(self.steps_declared_by(path).len()),
             _ => 0,
         };
         if children > limit {
@@ -313,10 +422,10 @@ impl Reference {
     }
 
     /// What the node at `reader`, declared `decl`, reads at `r`: an unset
-    /// binding names nothing; an input names its value, and nothing with
-    /// steps below it; a binding relative to the declarer names nothing on
-    /// a root; a passed binding is the declarer's own binding, the steps
-    /// still to take carried along (contract 2.1).
+    /// binding names nothing; an input or a constant names its value, and
+    /// nothing with steps below it; a binding relative to the declarer names
+    /// nothing on a root; a passed binding is the declarer's own binding,
+    /// the steps still to take carried along (contract 2.1).
     fn read(&mut self, reader: &ModelPath, decl: &Rc<Decl>, r: &ModelRef) -> Result<Expect, Halt> {
         let (mut node, mut decl) = (reader.clone(), Rc::clone(decl));
         let (mut name, mut steps) = (r.binding.clone(), r.steps.clone());
@@ -326,11 +435,15 @@ impl Reference {
                 (Some(Bind::Input(input)), _) if steps.is_empty() => {
                     return Ok(self.input(&Key::Named(input)));
                 }
+                (Some(Bind::Constant(value)), _) if steps.is_empty() => {
+                    return Ok(Expect::Value(out_of(&value)));
+                }
                 (Some(Bind::Declarer(place)), Some(declarer)) => {
                     let target = place
                         .iter()
                         .chain(&steps)
                         .fold(declarer, |at, step| at.child(step.clone()));
+                    self.reach(reader, Reached::Read(target.clone()));
                     return Ok(self.shared(&target)?.outcome.clone());
                 }
                 (Some(Bind::Passed(passed)), Some(declarer)) => {
@@ -497,6 +610,177 @@ impl Reference {
             Typed::Failure(failure) => Expect::Failure(failure),
         })
     }
+
+    /// The i64s at "0", "1", … until one reads absent, a failure ending it
+    /// as it ends a cell. Then "when": false declares nothing and answers
+    /// the sum, absent counts as true, a failure is its answer. Then
+    /// "calls": absent declares nothing and answers the sum, a failure or a
+    /// value of another type is its answer. Then each site's children, in
+    /// order, are declared and read one at a time, each the callee with the
+    /// site's argument bound to a constant: one at the chain of the site's
+    /// numbers given the sum plus the offset, or, for a site that loops,
+    /// one per term at that chain then the term's index, given the term.
+    /// It answers the sum plus every child's i64: a child absent adds
+    /// nothing, a child's wrong type is its answer, any other failure of a
+    /// child blocks it by that child, and a second, different declaration
+    /// at one step is a conflict.
+    fn call(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Halt> {
+        let mut terms = Vec::new();
+        for term in 0_u32.. {
+            let r = ModelRef {
+                binding: term.to_string(),
+                steps: Vec::new(),
+            };
+            match self.term(at, decl, &r)? {
+                Typed::Value(value) => terms.push(value),
+                Typed::Absent => break,
+                Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
+            }
+        }
+        let sum = terms.iter().try_fold(0, |sum, term| add(sum, *term, at))?;
+        match typed_bool(self.read_binding(at, decl, "when")?) {
+            Typed::Value(false) => return Ok(Expect::Value(Out::Int(sum))),
+            Typed::Value(true) | Typed::Absent => {}
+            Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
+        }
+        let sites = match typed_calls(self.read_binding(at, decl, "calls")?) {
+            Typed::Value(sites) => sites,
+            Typed::Absent => return Ok(Expect::Value(Out::Int(sum))),
+            Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
+        };
+        let mut run = Vec::new();
+        let called = self.call_children(at, &sites, &terms, sum, &mut run);
+        let steps = run.into_iter().map(|(step, _)| step).collect();
+        self.run_children.insert(at.clone(), steps);
+        called
+    }
+
+    /// The call at `at`'s sum plus what the children of `sites` add, each
+    /// declared and read in turn; `run` holds the children its run has
+    /// declared, with their steps, in order.
+    fn call_children(
+        &mut self,
+        at: &ModelPath,
+        sites: &[Site],
+        terms: &[i64],
+        sum: i64,
+        run: &mut Vec<(Step, Decl)>,
+    ) -> Result<Expect, Halt> {
+        let mut total = sum;
+        for site in sites {
+            for (step, argument) in site_children(site, terms, sum, at)? {
+                let child = at.child(step.clone());
+                let callee = given(site, argument);
+                match run.iter().find(|(declared, _)| *declared == step) {
+                    Some((_, earlier)) if *earlier != callee => {
+                        return Ok(Expect::Failure(Failure::ConflictingChild { step }));
+                    }
+                    Some(_) => {}
+                    None => {
+                        run.push((step.clone(), callee.clone()));
+                        self.declare_child(&child, callee);
+                    }
+                }
+                self.reach(at, Reached::Child(child.clone()));
+                match typed_int(self.child_answer(&child)?.outcome.clone()) {
+                    Typed::Value(value) => total = add(total, value, at)?,
+                    Typed::Absent => {}
+                    Typed::Failure(wrong @ Failure::WrongType { .. }) => {
+                        return Ok(Expect::Failure(wrong));
+                    }
+                    Typed::Failure(_) => return Ok(Expect::Failure(toy::blocked_by_child(step))),
+                }
+            }
+        }
+        Ok(Expect::Value(Out::Int(total)))
+    }
+
+    /// Enters the child a run declared `decl` at `path` in the memo of
+    /// declarations, as a path resolved: a node, or the depth failure of a
+    /// node too deep.
+    fn declare_child(&mut self, path: &ModelPath, decl: Decl) {
+        let declared = match self.too_deep(path) {
+            Some(failure) => Declared::Settled(Expect::Failure(failure)),
+            None => Declared::Node(Rc::new(decl)),
+        };
+        self.declared.insert(path.clone(), declared);
+    }
+
+    /// The answer of the child its call declared at `path`: taken over if
+    /// the path is resolving, otherwise shared as any path's.
+    fn child_answer(&mut self, path: &ModelPath) -> Result<Rc<Expected>, Halt> {
+        match self.resolving.get(path) {
+            Some(&began) if !self.answers.contains_key(path) => self.take_over(path, began),
+            _ => self.shared(path),
+        }
+    }
+
+    /// Works out the child at `path`, whose resolution began at height
+    /// `began` and waits on its call, in the call's frame. On a ring the
+    /// child answers "cycle": a ring it closes at itself ends here; one
+    /// through its call halts on; one through a frame outside the
+    /// resolution is left for the child's own frame to finish, once its
+    /// call has read the cycle.
+    fn take_over(&mut self, path: &ModelPath, began: usize) -> Result<Rc<Expected>, Halt> {
+        let declared = self
+            .declared
+            .get(path)
+            .cloned()
+            .expect("a child taken over was declared by its call's run");
+        let framed = self.in_progress.contains_key(path);
+        if !framed {
+            self.in_progress
+                .insert(path.clone(), self.in_progress.len());
+        }
+        let worked = self.run(path, &declared);
+        if !framed {
+            self.in_progress.remove(path);
+        }
+        let answer = match worked {
+            Ok(answer) => Ok(Rc::new(answer)),
+            Err(Halt::Invalid(invalid)) => Err(invalid),
+            Err(Halt::Ring { entered }) => {
+                let on_ring = self.on_ring(path);
+                if entered == *path {
+                    return Ok(on_ring);
+                }
+                if self.in_progress[&entered] < began {
+                    self.deferred.insert(path.clone(), entered);
+                    return Ok(on_ring);
+                }
+                return Err(Halt::Ring { entered });
+            }
+        };
+        self.answers.insert(path.clone(), answer.clone());
+        answer.map_err(Halt::from)
+    }
+}
+
+/// The step and the argument of each child `site` declares, for the call
+/// at `at` whose terms are `terms` and whose sum is `sum`.
+fn site_children(
+    site: &Site,
+    terms: &[i64],
+    sum: i64,
+    at: &ModelPath,
+) -> Result<Vec<(Step, i64)>, Invalid> {
+    if !site.each {
+        let argument = add(sum, site.offset, at)?;
+        return Ok(vec![(call_step(&site.sites, None), argument)]);
+    }
+    Ok((0_u64..)
+        .zip(terms)
+        .map(|(index, term)| (call_step(&site.sites, Some(index)), *term))
+        .collect())
+}
+
+/// `site`'s callee with `argument` bound at the site's argument, as a
+/// constant.
+fn given(site: &Site, argument: i64) -> Decl {
+    let mut callee = site.callee.clone();
+    let constant = Bind::Constant(Val::Int(argument));
+    callee.bindings.insert(site.argument.clone(), constant);
+    callee
 }
 
 /// The declaration a node of `kind` whose value is `out` gives the child
@@ -525,6 +809,7 @@ fn out_of(value: &Val) -> Out {
         Val::Bool(value) => Out::Bool(*value),
         Val::Members(members) => Out::Members(members.clone()),
         Val::Decl(decl) => Out::Decl(decl.clone()),
+        Val::Calls(sites) => Out::Calls(sites.clone()),
         Val::Bound(_) => {
             unreachable!("a limit setting is under a limit key, which no binding reads")
         }
@@ -553,6 +838,7 @@ impl Out {
             Out::Elements { .. } => type_name::<toy::Elements>(),
             Out::Decl(_) => type_name::<Declaration>(),
             Out::Shape { .. } => type_name::<toy::BoxShape>(),
+            Out::Calls(_) => type_name::<toy::Calls>(),
         }
     }
 }
@@ -598,6 +884,13 @@ fn typed_members(read: Expect) -> Typed<BTreeMap<Step, Decl>> {
 fn typed_shape(read: Expect) -> Typed<i64> {
     typed(read, type_name::<toy::BoxShape>(), |out| match out {
         Out::Shape { volume } => Some(volume),
+        _ => None,
+    })
+}
+
+fn typed_calls(read: Expect) -> Typed<Vec<Site>> {
+    typed(read, type_name::<toy::Calls>(), |out| match out {
+        Out::Calls(sites) => Some(sites),
         _ => None,
     })
 }
@@ -1327,5 +1620,209 @@ mod tests {
     fn a_path_off_a_ring_below_it_is_resolved_to_the_ring_s_cycle() {
         let design = two_cell_ring([]);
         assert_eq!(paths_resolved_for(&design, &at("r", &["a", "x"])), 4);
+    }
+
+    #[test]
+    fn a_read_through_a_constant_answers_its_value_and_a_step_below_it_absent() {
+        let design = inputs([
+            (root("c"), declaration(cell([constant(int(5)), input("a")]))),
+            (
+                root("p"),
+                declaration(picker(input("zero"), constant(int(9)))),
+            ),
+            (named("a"), int(2)),
+            (named("zero"), int(0)),
+        ]);
+        assert_eq!(answer(&design, &at("c", &[])), int_of(ToyKind::Cell, 7));
+        assert_eq!(answer(&design, &at("p", &[])), absent(Some(ToyKind::Cell)));
+    }
+
+    /// Root scope `r` whose member p is `call`, beside the input "calls"
+    /// holding `calls` and the named ints `ints`.
+    fn call_r(call: Decl, calls: Val, ints: &[(&str, i64)]) -> Inputs {
+        let mut design = scope_r(members([(step("p"), call)]), ints);
+        design.insert(named("calls"), calls);
+        design
+    }
+
+    /// A call over the inputs "a" and "b" whose sites are at "calls".
+    fn over_a_and_b() -> Decl {
+        call([input("a"), input("b")], input("calls"))
+    }
+
+    fn p_child(step: Step) -> ModelPath {
+        at("r", &["p"]).child(step)
+    }
+
+    fn of_call(outcome: Expect) -> Result<Expected, Invalid> {
+        Ok(Expected {
+            node: Some(ToyKind::Call),
+            outcome,
+        })
+    }
+
+    #[test]
+    fn a_call_answers_its_sum_plus_its_child_and_the_child_s_path_answers_the_child() {
+        let calls = calls_value([site(&[1], false, 1, cell([]))]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        let child = p_child(call_step(&[1], None));
+        assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 11));
+        assert_eq!(answer(&design, &child), int_of(ToyKind::Cell, 6));
+    }
+
+    #[test]
+    fn a_looping_site_s_children_answer_at_their_iteration_paths_and_one_past_is_absent() {
+        let plus_a = decl(ToyKind::Cell, [("1", input("a"))]);
+        let calls = calls_value([site(&[1], true, 0, plus_a)]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        let child = |index| p_child(call_step(&[1], Some(index)));
+        assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 14));
+        assert_eq!(answer(&design, &child(0)), int_of(ToyKind::Cell, 4));
+        assert_eq!(answer(&design, &child(1)), int_of(ToyKind::Cell, 5));
+        assert_eq!(answer(&design, &child(2)), absent(None));
+    }
+
+    #[test]
+    fn a_false_when_declares_nothing_and_the_child_s_path_is_absent() {
+        let calls = calls_value([site(&[1], false, 1, cell([]))]);
+        let mut when = over_a_and_b();
+        when.bindings.insert(String::from("when"), input("off"));
+        let mut design = call_r(when, calls, &[("a", 2), ("b", 3)]);
+        design.insert(named("off"), flag(false));
+        assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 5));
+        assert_eq!(
+            answer(&design, &p_child(call_step(&[1], None))),
+            absent(None)
+        );
+    }
+
+    #[test]
+    fn a_child_path_asked_before_its_parent_answers_the_child_and_is_resolved_once() {
+        let calls = calls_value([site(&[1], false, 1, cell([]))]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        let child = p_child(call_step(&[1], None));
+        let mut reference = Reference::new(design);
+        assert_eq!(reference.answer(&child), int_of(ToyKind::Cell, 6));
+        assert_eq!(reference.paths_resolved(), 3, "r, r/p and the child");
+        assert_eq!(
+            reference.answer(&at("r", &["p"])),
+            int_of(ToyKind::Call, 11)
+        );
+    }
+
+    /// A site [1] declaring `callee`, its argument bound at "given", which
+    /// the cell reads nowhere.
+    fn given(callee: Decl) -> Site {
+        let mut given = site(&[1], false, 0, callee);
+        given.argument = String::from("given");
+        given
+    }
+
+    #[test]
+    fn a_child_reading_its_declarer_answers_cycle_and_so_does_the_declarer() {
+        let calls = calls_value([given(cell([declarer([])]))]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        let (p, child) = (at("r", &["p"]), p_child(call_step(&[1], None)));
+        for first in [&p, &child] {
+            let mut reference = Reference::new(design.clone());
+            reference.answer(first).expect("the design is valid");
+            assert_eq!(
+                reference.answer(&p),
+                cycle(Some(ToyKind::Call)),
+                "{first:?}"
+            );
+            assert_eq!(
+                reference.answer(&child),
+                cycle(Some(ToyKind::Cell)),
+                "{first:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ring_through_a_child_and_its_declarer_s_sibling_leaves_the_declarer_off_it() {
+        let s = call_step(&[1], None);
+        let mut p = call([], input("calls"));
+        p.bindings.insert(String::from("x"), declarer([step("x")]));
+        let held = members([
+            (step("x"), cell([declarer([step("p"), s.clone()])])),
+            (step("p"), p),
+        ]);
+        let mut design = scope_r(held, &[]);
+        design.insert(
+            named("calls"),
+            calls_value([given(cell([passed("x", [])]))]),
+        );
+        let (x, p, child) = (at("r", &["x"]), at("r", &["p"]), p_child(s.clone()));
+        for first in [&x, &p, &child] {
+            let mut reference = Reference::new(design.clone());
+            reference.answer(first).expect("the design is valid");
+            assert_eq!(
+                reference.answer(&x),
+                cycle(Some(ToyKind::Cell)),
+                "{first:?}"
+            );
+            assert_eq!(
+                reference.answer(&child),
+                cycle(Some(ToyKind::Cell)),
+                "{first:?}"
+            );
+            assert_eq!(
+                reference.answer(&p),
+                of_call(Expect::Failure(toy::blocked_by_child(s.clone()))),
+                "{first:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_child_past_the_depth_setting_is_too_deep_and_its_call_blocked_by_it() {
+        let s = call_step(&[1], None);
+        let calls = calls_value([site(&[1], false, 1, cell([]))]);
+        let mut design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        design.insert(depth_limit(), bound(1));
+        assert_eq!(
+            answer(&design, &p_child(s.clone())),
+            settled(Failure::TooDeep { limit: 1 })
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["p"])),
+            of_call(Expect::Failure(toy::blocked_by_child(s)))
+        );
+    }
+
+    #[test]
+    fn two_declarations_at_one_step_in_one_run_fail_the_call() {
+        let s = call_step(&[1], None);
+        let calls = calls_value([
+            site(&[1], false, 0, cell([])),
+            site(&[1], false, 1, cell([])),
+        ]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        assert_eq!(
+            answer(&design, &at("r", &["p"])),
+            of_call(Expect::Failure(Failure::ConflictingChild {
+                step: s.clone()
+            }))
+        );
+        assert_eq!(answer(&design, &p_child(s)), int_of(ToyKind::Cell, 5));
+    }
+
+    #[test]
+    fn a_call_declaring_more_children_than_the_setting_fails_and_its_children_answer() {
+        let calls = calls_value([site(&[1], true, 0, cell([]))]);
+        let looping = call([input("a"), input("b"), input("c")], input("calls"));
+        let mut design = call_r(looping, calls, &[("a", 2), ("b", 3), ("c", 4)]);
+        design.insert(children_limit(), bound(2));
+        assert_eq!(
+            answer(&design, &at("r", &["p"])),
+            of_call(Expect::Failure(Failure::TooManyChildren { limit: 2 }))
+        );
+        for (index, value) in [(0, 2), (1, 3), (2, 4)] {
+            let child = p_child(call_step(&[1], Some(index)));
+            assert_eq!(answer(&design, &child), int_of(ToyKind::Cell, value));
+        }
+        design.insert(children_limit(), bound(3));
+        assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 18));
     }
 }

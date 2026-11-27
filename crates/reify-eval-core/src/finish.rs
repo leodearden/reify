@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::content::Content;
 use crate::declaration::Declaration;
+use crate::declared_children::ChildSteps;
 use crate::event::RequestId;
 use crate::index::{Entry, Indexes, NodeKey};
 use crate::key::Chain;
@@ -18,10 +19,12 @@ use crate::waits::Waits;
 
 /// Files `outcome`, which the body of the node declared `declaration`
 /// produced, in `store` at the end of the `chain` its reads took it
-/// through, and returns the node's final answer with its content.
+/// through, and returns the node's final answer with its content and the
+/// steps of the `children` its run declared.
 pub(crate) fn filed(
     declaration: Arc<Declaration>,
     chain: Chain,
+    children: ChildSteps,
     outcome: Outcome<Erased>,
     kinds: &Kinds,
     store: &mut Store,
@@ -40,6 +43,7 @@ pub(crate) fn filed(
         outcome,
         declaration: Some(declaration),
         content,
+        children_declared: children,
     }
 }
 

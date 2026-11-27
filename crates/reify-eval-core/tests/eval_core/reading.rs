@@ -6,7 +6,7 @@ use std::any::type_name;
 use std::sync::Arc;
 
 use reify_eval_core::{
-    Answer, Budget, Cx, Declaration, Failure, Kind, KindId, Outcome, Produced, Ref, Turn,
+    Answer, Budget, Cx, Declaration, Failure, Kind, KindId, Outcome, Produced, Ref, Turn, Wanted,
 };
 
 use crate::toy::{self, Cell, Members};
@@ -81,7 +81,8 @@ impl Kind for Gather {
     const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Self::Out> {
-        let refs = ["input", "unset", "node", "node", "wrong"].map(Ref::binding);
+        let refs = ["input", "unset", "node", "node", "wrong"]
+            .map(|name| Wanted::from(Ref::binding(name)));
         Produced::Outcome(Outcome::of(cx.read_all::<i64>(&refs).await))
     }
 }

@@ -1,22 +1,20 @@
 //! The content of an outcome (contract 5.2): what a reader sees of it,
 //! hashed. Every content the core uses is computed here.
 
-use std::any::Any;
-
 use crate::erased_kind::ErasedKind;
 use crate::failure::Failure;
 use crate::hash::{Encoder, Hash128};
 use crate::input::Input;
-use crate::outcome::{Erased, Outcome, Value};
+use crate::outcome::{Erased, Outcome, tagged_content};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Content(Hash128);
 
 impl Content {
-    /// A snapshot input: its host-given content, by the rule for a value
-    /// hashed by value.
+    /// A snapshot input or a constant: its host-given content, by the rule
+    /// for a value hashed by value.
     pub fn of_input(input: &Input) -> Self {
-        Self::of_value(input.value(), input.leaf_content())
+        Self(input.tagged_content())
     }
 
     /// What a body of `kind` produced, whose chain of reads ended at the
@@ -26,7 +24,7 @@ impl Content {
     pub fn of_produced(outcome: &Outcome<Erased>, kind: &dyn ErasedKind, key: Hash128) -> Self {
         match outcome {
             Outcome::Value(value) => match kind.content(&**value) {
-                Some(leaf) => Self::of_value(&**value, leaf),
+                Some(leaf) => Self(tagged_content(&**value, leaf)),
                 None => Self(Encoder::new("content.keyed").hash(key).finish()),
             },
             Outcome::Failure(failure) => Self::of_failure(failure),
@@ -46,17 +44,5 @@ impl Content {
 
     pub fn hash(self) -> Hash128 {
         self.0
-    }
-
-    /// A value's leaf content, tagged with its type, so values of two types
-    /// never share a content.
-    fn of_value(value: &Erased, leaf: Hash128) -> Self {
-        let any: &dyn Any = value;
-        Self(
-            Encoder::new("content.value")
-                .type_of(any.type_id(), <Erased as Value>::type_name(value))
-                .hash(leaf)
-                .finish(),
-        )
     }
 }

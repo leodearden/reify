@@ -8,6 +8,7 @@ use crate::description::Description;
 use crate::hash::Encoder;
 use crate::kind_id::KindId;
 use crate::reference::Ref;
+use crate::step::Step;
 
 /// A failure that follows from the inputs. None names a path (contract
 /// 5.4), so equal failures at two places have one content.
@@ -46,12 +47,18 @@ pub enum Failure {
     /// one value. A path is given it in the snapshot's index only, and
     /// nothing is filed in the store for it.
     TooDeep { limit: u64 },
-    /// The node's value declares more children than the snapshot's
-    /// children setting, `limit`, allows (contract 7.6). It names no path.
-    /// The node is given it in the snapshot's index only, while the store
-    /// keeps the value as its body produced it, so its children answer it
-    /// too and another snapshot's setting may accept the value.
+    /// The node declares more children than the snapshot's children
+    /// setting, `limit`, allows (contract 7.6): the steps its run declared
+    /// and the steps its value declares, a step declared both ways once. It
+    /// names no path. The node is given it in the snapshot's index only,
+    /// while the store keeps the value as its body produced it, so another
+    /// snapshot's setting may accept the value. A child its value declares
+    /// answers it too; a child its run declared was answered first, and
+    /// keeps that answer.
     TooManyChildren { limit: u64 },
+    /// A run declared two different declarations at `step` below its own
+    /// place (contract 7.1). It names no path.
+    ConflictingChild { step: Step },
 }
 
 impl Failure {
@@ -86,6 +93,10 @@ impl Failure {
             }
             Failure::TooManyChildren { limit } => {
                 encoder.tag("failure.too_many_children").number(*limit);
+            }
+            Failure::ConflictingChild { step } => {
+                encoder.tag("failure.conflicting_child");
+                step.encode(encoder);
             }
         }
     }

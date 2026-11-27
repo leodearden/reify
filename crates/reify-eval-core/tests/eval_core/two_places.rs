@@ -10,7 +10,7 @@ use reify_eval_core::{
 };
 
 use crate::toy::{
-    self, BoxHandle, Cell, Collection, Guard, Measure, Scope, Shape, ToyKernel, Watch,
+    self, BoxHandle, Call, Cell, Collection, Guard, Measure, Scope, Shape, ToyKernel, Watch,
 };
 
 /// One kind's case: the subject's declaration, the members beside it it
@@ -75,6 +75,19 @@ fn table() -> Vec<Entry> {
             subject: toy::measure(toy::sibling(&["s"])),
             siblings: vec![("s", toy::shape("side"))],
             inputs: vec![toy::named("side", 2_i64)],
+            same: same_as::<i64>,
+        },
+        Entry {
+            kind: Call::ID,
+            subject: toy::call([toy::input("v")], toy::input("calls")),
+            siblings: Vec::new(),
+            inputs: vec![
+                toy::named("v", 3_i64),
+                toy::named(
+                    "calls",
+                    toy::Calls(vec![toy::site(&[1], false, 0, Declaration::new(Cell::ID))]),
+                ),
+            ],
             same: same_as::<i64>,
         },
     ]
