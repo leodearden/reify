@@ -2356,7 +2356,7 @@ match outer {
 <!-- sc-anchor: sc-b6ef4d -->
 #### 9.2.9 Tracing
 
-An undefined value carries no cause, so two undefined values are equal however each came to be. A cell's or a constraint's result that is undefined or undetermined names, by ref, the undefined things it read. The reason for an undefined value is found by following those reads back to what was not there. The tracer below is that walk.
+An undefined value carries no cause. A cell's or a constraint's result that is undefined or undetermined names, by ref, the undefined things it read. The reason for an undefined value is found by following those reads back to what was not there. The tracer below is that walk.
 
 A read-only undef-cause tracer reconstructs the complete, deduplicated set of root causes for an `undef` cell: `Unbound` (a required param with no value), `AwaitingSolve` (an `auto` param not yet resolved by the constraint solver), `SolveFailed` (the solve was infeasible or made no progress), `OpContractFailed` (an operation returned `undef` although every input was determined -- a type or contract violation), or `UserUndef` (an explicit `undef` literal). The tracer walks forward dependencies through undef cells only, so a value made `undef` by propagation (§9.2.1) reports its upstream roots, not itself.
 
