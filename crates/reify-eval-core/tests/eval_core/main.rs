@@ -18,6 +18,7 @@ mod hash;
 mod limits;
 mod must_not_compile;
 mod outside;
+mod outside_kinds;
 mod reading;
 mod roots;
 mod sections;
