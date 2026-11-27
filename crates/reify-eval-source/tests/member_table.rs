@@ -294,3 +294,89 @@ fn an_unresolved_written_type_is_reported() {
         output.diagnostics
     );
 }
+
+#[test]
+fn an_untyped_let_has_the_type_of_its_expression() {
+    let output = accepted(
+        "
+structure def Plate { param t : Length = 3mm }
+structure def Lets {
+    param t : Length = 1mm
+    let w = t * 2
+    let c = Plate()
+    let kids = self.children
+}
+",
+    );
+    let lets = table(&output, "Lets");
+    assert_eq!(member(lets, "w").kind, MemberKind::Cell);
+    assert_eq!(
+        member(lets, "w").declared_type,
+        DeclaredType::Value(Type::length())
+    );
+    assert_eq!(
+        member(lets, "c").declared_type,
+        DeclaredType::Value(Type::StructureRef("Plate".into()))
+    );
+    assert_eq!(
+        member(lets, "kids").declared_type,
+        DeclaredType::Value(Type::List(Box::new(Type::StructureRef("Structure".into())))),
+        "a structural query is typed as the new mode types it: a list of instances"
+    );
+}
+
+#[test]
+fn a_let_whose_expression_does_not_compile_is_reported() {
+    let output = accepted("structure def A { let x = nonesuch + 1 }\n");
+    let a = table(&output, "A");
+    assert_eq!(
+        shape(a),
+        vec![(MemberKind::Cell, Some("x"))],
+        "the member is kept"
+    );
+    assert_eq!(
+        member(a, "x").declared_type,
+        DeclaredType::Value(Type::Error)
+    );
+    assert!(
+        error_codes(&output).contains(&Some(DiagnosticCode::UnresolvedName)),
+        "the expression compiler's coded error is carried: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn a_geometry_typed_member_is_a_geometry_member_never_a_cell() {
+    let output = accepted(
+        "
+structure def Held {
+    param w : Length = 1mm
+    pub let body = box(w, w, w)
+}
+structure def Shapes {
+    param w : Length = 10mm
+    param feature : Geometry = box(1mm, 1mm, 1mm)
+    let body = box(w, w, w)
+    pub let measured = translate(body, 0.5mm, 0mm, 0mm)
+    sub held : Held
+    let b = self.held.body
+    let v = volume(body)
+}
+",
+    );
+    let shapes = table(&output, "Shapes");
+    for geometry in ["feature", "body", "measured", "b"] {
+        assert_eq!(
+            member(shapes, geometry).kind,
+            MemberKind::GeometryMember,
+            "`{geometry}` holds geometry: {:#?}",
+            member(shapes, geometry)
+        );
+    }
+    assert_eq!(member(shapes, "v").kind, MemberKind::Cell);
+    assert_eq!(member(shapes, "w").kind, MemberKind::Cell);
+    assert_eq!(
+        member(table(&output, "Held"), "body").kind,
+        MemberKind::GeometryMember
+    );
+}
