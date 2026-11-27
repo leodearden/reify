@@ -15,8 +15,9 @@
 use std::collections::HashMap;
 
 use reify_compiler::{
-    CompilationScope, CompiledModule, CompiledSourceUnit, LOCAL_REFERENCE_ENTITY, LocalReference,
-    ReferenceRead, ReferenceRoot, SourceStep, SourceUnitNames, SourceUnitSpec, TopologyTemplate,
+    CompilationScope, CompiledModule, CompiledSourceUnit, InstanceRequest, LOCAL_REFERENCE_ENTITY,
+    LocalReference, ReferenceRead, ReferenceRoot, RequestArgument, SourceStep, SourceUnitNames,
+    SourceUnitSpec, TopologyTemplate,
 };
 use reify_core::{Diagnostic, DiagnosticCode, Severity, Type, ValueCellId};
 use reify_ir::CompiledExprKind;
@@ -727,4 +728,125 @@ fn member_reads_that_may_be_absent_are_references() {
     );
     assert_eq!(tree.result_type, Type::Error);
     assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+}
+
+const CTOR_SOURCE: &str = "
+structure def Plate {
+    param t : Real = 3
+    param u : Real = 4
+    param g : Real = auto
+    pub let w = t * 2
+}
+structure def Pair {
+    param a : Plate
+    param n : Real = 1
+}
+structure def Asm {
+    param k : Real = 1
+}
+";
+
+fn request(place: Vec<usize>, definition: &str, parameters: &[&str]) -> InstanceRequest {
+    InstanceRequest {
+        place,
+        definition: definition.to_string(),
+        arguments: parameters
+            .iter()
+            .map(|parameter| RequestArgument {
+                parameter: (*parameter).to_string(),
+                unknown: None,
+            })
+            .collect(),
+    }
+}
+
+/// The constructor node a unit's tree is, with its argument names.
+fn ctor_of(tree: &reify_ir::CompiledExpr) -> (&str, Vec<&str>, &reify_ir::CompiledExpr) {
+    match &tree.kind {
+        CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } => (
+            type_name.as_str(),
+            ordered_args.iter().map(|(name, _)| name.as_str()).collect(),
+            tree,
+        ),
+        other => panic!("expected a constructor, got {other:?}"),
+    }
+}
+
+fn callee_internals(tree: &reify_ir::CompiledExpr) -> (Vec<&str>, Vec<&str>, usize) {
+    match &tree.kind {
+        CompiledExprKind::StructureInstanceCtor {
+            defaults,
+            lets,
+            geometry_lets,
+            ..
+        } => (
+            defaults.iter().map(|(name, _)| name.as_str()).collect(),
+            lets.iter().map(|(name, _)| name.as_str()).collect(),
+            geometry_lets.len(),
+        ),
+        other => panic!("expected a constructor, got {other:?}"),
+    }
+}
+
+/// PRD §5.2 item 7 and §5.5 "Making an instance from an expression": in the
+/// source-unit mode a constructor call is a request to make an instance, and
+/// nothing of the callee is copied into the caller.
+#[test]
+fn constructor_call_is_an_instance_request() {
+    let module = compile_clean(CTOR_SOURCE);
+    let registry = template_registry(&module);
+    let scope = definition_scope(&module, &registry, "Asm");
+
+    let (unit, diagnostics) = compile_unit("Plate(t: k / 2)", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let (definition, arguments, ctor) = ctor_of(&unit.expr);
+    assert_eq!((definition, arguments), ("Plate", vec!["t"]));
+    assert_eq!(callee_internals(ctor), (vec![], vec![], 0));
+    let reads = unit.expr.collect_value_refs();
+    assert!(!reads.is_empty());
+    for id in &reads {
+        assert_eq!(shape(reference_of(&unit, id)), own_value(members(&["k"])));
+    }
+    assert_eq!(
+        unit.instance_requests,
+        vec![request(vec![], "Plate", &["t"])]
+    );
+
+    let (unit, diagnostics) = compile_unit("Pair(a: Plate(t: 1))", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    assert_eq!(
+        unit.instance_requests,
+        vec![
+            request(vec![], "Pair", &["a"]),
+            request(vec![0], "Plate", &["t"]),
+        ]
+    );
+
+    // Positional arguments fill the declared parameters in declaration order,
+    // the `auto` parameter included (PRD 5.6 item 7).
+    let (unit, diagnostics) = compile_unit("Plate(1, 2, 5)", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    assert_eq!(ctor_of(&unit.expr).1, vec!["t", "u", "g"]);
+    assert_eq!(
+        unit.instance_requests,
+        vec![request(vec![], "Plate", &["t", "u", "g"])]
+    );
+
+    // The request inside the projection (child 0) inside the sum (child 0).
+    let (unit, diagnostics) = compile_unit("Plate(t: 1).t + 1", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    assert_eq!(
+        unit.instance_requests,
+        vec![request(vec![0, 0], "Plate", &["t"])]
+    );
+
+    // The existing compile copies the callee's defaults and lets.
+    let (tree, _) = compile_existing("Plate(t: k / 2)", &scope, &module);
+    assert_eq!(callee_internals(&tree), (vec!["u"], vec!["w"], 0));
+    let (tree, _) = compile_existing("Plate(1, 2, 5)", &scope, &module);
+    assert_eq!(ctor_of(&tree).1, vec!["t", "u", "__arg2"]);
 }
