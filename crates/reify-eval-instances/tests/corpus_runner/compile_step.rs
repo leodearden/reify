@@ -4,14 +4,115 @@
 
 use std::path::PathBuf;
 
+use reify_core::{Diagnostic, DiagnosticCode, Severity};
+use reify_eval_source::compile_entry;
+
 use crate::bookkeeping::{Built, Disputed, EntryState};
 use crate::corpus_tree::{self, EntryId, EntrySources, LoadedEntry, Problem, SourceFile};
 use crate::entry::EntryRecord;
+use crate::expectation::Form;
 
 /// Every way `entry`'s compile outcome differs from what its compile rows
-/// expect, each naming the entry.
-pub fn compile_problems(_entry: &LoadedEntry) -> Vec<Problem> {
-    Vec::new()
+/// expect, each naming the entry. The rows that decide are those about the
+/// source as written (no `after_edit`): each `compile_error` row needs an
+/// error of its code (any error, for a row with no code), and an entry with
+/// no `compile_error` row needs no error at all.
+pub fn compile_problems(entry: &LoadedEntry) -> Vec<Problem> {
+    let problem = |what: String| Problem::new(&entry.id, what);
+    let Some(file) = entry_file(entry) else {
+        return vec![problem("has no one entry file to compile".to_string())];
+    };
+    let rows: Vec<&Form> = entry
+        .record
+        .expect
+        .iter()
+        .filter(|row| row.after_edit.is_none())
+        .map(|row| &row.form)
+        .collect();
+    let expected_codes: Vec<Option<DiagnosticCode>> = rows
+        .iter()
+        .filter_map(|form| match form {
+            Form::CompileError { code, .. } => Some(*code),
+            _ => None,
+        })
+        .collect();
+    if !expected_codes.is_empty() && rows.iter().any(|form| matches!(form, Form::Compile)) {
+        return vec![problem(
+            "expects both acceptance and a compile error of the source as written".to_string(),
+        )];
+    }
+
+    let output = match compile_entry(&entry.sources.import_root.join(&file.name), &file.text) {
+        Ok(output) => output,
+        Err(refusal) => {
+            return vec![problem(format!(
+                "the second output refused {}: {refusal:?}",
+                file.name
+            ))];
+        }
+    };
+    let errors: Vec<&Diagnostic> = output
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect();
+
+    if expected_codes.is_empty() {
+        return if errors.is_empty() {
+            Vec::new()
+        } else {
+            vec![problem(format!(
+                "expected the source to be accepted, but it reported {}",
+                rendered(&errors)
+            ))]
+        };
+    }
+    if errors.is_empty() {
+        let expected: Vec<String> = expected_codes.iter().map(rendered_code).collect();
+        return vec![problem(format!(
+            "expected a compile error ({}), but the source was accepted",
+            expected.join(", ")
+        ))];
+    }
+    expected_codes
+        .iter()
+        .flatten()
+        .filter(|code| !errors.iter().any(|error| error.code == Some(**code)))
+        .map(|code| {
+            problem(format!(
+                "expected a compile error of code `{code:?}`, but it reported {}",
+                rendered(&errors)
+            ))
+        })
+        .collect()
+}
+
+/// The file an entry is compiled from: its `entry_file`, or its one file.
+fn entry_file(entry: &LoadedEntry) -> Option<&SourceFile> {
+    let files = &entry.sources.files;
+    match &entry.record.entry_file {
+        Some(name) => files.iter().find(|file| file.name == *name),
+        None => match files.as_slice() {
+            [only] => Some(only),
+            _ => None,
+        },
+    }
+}
+
+fn rendered_code(code: &Option<DiagnosticCode>) -> String {
+    match code {
+        Some(code) => format!("`{code:?}`"),
+        None => "with no code".to_string(),
+    }
+}
+
+/// The errors reported, each as its code and message.
+fn rendered(errors: &[&Diagnostic]) -> String {
+    let each: Vec<String> = errors
+        .iter()
+        .map(|error| format!("{} {:?}", rendered_code(&error.code), error.message))
+        .collect();
+    format!("errors {}", each.join("; "))
 }
 
 /// A one-file entry in theme `other`, from its expectations and its source.
