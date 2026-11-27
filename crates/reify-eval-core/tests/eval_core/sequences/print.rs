@@ -244,6 +244,13 @@ fn val_text(value: &Val) -> String {
         Val::Decl(decl) => format!("declaration({})", decl_text(decl)),
         Val::Bound(bound) => format!("bound({bound})"),
         Val::Calls(sites) => format!("calls_value([{}])", list(sites.iter().map(site_text))),
+        Val::Problem(problem) => {
+            let candidates = problem.candidates.iter().map(|candidate| {
+                let parts = candidate.iter().map(|part| format!("Part::{part:?}"));
+                format!("vec![{}]", list(parts))
+            });
+            format!("problem([{}], {})", list(candidates), problem.constraints)
+        }
     }
 }
 

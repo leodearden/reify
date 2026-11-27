@@ -3,7 +3,7 @@
 //! candidate still names only snapshots made before each event.
 
 use super::case::{Case, HostEvent, Then};
-use super::design::{Bind, Decl, ModelPath, ModelRef, ToyKind, Val, decl};
+use super::design::{Bind, Decl, ModelPath, ModelRef, Part, ToyKind, Val, decl};
 
 /// The cases one step smaller than `case`, largest reductions first: an
 /// event dropped, a demanded path dropped or shortened, a Drive made an
@@ -177,6 +177,18 @@ fn value_size(value: &Val) -> u64 {
                 1 + site.sites.len() as u64 + site.offset.unsigned_abs() + decl_size(&site.callee)
             })
             .sum(),
+        Val::Problem(problem) => {
+            let part_size = |part: &Part| match part {
+                Part::Int(value) => 1 + value.unsigned_abs(),
+                Part::Flag(value) => 1 + u64::from(*value),
+            };
+            let candidates: u64 = problem
+                .candidates
+                .iter()
+                .map(|candidate| 1 + candidate.iter().map(part_size).sum::<u64>())
+                .sum();
+            candidates + problem.constraints
+        }
     }
 }
 
@@ -317,6 +329,7 @@ fn smaller_values(value: &Val) -> Vec<Val> {
                 Val::Calls(fewer)
             })
             .collect(),
+        Val::Problem(_) => Vec::new(),
     }
 }
 

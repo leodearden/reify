@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use reify_eval_core::{Declaration, Failure, Step};
 
-use super::design::{Decl, ModelPath, Site, ToyKind, Val};
+use super::design::{Decl, ModelPath, Part, Problem, Site, ToyKind, Val};
 use crate::toy;
 
 /// What a path answers: the kind of the node declared there, if any, and
@@ -35,6 +35,8 @@ pub enum Out {
     Decl(Decl),
     Shape { volume: i64 },
     Calls(Vec<Site>),
+    Problem(Problem),
+    Solution(Vec<Part>),
 }
 
 /// Why a path has no answer in this snapshot.
@@ -42,6 +44,9 @@ pub enum Out {
 pub enum Invalid {
     /// What the node at `path` works out is past i64.
     Overflow { path: ModelPath },
+    /// The solve at `path` runs under a view another solve opened, which
+    /// the core does not evaluate until views nest (leaf λ, #10563).
+    ViewInsideView { path: ModelPath },
 }
 
 /// A read typed as the Rust type the core reads it as.
@@ -58,9 +63,18 @@ pub fn out_of(value: &Val) -> Out {
         Val::Members(members) => Out::Members(members.clone()),
         Val::Decl(decl) => Out::Decl(decl.clone()),
         Val::Calls(sites) => Out::Calls(sites.clone()),
+        Val::Problem(problem) => Out::Problem(problem.clone()),
         Val::Bound(_) => {
             unreachable!("a limit setting is under a limit key, which no binding reads")
         }
+    }
+}
+
+/// A part of a candidate as the value a solved node reads it as.
+pub fn part_out(part: Part) -> Out {
+    match part {
+        Part::Int(value) => Out::Int(value),
+        Part::Flag(value) => Out::Bool(value),
     }
 }
 
@@ -75,6 +89,8 @@ impl Out {
             Out::Decl(_) => type_name::<Declaration>(),
             Out::Shape { .. } => type_name::<toy::BoxShape>(),
             Out::Calls(_) => type_name::<toy::Calls>(),
+            Out::Problem(_) => type_name::<toy::Problem>(),
+            Out::Solution(_) => type_name::<toy::Solution>(),
         }
     }
 }
@@ -134,6 +150,20 @@ pub fn typed_calls(read: Expect) -> Typed<Vec<Site>> {
 pub fn typed_decl(read: Expect) -> Typed<Decl> {
     typed(read, type_name::<Declaration>(), |out| match out {
         Out::Decl(decl) => Some(decl),
+        _ => None,
+    })
+}
+
+pub fn typed_problem(read: Expect) -> Typed<Problem> {
+    typed(read, type_name::<toy::Problem>(), |out| match out {
+        Out::Problem(problem) => Some(problem),
+        _ => None,
+    })
+}
+
+pub fn typed_solution(read: Expect) -> Typed<Vec<Part>> {
+    typed(read, type_name::<toy::Solution>(), |out| match out {
+        Out::Solution(parts) => Some(parts),
         _ => None,
     })
 }

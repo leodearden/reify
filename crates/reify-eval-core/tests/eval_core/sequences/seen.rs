@@ -56,6 +56,8 @@ impl Seen {
             Expect::Value(Out::Decl(decl)) => Seen::Declaration(decl.to_core()),
             Expect::Value(Out::Shape { volume }) => Seen::Shape { volume: *volume },
             Expect::Value(Out::Calls(_)) => Seen::Other(type_name::<toy::Calls>()),
+            Expect::Value(Out::Problem(_)) => Seen::Other(type_name::<toy::Problem>()),
+            Expect::Value(Out::Solution(_)) => Seen::Other(type_name::<toy::Solution>()),
         }
     }
 

@@ -295,6 +295,7 @@ impl Generator {
             ToyKind::Collection => self.collection_at(&at, &[], needed),
             ToyKind::Shape | ToyKind::Measure => unreachable!("a root is never on the kernel"),
             ToyKind::Call => unreachable!("no call is drawn here"),
+            ToyKind::Solve | ToyKind::Solved(_) => unreachable!("no solve is drawn here"),
         }
     }
 
@@ -333,6 +334,7 @@ impl Generator {
             ToyKind::Collection => self.collection_at(&at, earlier, needed),
             ToyKind::Call => self.member_call(&at, level, earlier, needed),
             ToyKind::Shape | ToyKind::Measure => unreachable!("the kernel takes a cell's place"),
+            ToyKind::Solve | ToyKind::Solved(_) => unreachable!("no solve is drawn here"),
         }
     }
 
@@ -961,7 +963,7 @@ mod tests {
                 Val::Decl(decl) => vec![decl],
                 Val::Members(members) => members.values().collect(),
                 Val::Calls(sites) => sites.iter().map(|site| &site.callee).collect(),
-                Val::Int(_) | Val::Bool(_) | Val::Bound(_) => Vec::new(),
+                Val::Int(_) | Val::Bool(_) | Val::Bound(_) | Val::Problem(_) => Vec::new(),
             }
         }
         values(case)
@@ -1042,6 +1044,7 @@ mod tests {
             ToyKind::Collection => features.collection,
             ToyKind::Shape | ToyKind::Measure => features.kernel,
             ToyKind::Call => features.call,
+            ToyKind::Solve | ToyKind::Solved(_) => false,
         }
     }
 
