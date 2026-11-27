@@ -1569,7 +1569,7 @@ connect motor.shaft -> coupling.driver : SplineConnection { tooth_count = 24 }
 // or explicitly: let shaft_spline = connect motor.shaft -> coupling.driver : SplineConnection { ... }
 ```
 
-**Connector ownership:** The connector structure instance is owned by the nearest common ancestor of the connected ports by default. An end of a `connect` is a port of the declaring instance, or of one of its subs or elements, and for such ends this ancestor is the declaring instance. An end that is a value held in a cell (a `let` bound to a structure value) is a compile error, whose message says to write a sub. A designer override is available to place it elsewhere.
+**Connector ownership:** The connector structure instance is owned by the nearest common ancestor of the connected ports by default. An end of a `connect` is a port of the declaring instance, or of one of its subs or elements. For ends on different subs, or on the declaring instance's own ports, this ancestor is the declaring instance. An end that is a value held in a cell (a `let` bound to a structure value) is a compile error, whose message says to write a sub. A designer override is available to place it elsewhere.
 
 **Cyclic connection topology:** Cyclic connection graphs are supported (e.g., four-bar linkages, closed kinematic chains).
 
