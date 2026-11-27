@@ -61,6 +61,12 @@ use reify_core::instance_path::{
     PathName as PathNameMod, PathStep as PathStepMod,
 };
 
+// ── instance_path_text ───────────────────────────────────────────────────────
+use reify_core::{PathTextError, PathTextProblem};
+use reify_core::instance_path_text::{
+    PathTextError as PathTextErrorMod, PathTextProblem as PathTextProblemMod,
+};
+
 // ── source_location ──────────────────────────────────────────────────────────
 use reify_core::{
     SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,
@@ -255,6 +261,17 @@ fn instance_path_flat_and_module_path() {
     ));
     let via_module: InstancePathMod = flat.clone();
     assert_eq!(via_module, flat);
+}
+
+#[test]
+fn instance_path_text_flat_and_module_path() {
+    let _: fn() -> Option<PathTextError> = || None;
+    let _: fn() -> Option<PathTextErrorMod> = || None;
+    let _: fn() -> Option<PathTextProblem> = || None;
+    let _: fn() -> Option<PathTextProblemMod> = || None;
+
+    let refused: Result<InstancePath, PathTextErrorMod> = "".parse();
+    assert!(refused.is_err());
 }
 
 #[test]
