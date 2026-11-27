@@ -1176,7 +1176,7 @@ pub(crate) fn determinacy_intrinsic_member(name: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn compile_expr(
+pub fn compile_expr(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
     enum_defs: &[reify_ir::EnumDef],

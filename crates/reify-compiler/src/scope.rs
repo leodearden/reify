@@ -9,17 +9,17 @@ use std::rc::Rc;
 /// `(structure_name, member_types)` where `member_types[m] = T` for that
 /// arm's child template. Tracked as a tuple so each entry preserves both
 /// the arm's structure name (for diagnostics) and its member typing.
-pub(crate) type ArmMemberMap = (String, BTreeMap<String, Type>);
+pub type ArmMemberMap = (String, BTreeMap<String, Type>);
 
 /// External-scope cluster entry (task 2373): the cluster definition plus
 /// its per-arm member maps in arm-order. Used to typecheck
 /// `<sub>.<cluster>.<inner>` access from outside a sub's structure.
-pub(crate) type SubClusterEntry = (GuardedDeclGroup, Vec<ArmMemberMap>);
+pub type SubClusterEntry = (GuardedDeclGroup, Vec<ArmMemberMap>);
 
 /// One `obj.(Trait::fn)(…)` dispatch candidate: a trait instance assoc fn's signature
 /// plus whether it is generic.
 #[derive(Debug, Clone)]
-pub(crate) struct AssocFnDispatchCandidate {
+pub struct AssocFnDispatchCandidate {
     sig: CompiledAssocFnSig,
     /// The sig was resolved against a non-empty type-param scope (fn-level ∪
     /// trait-level), even if the sig itself mentions none of those params.
@@ -28,7 +28,7 @@ pub(crate) struct AssocFnDispatchCandidate {
 
 impl AssocFnDispatchCandidate {
     /// `resolution_type_params` is the type-param scope `sig`'s types were resolved against.
-    pub(crate) fn new(sig: CompiledAssocFnSig, resolution_type_params: &HashSet<String>) -> Self {
+    pub fn new(sig: CompiledAssocFnSig, resolution_type_params: &HashSet<String>) -> Self {
         let is_generic = !resolution_type_params.is_empty();
         let carries_param = |t: &Type| {
             reify_core::overload::type_carries_type_param(t)
@@ -47,25 +47,26 @@ impl AssocFnDispatchCandidate {
         Self { sig, is_generic }
     }
 
-    pub(crate) fn sig(&self) -> &CompiledAssocFnSig {
+    pub fn sig(&self) -> &CompiledAssocFnSig {
         &self.sig
     }
 
-    pub(crate) fn is_generic(&self) -> bool {
+    pub fn is_generic(&self) -> bool {
         self.is_generic
     }
 }
 
 /// Name scope: maps identifier names to (ValueCellId, Type, Option<guard_cell_id>)
 /// within a structure. The guard cell ID tracks which guard (if any) protects this name.
+#[doc(hidden)]
 #[derive(Clone)]
-pub(crate) struct CompilationScope<'u> {
-    pub(crate) entity_name: String,
-    pub(crate) names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
+pub struct CompilationScope<'u> {
+    pub entity_name: String,
+    pub names: HashMap<String, (ValueCellId, Type, Option<ValueCellId>)>,
     /// Names of ports declared in this structure, for member access disambiguation.
-    pub(crate) port_names: HashSet<String>,
+    pub port_names: HashSet<String>,
     /// Names of collection sub-components (sub name : List<T>), for count expression handling.
-    pub(crate) collection_sub_names: HashSet<String>,
+    pub collection_sub_names: HashSet<String>,
     /// Keyed sub-components (`sub name : Keyed<T> { "k" => {…} }`) → set of
     /// author-assigned keys (task 3931 γ).
     ///
@@ -76,7 +77,7 @@ pub(crate) struct CompilationScope<'u> {
     /// the entity.rs Sub pre-pass next to `collection_sub_names.insert`, gated on
     /// `!sub.keyed_members.is_empty()`. Mirrors the `collection_sub_names`
     /// precedent (a dedicated typed set rather than overloading `names`).
-    pub(crate) keyed_sub_keys: HashMap<String, HashSet<String>>,
+    pub keyed_sub_keys: HashMap<String, HashSet<String>>,
     /// Names of this structure's own geometry lets / Solid-params that lower to
     /// `RealizationDecl`s (and therefore have a `named_steps[name]` entry at eval
     /// time).
@@ -105,7 +106,7 @@ pub(crate) struct CompilationScope<'u> {
     /// `geometry.rs` for the sibling-let pre-check. Mirrors the precedent set by
     /// `collection_sub_names` / `purpose_param_names` — a dedicated typed set for a
     /// category-specific lookup rather than overloading `names`.
-    pub(crate) geometry_realization_names: HashSet<String>,
+    pub geometry_realization_names: HashSet<String>,
     /// Geometry-LIST let name → its statically-unrolled element expressions
     /// (task #5385), owned so no AST lifetime is threaded through the ~40
     /// `compile_geometry_call` call sites.
@@ -134,7 +135,7 @@ pub(crate) struct CompilationScope<'u> {
     /// and both consumers' `.cloned()` — a refcount bump instead of a 256-subtree
     /// AST copy. The elements are never mutated after pass 1, so nothing needs
     /// `Rc::make_mut`.
-    pub(crate) geometry_list_elements: HashMap<String, Rc<Vec<reify_ast::Expr>>>,
+    pub geometry_list_elements: HashMap<String, Rc<Vec<reify_ast::Expr>>>,
     /// Geometry-LIST let names that were REJECTED at classification time and
     /// already carry their own Error (task #5385).
     ///
@@ -147,7 +148,7 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// Disjoint from `geometry_list_elements` by construction: a let is either
     /// expanded into that map or rejected into this set, never both.
-    pub(crate) geometry_list_rejected: HashSet<String>,
+    pub geometry_list_rejected: HashSet<String>,
     /// THE canonical statement of the #5371 forward-reference rationale. Every
     /// other site that needs it points here rather than restating it.
     ///
@@ -193,10 +194,10 @@ pub(crate) struct CompilationScope<'u> {
     /// built once per phase, and a scope only borrows it. `None` is the honest
     /// default for the entity and test scopes that need no such vocabulary, and
     /// keeps the per-function cost at zero.
-    pub(crate) declared_callable_names: Option<&'u HashSet<String>>,
+    pub declared_callable_names: Option<&'u HashSet<String>>,
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
-    pub(crate) trait_members: HashMap<String, HashSet<String>>,
+    pub trait_members: HashMap<String, HashSet<String>>,
     /// Type-param → bound trait names for the entity being compiled.
     ///
     /// Populated in `compile_entity` from `structure.type_params`
@@ -207,7 +208,7 @@ pub(crate) struct CompilationScope<'u> {
     /// (task 4596) to look up the bound trait(s) for a type-param receiver
     /// so the accessed member's static type can be resolved from the trait
     /// contract (not the candidate — the candidate is unknown at L2).
-    pub(crate) type_param_bounds: HashMap<String, Vec<String>>,
+    pub type_param_bounds: HashMap<String, Vec<String>>,
     /// Trait → member name → declared type, for all traits in scope.
     ///
     /// Populated in `compile_entity` from the `trait_registry`, alongside the
@@ -221,7 +222,7 @@ pub(crate) struct CompilationScope<'u> {
     /// (task 4596) to resolve the member type from the bound trait's contract
     /// (the only statically-available type source when the receiver is still
     /// an un-resolved TypeParam).
-    pub(crate) trait_member_types: HashMap<String, HashMap<String, Type>>,
+    pub trait_member_types: HashMap<String, HashMap<String, Type>>,
     /// Trait → instance-assoc-fn name → its overloads' dispatch candidates
     /// (sig + genericity).
     ///
@@ -239,14 +240,14 @@ pub(crate) struct CompilationScope<'u> {
     /// contract threaded here. (Replaced `trait_assoc_fn_return_types:
     /// HashMap<String, HashMap<String, Type>>` in task ε #3943 to support
     /// intra-trait overloads and two-trait same-name disambiguation.)
-    pub(crate) trait_assoc_fn_overloads:
+    pub trait_assoc_fn_overloads:
         HashMap<String, HashMap<String, Vec<AssocFnDispatchCandidate>>>,
     /// Sub-component type map: sub_name → structure_name.
     /// Used to resolve instance qualified access (sub.(Trait::member)).
-    pub(crate) sub_component_types: HashMap<String, String>,
+    pub sub_component_types: HashMap<String, String>,
     /// Trait bounds per structure name: structure_name → [trait_names].
     /// Used to verify a sub-component implements a given trait.
-    pub(crate) sub_structure_traits: HashMap<String, Vec<String>>,
+    pub sub_structure_traits: HashMap<String, Vec<String>>,
     /// Per-known-sub structure → the set of `(declaring_trait, fn_name)` instance
     /// associated functions the conformer actually provides — i.e. the exact keys
     /// of its compiled `TopologyTemplate.assoc_fns` table (task 3941 ζ).
@@ -265,14 +266,14 @@ pub(crate) struct CompilationScope<'u> {
     /// (which the conformance checker resolves across the refinement chain), so a
     /// refinement-inherited fn `obj.(Parent::m)()` validates correctly — unlike the
     /// direct-only `sub_structure_traits` bound list.
-    pub(crate) sub_assoc_fn_keys: HashMap<String, std::collections::HashSet<(String, String)>>,
+    pub sub_assoc_fn_keys: HashMap<String, std::collections::HashSet<(String, String)>>,
     /// Meta block entries for the current entity: key → value.
-    pub(crate) meta_entries: HashMap<String, String>,
+    pub meta_entries: HashMap<String, String>,
     /// Whether the entity declared a `meta { }` block (even if empty).
-    pub(crate) has_meta_block: bool,
+    pub has_meta_block: bool,
     /// Reference to the active unit registry.
     /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
-    pub(crate) unit_registry: Option<&'u UnitRegistry>,
+    pub unit_registry: Option<&'u UnitRegistry>,
     /// The name → `TopologyTemplate` view this scope's structure lookups read.
     ///
     /// It decides whether `Foo(..)` lowers as a structure constructor
@@ -297,7 +298,7 @@ pub(crate) struct CompilationScope<'u> {
     /// no registry), assoc-fn, joint and field scopes. Every lookup misses
     /// there: `Foo(..)` is not lowered as a constructor and member accesses on
     /// a `StructureRef` receiver go unchecked.
-    pub(crate) template_registry: Option<&'u HashMap<String, &'u TopologyTemplate>>,
+    pub template_registry: Option<&'u HashMap<String, &'u TopologyTemplate>>,
     /// Module-local ctor-view names whose template this scope cannot use
     /// (task #5494, PRD stdlib-namespace D-8).
     ///
@@ -320,7 +321,7 @@ pub(crate) struct CompilationScope<'u> {
     /// Only free-fn scopes set this. Entity scopes leave it `None`
     /// (`compile_entity` reports forward entity references its own way), and so
     /// do trait-static and assoc-fn scopes (#5371's documented ruling).
-    pub(crate) unavailable_local_template_names: Option<&'u HashSet<String>>,
+    pub unavailable_local_template_names: Option<&'u HashSet<String>>,
     /// The same-module fn overloads whose param defaults are not yet compiled,
     /// because a default uses a same-module structure (task #5494, PRD
     /// stdlib-namespace D-8; `functions::FnParamDefaults::NeedLocalTemplates`),
@@ -333,13 +334,13 @@ pub(crate) struct CompilationScope<'u> {
     pub(crate) fns_with_pending_defaults: Option<&'u crate::call_table::PendingDefaults>,
     /// Whether this scope is an entity (structure or occurrence) scope where `self` is valid.
     /// False for function and purpose scopes, where `self` must produce an "unresolved name" error.
-    pub(crate) is_entity_scope: bool,
+    pub is_entity_scope: bool,
     /// Member types for all sub-components: sub_name → { member_name → Type }.
     /// Populated for both collection and non-collection subs to resolve self.sub.member
     /// chains and instance qualified access.
     /// Inner map is BTreeMap so iteration order is lexicographic — this makes bare
     /// collection-sub identifier resolution (expr.rs: members.iter().next()) deterministic.
-    pub(crate) sub_member_types: HashMap<String, BTreeMap<String, Type>>,
+    pub sub_member_types: HashMap<String, BTreeMap<String, Type>>,
     /// Named realizations (geometry-producing members lowered as `RealizationDecl`s)
     /// per sub-component: sub_name → set of realization names.
     ///
@@ -357,7 +358,7 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// `BTreeSet` (not `HashSet`) for deterministic iteration, mirroring the
     /// precedent of `sub_member_types`' inner `BTreeMap`.
-    pub(crate) sub_realization_names: HashMap<String, BTreeSet<String>>,
+    pub sub_realization_names: HashMap<String, BTreeSet<String>>,
     /// Declared port directions per sub-component: sub_name → { port_name →
     /// direction }.
     ///
@@ -386,7 +387,7 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// `BTreeMap` inner for deterministic iteration, matching the
     /// `sub_member_types` precedent.
-    pub(crate) sub_port_directions: HashMap<String, BTreeMap<String, reify_core::PortDirection>>,
+    pub sub_port_directions: HashMap<String, BTreeMap<String, reify_core::PortDirection>>,
     /// Every member name a sub's resolved child template declares (see
     /// `declared_member_names_from_template`): sub_name → names. Populated
     /// beside `sub_port_directions` in the Sub pre-pass and read by
@@ -403,10 +404,10 @@ pub(crate) struct CompilationScope<'u> {
     /// its source: a `port` inside the child's `where { }` block is dropped by
     /// `compile_guarded_members` without a diagnostic, so an endpoint naming it
     /// reads as undefined here.
-    pub(crate) sub_declared_member_names: HashMap<String, BTreeSet<String>>,
+    pub sub_declared_member_names: HashMap<String, BTreeSet<String>>,
     /// Whether the current structure has at least one geometry-producing let binding
     /// (e.g., `let shape = box(...)`). Used to gate @face/@edge selectors at compile time.
-    pub(crate) has_geometry: bool,
+    pub has_geometry: bool,
     /// Names of purpose params registered in this scope (task-2181 β, contract C1).
     ///
     /// Isolated from `names` so that future let-bindings in purpose bodies (task δ)
@@ -416,7 +417,7 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// Only populated by `compile_purpose` via `register_purpose_param`; queried
     /// by `purpose_param_root` from the purpose-subject member-ref arm in `expr.rs`.
-    pub(crate) purpose_param_names: HashSet<String>,
+    pub purpose_param_names: HashSet<String>,
     /// Match-arm clusters keyed by their shared logical name (task 2372).
     ///
     /// Deliberately separate from `names` so that outside-match collision
@@ -431,7 +432,7 @@ pub(crate) struct CompilationScope<'u> {
     /// 2373) all depend on a stable order. Mirrors the precedent set by
     /// `meta_entries` hashing (entity.rs ~line 1656) which sorts keys for the
     /// same reason.
-    pub(crate) match_arm_groups: BTreeMap<String, GuardedDeclGroup>,
+    pub match_arm_groups: BTreeMap<String, GuardedDeclGroup>,
     /// Per-arm member-type maps for match-arm clusters (task 2373).
     ///
     /// Keyed by group logical name; the inner Vec is in arm-order (matches
@@ -448,7 +449,7 @@ pub(crate) struct CompilationScope<'u> {
     /// path, atomically with `register_match_arm_group` — the producer-side
     /// invariant `match_arm_groups.keys() == match_arm_group_arm_member_types.keys()`
     /// is enforced by an unconditional `assert!` in `compile_entity` (task 2872).
-    pub(crate) match_arm_group_arm_member_types: HashMap<String, Vec<ArmMemberMap>>,
+    pub match_arm_group_arm_member_types: HashMap<String, Vec<ArmMemberMap>>,
     /// External-scope match-arm clusters declared on each sub's child
     /// structure (task 2373).
     ///
@@ -462,11 +463,11 @@ pub(crate) struct CompilationScope<'u> {
     /// and `<sub>.<cluster>.<inner>` (common-field lookup, missing-arm
     /// diagnostics) from outside the sub's structure. Populated in the
     /// entity.rs Sub pre-pass.
-    pub(crate) sub_match_arm_groups: HashMap<String, Vec<SubClusterEntry>>,
+    pub sub_match_arm_groups: HashMap<String, Vec<SubClusterEntry>>,
 }
 
 impl<'u> CompilationScope<'u> {
-    pub(crate) fn new(entity_name: &str) -> Self {
+    pub fn new(entity_name: &str) -> Self {
         CompilationScope {
             entity_name: entity_name.to_string(),
             names: HashMap::new(),
@@ -504,12 +505,12 @@ impl<'u> CompilationScope<'u> {
     }
 
     /// Set the unit registry reference for this scope.
-    pub(crate) fn set_unit_registry(&mut self, registry: &'u UnitRegistry) {
+    pub fn set_unit_registry(&mut self, registry: &'u UnitRegistry) {
         self.unit_registry = Some(registry);
     }
 
     /// Set [`Self::template_registry`].
-    pub(crate) fn set_template_registry(
+    pub fn set_template_registry(
         &mut self,
         registry: &'u HashMap<String, &'u TopologyTemplate>,
     ) {
@@ -535,7 +536,7 @@ impl<'u> CompilationScope<'u> {
     /// `scope.register(&param.name, Type::StructureRef(...))`. This populates
     /// `purpose_param_names` so `purpose_param_root` can distinguish purpose params
     /// from future let-bindings (task δ) without changing the general `names` map.
-    pub(crate) fn register_purpose_param(&mut self, name: &str) {
+    pub fn register_purpose_param(&mut self, name: &str) {
         self.purpose_param_names.insert(name.to_string());
     }
 
@@ -546,13 +547,13 @@ impl<'u> CompilationScope<'u> {
     /// for any identifier that was not explicitly registered via `register_purpose_param`, which
     /// forward-guards against future let-bindings in purpose bodies (task δ) accidentally
     /// triggering the per-param stamp arm.
-    pub(crate) fn purpose_param_root(&self, ident: &str) -> Option<&str> {
+    pub fn purpose_param_root(&self, ident: &str) -> Option<&str> {
         self.purpose_param_names.get(ident).map(|s| s.as_str())
     }
 
     /// Look up a unit by name, applying factor and offset.
     /// Returns None if the unit is not in the registry.
-    pub(crate) fn lookup_unit_in_registry(
+    pub fn lookup_unit_in_registry(
         &self,
         value: f64,
         unit: &str,
@@ -569,12 +570,12 @@ impl<'u> CompilationScope<'u> {
         })
     }
 
-    pub(crate) fn register(&mut self, name: &str, ty: Type) {
+    pub fn register(&mut self, name: &str, ty: Type) {
         let id = ValueCellId::new(&self.entity_name, name);
         self.names.insert(name.to_string(), (id, ty, None));
     }
 
-    pub(crate) fn register_guarded(&mut self, name: &str, ty: Type, guard: ValueCellId) {
+    pub fn register_guarded(&mut self, name: &str, ty: Type, guard: ValueCellId) {
         let id = ValueCellId::new(&self.entity_name, name);
         self.names.insert(name.to_string(), (id, ty, Some(guard)));
     }
@@ -586,7 +587,7 @@ impl<'u> CompilationScope<'u> {
     /// callers can log the ignored type on conflict without paying for a clone on
     /// the hot insertion path. Unlike `register`, this method is guaranteed never
     /// to overwrite an existing registration.
-    pub(crate) fn register_if_absent(&mut self, name: &str, ty: Type) -> Option<Type> {
+    pub fn register_if_absent(&mut self, name: &str, ty: Type) -> Option<Type> {
         use std::collections::hash_map::Entry;
         match self.names.entry(name.to_string()) {
             Entry::Vacant(e) => {
@@ -598,7 +599,7 @@ impl<'u> CompilationScope<'u> {
         }
     }
 
-    pub(crate) fn resolve(&self, name: &str) -> Option<(&ValueCellId, &Type)> {
+    pub fn resolve(&self, name: &str) -> Option<(&ValueCellId, &Type)> {
         self.names.get(name).map(|(id, ty, _)| (id, ty))
     }
 
@@ -613,7 +614,7 @@ impl<'u> CompilationScope<'u> {
     ///
     /// `None` for an unguarded name (registered via `register` /
     /// `register_if_absent`) and for a name that is not in scope at all.
-    pub(crate) fn resolve_guard(&self, name: &str) -> Option<&ValueCellId> {
+    pub fn resolve_guard(&self, name: &str) -> Option<&ValueCellId> {
         self.names
             .get(name)
             .and_then(|(_, _, guard)| guard.as_ref())
@@ -690,7 +691,7 @@ impl<'u> CompilationScope<'u> {
     /// reaching this call for a second cluster with the same name. The
     /// `debug_assert!` below is a defensive backstop: it will fire loudly in
     /// debug builds if a future refactor bypasses that early return.
-    pub(crate) fn register_match_arm_group(&mut self, name: &str, group: GuardedDeclGroup) {
+    pub fn register_match_arm_group(&mut self, name: &str, group: GuardedDeclGroup) {
         debug_assert!(
             !self.match_arm_groups.contains_key(name),
             "duplicate cluster registration for '{}'",
@@ -707,7 +708,7 @@ impl<'u> CompilationScope<'u> {
     /// Currently consumed only by tests and future tasks (2373+) that union-type
     /// match-arm clusters; allowed here to avoid spurious dead-code lint.
     #[allow(dead_code)]
-    pub(crate) fn resolve_match_arm_group(&self, name: &str) -> Option<&GuardedDeclGroup> {
+    pub fn resolve_match_arm_group(&self, name: &str) -> Option<&GuardedDeclGroup> {
         self.match_arm_groups.get(name)
     }
 
