@@ -455,3 +455,124 @@ fn three_children_declared_in_one_read_all_on_three_resources_start_before_the_p
     assert_eq!(answer.downcast::<i64>(), value(12));
     assert_eq!(core.counters().body_runs(Three::ID), 1);
 }
+
+/// The space of `Twice`'s one child step.
+const TWICE: Space = Space::Named("test.twice");
+
+/// The step `Twice` declares both its declarations at.
+fn twice_step() -> Step {
+    Step::new(TWICE, StepKey::Index(0))
+}
+
+/// Declares the declaration at "first", then the one at "second", both at
+/// `twice_step`: in two requests, or in one `read_all` where "together"
+/// reads true. It answers the sum of the two reads.
+struct Twice;
+
+impl Kind for Twice {
+    type Out = i64;
+    const ID: KindId = KindId("test.twice");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let first = cx.read::<Declaration>(&Ref::binding("first")).await;
+        let second = cx.read::<Declaration>(&Ref::binding("second")).await;
+        let (Outcome::Value(first), Outcome::Value(second)) = (first, second) else {
+            return Produced::Outcome(Outcome::Absent);
+        };
+        let together = cx.read::<bool>(&Ref::binding("together")).await;
+        let reads = if matches!(together, Outcome::Value(together) if *together) {
+            let both = [
+                Wanted::Child(twice_step(), first),
+                Wanted::Child(twice_step(), second),
+            ];
+            cx.read_all::<i64>(&both).await
+        } else {
+            vec![
+                cx.child::<i64>(twice_step(), (*first).clone()).await,
+                cx.child::<i64>(twice_step(), (*second).clone()).await,
+            ]
+        };
+        let mut sum = 0;
+        for read in reads {
+            match read {
+                Outcome::Value(value) => sum += *value,
+                other => return Produced::Outcome(other),
+            }
+        }
+        Produced::Outcome(Outcome::of(sum))
+    }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(out.content())
+    }
+}
+
+/// The inputs of two identical `Twice` members of R, P and Q, declaring
+/// cells over `first` and `second`, together or not.
+fn twice(first: i64, second: i64, together: bool) -> Vec<(InputKey, Input)> {
+    let member = || {
+        Declaration::new(Twice::ID)
+            .bind("first", toy::input("first"))
+            .bind("second", toy::input("second"))
+            .bind("together", toy::input("together"))
+    };
+    scope_r(
+        [("P", member()), ("Q", member())],
+        [
+            toy::named("first", constant_cell(first)),
+            toy::named("second", constant_cell(second)),
+            toy::named("together", together),
+        ],
+    )
+}
+
+fn with_twice() -> Core {
+    toy::with_calls()
+        .kind::<Twice>()
+        .expect("a kind of the test's own")
+        .build()
+}
+
+#[test]
+fn the_same_declaration_at_one_step_twice_in_one_run_is_one_child() {
+    for together in [false, true] {
+        let mut core = with_twice();
+        let snapshot = core.snapshot(twice(7, 7, together));
+        let (p, child) = (toy::below("R", &["P"]), child_of("P", twice_step()));
+
+        assert_eq!(
+            i64s(&mut core, &snapshot, &[&p, &child]),
+            [value(14), value(7)],
+            "together: {together}"
+        );
+        assert_eq!(
+            core.counters().body_runs(Cell::ID),
+            1,
+            "together: {together}"
+        );
+    }
+}
+
+#[test]
+fn two_declarations_at_one_step_in_one_run_fail_the_run() {
+    let conflict = || failure(Failure::ConflictingChild { step: twice_step() });
+    for together in [false, true] {
+        let mut core = with_twice();
+        let snapshot = core.snapshot(twice(7, 8, together));
+        let (p, child) = (toy::below("R", &["P"]), child_of("P", twice_step()));
+
+        let first_declared = if together { conflict() } else { value(7) };
+        assert_eq!(
+            i64s(&mut core, &snapshot, &[&p, &child]),
+            [conflict(), first_declared],
+            "together: {together}"
+        );
+        if together {
+            let runs = core.counters().body_runs(Twice::ID);
+            let q = toy::below("R", &["Q"]);
+            assert_eq!(i64s(&mut core, &snapshot, &[&q]), [conflict()]);
+            assert_eq!(core.counters().body_runs(Twice::ID), runs, "stored");
+        }
+    }
+}
