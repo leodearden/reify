@@ -20,9 +20,11 @@ pub mod interp;
 pub mod kleene;
 mod non_differentiable;
 mod option_recovery;
+mod reader;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
+mod scope_chain;
 mod upstream_values_hash;
 
 // Task #6672 (solver-unification ε): the forward-mode AD surface.  The AD
