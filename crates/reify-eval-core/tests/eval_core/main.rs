@@ -7,6 +7,7 @@
 mod belonging;
 mod bindings;
 mod bodies;
+mod budgets;
 mod building;
 mod contents;
 mod cycles;
