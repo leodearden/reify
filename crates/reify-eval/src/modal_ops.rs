@@ -4916,6 +4916,49 @@ mod tests {
         );
     }
 
+    fn run_free_vibration_with_dim(index: usize, dim: Value) -> ComputeOutcome {
+        let mut inputs = modal_inputs(0.5, 0.05, 0.05, 7850.0, 2, None);
+        inputs[index] = dim;
+        solve_modal_analysis_trampoline(
+            &inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    /// The beam geometry reads through `length_spec`: a dimension other than
+    /// Length is rejected, a bare number is malformed, and an unresolved one
+    /// fails quietly. None of them is read as metres.
+    #[test]
+    fn free_vibration_reads_its_beam_geometry_as_lengths() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        for (index, arg) in [(1, "length"), (2, "width"), (3, "height")] {
+            let mass = Value::Scalar {
+                si_value: 0.05,
+                dimension: DimensionVector::MASS,
+            };
+            let rejected = run_free_vibration_with_dim(index, mass);
+            assert_one_coded_error(
+                &rejected,
+                reify_core::DiagnosticCode::DimensionedArgRejected,
+                &format!("modal_analysis: {arg} argument expects Length"),
+            );
+            assert_one_coded_error(
+                &run_free_vibration_with_dim(index, Value::Real(0.05)),
+                reify_core::DiagnosticCode::ComputeInputMalformed,
+                arg,
+            );
+            match run_free_vibration_with_dim(index, Value::Undef) {
+                ComputeOutcome::Failed { diagnostics, .. } => {
+                    assert!(diagnostics.is_empty(), "{arg}: {diagnostics:?}")
+                }
+                other => panic!("an Undef {arg} must fail quietly, got {other:?}"),
+            }
+        }
+    }
+
     /// An unresolved modulus fails quietly: Undef in, Undef out.
     #[test]
     fn free_vibration_fails_an_unresolved_youngs_modulus_quietly() {
