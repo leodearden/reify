@@ -850,3 +850,117 @@ fn constructor_call_is_an_instance_request() {
     let (tree, _) = compile_existing("Plate(1, 2, 5)", &scope, &module);
     assert_eq!(ctor_of(&tree).1, vec!["t", "u", "__arg2"]);
 }
+
+const AUTO_ARGUMENT_SOURCE: &str = "
+structure def Plate {
+    param t : Length = 3mm
+    param u : Real = 4
+}
+structure def Asm {
+    param k : Real = 1
+}
+fn f(x: Real) -> Real { x }
+";
+
+/// The constructor's argument for `parameter`.
+fn argument_of<'t>(
+    tree: &'t reify_ir::CompiledExpr,
+    parameter: &str,
+) -> &'t reify_ir::CompiledExpr {
+    match &tree.kind {
+        CompiledExprKind::StructureInstanceCtor { ordered_args, .. } => ordered_args
+            .iter()
+            .find(|(name, _)| name == parameter)
+            .map(|(_, argument)| argument)
+            .unwrap_or_else(|| panic!("no argument {parameter} in {ordered_args:?}")),
+        other => panic!("expected a constructor, got {other:?}"),
+    }
+}
+
+fn declared_type(module: &CompiledModule, definition: &str, member: &str) -> Type {
+    template(module, definition)
+        .value_cells
+        .iter()
+        .find(|cell| cell.id.member == member)
+        .map(|cell| cell.cell_type.clone())
+        .unwrap_or_else(|| panic!("{definition} declares no {member}"))
+}
+
+/// PRD §5.6 item 1 and §5.7 row "`auto` as a constructor argument": an `auto`
+/// written as an argument is an unknown of the instance that wrote it, passed
+/// to the child as an ordinary argument.
+#[test]
+fn auto_constructor_argument_is_an_unknown_reference() {
+    let module = compile_clean(AUTO_ARGUMENT_SOURCE);
+    let registry = template_registry(&module);
+    let scope = definition_scope(&module, &registry, "Asm");
+    let unknown_of = |parameter: &str| ReferenceRead::ArgumentUnknown {
+        parameter: parameter.to_string(),
+    };
+
+    let (unit, diagnostics) = compile_unit("Plate(t: auto)", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let argument = argument_of(&unit.expr, "t");
+    let CompiledExprKind::ValueRef(id) = &argument.kind else {
+        panic!("expected a reference, got {argument:?}");
+    };
+    assert_eq!(
+        shape(reference_of(&unit, id)),
+        (ReferenceRoot::Own, vec![], unknown_of("t"))
+    );
+    assert_eq!(argument.result_type, declared_type(&module, "Plate", "t"));
+    assert_eq!(
+        unit.instance_requests,
+        vec![InstanceRequest {
+            place: vec![],
+            definition: "Plate".into(),
+            arguments: vec![RequestArgument {
+                parameter: "t".into(),
+                unknown: Some(id.clone()),
+            }],
+        }]
+    );
+
+    // Each `auto` written is its own unknown.
+    let (unit, diagnostics) = compile_unit("Plate(t: auto).u + Plate(t: auto).u", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let unknowns: Vec<_> = unit
+        .instance_requests
+        .iter()
+        .map(|request| request.arguments[0].unknown.clone())
+        .collect();
+    assert_eq!(unknowns.len(), 2, "{:?}", unit.instance_requests);
+    assert!(unknowns.iter().all(Option::is_some), "{unknowns:?}");
+    assert_ne!(unknowns[0], unknowns[1]);
+
+    let (unit, diagnostics) = compile_unit("Plate(u: auto)", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    assert_eq!(
+        argument_of(&unit.expr, "u").result_type,
+        Type::dimensionless_scalar()
+    );
+
+    // A function is not a constructor, in either mode.
+    let (_, diagnostics) = compile_unit("f(x: auto)", &scope, &module);
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::AutoNotAtBindingSite),
+        "{diagnostics:?}"
+    );
+    let (_, diagnostics) = compile_existing("f(x: auto)", &scope, &module);
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::AutoNotAtBindingSite),
+        "{diagnostics:?}"
+    );
+
+    // The existing compile passes an undefined literal.
+    let (tree, _) = compile_existing("Plate(t: auto)", &scope, &module);
+    let argument = argument_of(&tree, "t");
+    assert!(
+        matches!(
+            &argument.kind,
+            CompiledExprKind::Literal(reify_ir::Value::Undef)
+        ),
+        "{argument:?}"
+    );
+    assert_eq!(argument.result_type, Type::dimensionless_scalar());
+}
