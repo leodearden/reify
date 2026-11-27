@@ -48,6 +48,7 @@ use reify_stdlib::resolve_body_mass;
 
 use crate::compute_targets::bc_resolve::named_leaf_target;
 use crate::compute_targets::result_topology::carried_topology_from_result;
+use crate::compute_targets::stdlib_inputs::DecodeStdlibInput;
 use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -1378,6 +1379,10 @@ impl ModalAnalysisCache {
     }
 }
 
+/// The stdlib fn [`run_modal_analysis`] implements, named in its decode
+/// diagnostics.
+const MODAL_ANALYSIS: &str = "modal_analysis";
+
 /// Result of the in-crate modal core [`run_modal_analysis`]: the engine-facing
 /// [`ComputeOutcome`] plus a white-box `reused_assembly` flag the unit tests
 /// assert cache amortization against (the public `ComputeFn` returns only the
@@ -1502,8 +1507,17 @@ pub(crate) fn run_modal_analysis(
         }
     };
 
-    // ── (2) material elastic constants (E, ν) ────────────────────────────────
-    let material = extract_isotropic_material(&value_inputs[0]);
+    // ── (2) material elastic constants (E, ν), decoded as an ElasticMaterial ─
+    // After the density guard and the damping plan, so their ordering holds.
+    let material = match IsotropicElastic::decode(&value_inputs[0]) {
+        Ok(material) => material,
+        Err(err) => {
+            return ModalTrampolineRun {
+                outcome: err.into_failed(MODAL_ANALYSIS),
+                reused_assembly: false,
+            };
+        }
+    };
 
     // ── (3) geometry scalars (SI metres) ─────────────────────────────────────
     let length = read_scalar_si(&value_inputs[1]);
@@ -3258,26 +3272,6 @@ fn read_scalar_si(val: &Value) -> f64 {
     }
 }
 
-/// Extract `IsotropicElastic { youngs_modulus, poisson_ratio }` from the
-/// material StructureInstance (`youngs_modulus : Scalar<Pressure>`,
-/// `poisson_ratio : Real`). Missing fields read as `0.0` via [`read_scalar_si`]
-/// (defensive; the type-checker guarantees presence for a real ElasticMaterial).
-fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
-    let mut youngs_modulus = 0.0;
-    let mut poisson_ratio = 0.0;
-    if let Value::StructureInstance(data) = val {
-        if let Some(v) = data.fields.get("youngs_modulus") {
-            youngs_modulus = read_scalar_si(v);
-        }
-        if let Some(v) = data.fields.get("poisson_ratio") {
-            poisson_ratio = read_scalar_si(v);
-        }
-    }
-    IsotropicElastic {
-        youngs_modulus,
-        poisson_ratio,
-    }
-}
 
 /// Read the per-material hysteretic loss factor η off a material value.
 ///
@@ -3288,11 +3282,10 @@ fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
 /// `E_ModalDampingMaterialNotDamped` rejection in [`run_modal_analysis`], not a
 /// value to substitute a default for.
 ///
-/// NON-DEFENSIVE ON PURPOSE — note the asymmetry with the neighbouring
-/// [`extract_isotropic_material`], which reads a MISSING field as `0.0`. That
-/// choice is right there: the type-checker guarantees `youngs_modulus` /
-/// `poisson_ratio` on any real `ElasticMaterial`, so its floor is unreachable
-/// scaffolding. Here the opposite is true and measured:
+/// NON-DEFENSIVE ON PURPOSE. The `ElasticMaterial` decoder treats a missing
+/// `youngs_modulus` / `poisson_ratio` as a malformed input, because the
+/// type-checker guarantees both on any real `ElasticMaterial`. Here the
+/// absence is the signal, and that is measured:
 /// `modal_analysis(material : ElasticMaterial, …)` does NOT require `Damped`, so
 /// a `structure def PlainSteel : ElasticMaterial { … }` type-checks, evaluates
 /// clean, and reaches this fn with no `loss_factor` at all. The absence is a
@@ -7469,10 +7462,9 @@ mod tests {
     ///
     /// ## Why this helper is deliberately NON-defensive
     ///
-    /// Its neighbour [`extract_isotropic_material`] reads a MISSING field as
-    /// `0.0`, and that is correct there: the type-checker guarantees
-    /// `youngs_modulus` / `poisson_ratio` are present on any real
-    /// `ElasticMaterial`, so the floor is unreachable defensive scaffolding.
+    /// The `ElasticMaterial` decoder treats a MISSING `youngs_modulus` /
+    /// `poisson_ratio` as a malformed input, because the type-checker
+    /// guarantees both are present on any real `ElasticMaterial`.
     ///
     /// Here the opposite is true and it is MEASURED, not assumed.
     /// `modal_analysis(material : ElasticMaterial, …)`
