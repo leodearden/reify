@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use reify_compiler::{
     CompilationScope, CompiledModule, CompiledSourceUnit, InstanceRequest, LOCAL_REFERENCE_ENTITY,
     LocalReference, ReferenceRead, ReferenceRoot, RequestArgument, SourceStep, SourceUnitNames,
-    SourceUnitSpec, TopologyTemplate,
+    SourceUnitSpec, StructuralQuery, TopologyTemplate,
 };
 use reify_core::{Diagnostic, DiagnosticCode, Severity, Type, ValueCellId};
 use reify_ir::CompiledExprKind;
@@ -1046,4 +1046,96 @@ fn present_resolves_to_a_presence_read() {
             .any(|d| d.code == Some(DiagnosticCode::UnresolvedFunction)),
         "{diagnostics:?}"
     );
+}
+
+const STRUCTURAL_QUERY_SOURCE: &str = "
+structure def Plate {
+    param t : Real = 3
+}
+structure def Asm {
+    sub p : Plate
+    sub r : Plate
+}
+structure def Odd {
+    param members : Real = 2
+}
+";
+
+/// PRD §5.4 last paragraph and §5.7 row "`self.children`, `self.members`,
+/// `self.descendants`, and a bare collection, are the values of present
+/// members": a structural query is a read of the instance a path reaches.
+#[test]
+fn structural_queries_are_typed_as_values() {
+    let module = compile_clean(STRUCTURAL_QUERY_SOURCE);
+    let registry = template_registry(&module);
+    let scope = definition_scope(&module, &registry, "Asm");
+    let instances = Type::List(Box::new(Type::StructureRef("Structure".into())));
+
+    for (text, path, query) in [
+        ("self.children", &[][..], StructuralQuery::Children),
+        ("self.members", &[], StructuralQuery::Members),
+        ("self.descendants", &[], StructuralQuery::Descendants),
+        ("self.p.children", &["p"], StructuralQuery::Children),
+    ] {
+        let (unit, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(diagnostics.is_empty(), "{text}: {diagnostics:?}");
+        let (reference, ty) = sole_reference(&unit);
+        assert_eq!(
+            shape(reference),
+            (ReferenceRoot::Own, members(path), ReferenceRead::Query(query)),
+            "{text}"
+        );
+        assert_eq!(ty, &instances, "{text}");
+    }
+
+    // A further hop types by the query's list.
+    let (unit, diagnostics) = compile_unit("self.children.count", &scope, &module);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(unit.expr.result_type, Type::Int);
+    let CompiledExprKind::MethodCall {
+        object: receiver,
+        method,
+        ..
+    } = &unit.expr.kind
+    else {
+        panic!("expected a count, got {:?}", unit.expr);
+    };
+    assert_eq!(method, "count");
+    let CompiledExprKind::ValueRef(id) = &receiver.kind else {
+        panic!("expected a reference, got {receiver:?}");
+    };
+    assert_eq!(
+        shape(reference_of(&unit, id)),
+        (
+            ReferenceRoot::Own,
+            vec![],
+            ReferenceRead::Query(StructuralQuery::Children)
+        )
+    );
+    assert_eq!(unit.references.len(), 1, "{:?}", unit.references);
+
+    // A member a definition declares shadows the query of that name.
+    let odd = definition_scope(&module, &registry, "Odd");
+    let (unit, diagnostics) = compile_unit("self.members", &odd, &module);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let (reference, ty) = sole_reference(&unit);
+    assert_eq!(shape(reference), own_value(members(&["members"])));
+    assert_eq!(ty, &Type::dimensionless_scalar());
+
+    // The existing compile: a method call on the definition's own reference.
+    let (tree, _) = compile_existing("self.children", &scope, &module);
+    let CompiledExprKind::MethodCall {
+        object: receiver,
+        method,
+        ..
+    } = &tree.kind
+    else {
+        panic!("expected a method call, got {tree:?}");
+    };
+    assert_eq!(method, "children");
+    assert!(
+        matches!(&receiver.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm", "__self")),
+        "{receiver:?}"
+    );
+    assert_eq!(tree.result_type, instances);
 }
