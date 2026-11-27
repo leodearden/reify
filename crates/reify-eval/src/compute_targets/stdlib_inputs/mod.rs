@@ -72,11 +72,12 @@ pub(crate) enum DecodeFailure {
     Missing,
     /// A value that has not resolved yet (`Undef`): not a mistake.
     Unresolved,
-    /// A defined value of the wrong shape: not a number, the wrong arity, a
-    /// non-finite datum, a frame that does not decode.
+    /// A defined value of the wrong shape: a scalar positional input that is
+    /// not a number, the wrong arity, a non-finite datum, a frame that does
+    /// not decode.
     WrongShape { expected: &'static str, got: String },
-    /// A number the position's `ArgSpec` refuses; the rejection names its
-    /// own path.
+    /// Any present value the position's `ArgSpec` refuses, a wrong dimension
+    /// or not a number at all; the rejection names its own path.
     Rejected(FieldRejection),
     /// A structure whose kind the trampoline does not support.
     UnsupportedKind { kind: String },
@@ -220,11 +221,7 @@ fn decoded_field(
             Some(key),
             DecodeFailure::Unresolved,
         )),
-        FieldAcceptance::Rejected(rejection) => Err(InputDecodeError::new(
-            input,
-            Some(key),
-            DecodeFailure::Rejected(FieldRejection::new(input, key, rejection)),
-        )),
+        FieldAcceptance::Rejected(rejection) => Err(rejected_at(input, Some(key), rejection)),
     }
 }
 
@@ -254,19 +251,42 @@ pub(crate) fn positional<'a>(
         .ok_or_else(|| InputDecodeError::new(input, None, DecodeFailure::Missing))
 }
 
-/// A positional input `input`, read through `spec`: `Undef` is `Unresolved`.
+/// A scalar positional input `input`, read through `spec`: `Undef` is
+/// `Unresolved`, a refused `Scalar` is `Rejected`, and any other refused
+/// value is a `WrongShape` naming the spec's type.
+///
+/// This is the one exception to the refusal rule every other reader
+/// follows: #6922's landed positional contract, pinned by the elastic,
+/// buckling and modal geometry tests.
 pub(crate) fn read_positional(
     value: &Value,
     input: &'static str,
     spec: &ArgSpec,
 ) -> Result<f64, InputDecodeError> {
-    read_number(value, input, None, spec)
+    match accept_arg(value, spec) {
+        Acceptance::Accepted(si) => Ok(si),
+        Acceptance::Undefined => Err(InputDecodeError::new(
+            input,
+            None,
+            DecodeFailure::Unresolved,
+        )),
+        Acceptance::Rejected(rejection) if matches!(value, Value::Scalar { .. }) => {
+            Err(rejected_at(input, None, rejection))
+        }
+        Acceptance::Rejected(rejection) => Err(InputDecodeError::wrong_shape(
+            input,
+            None,
+            spec.type_name,
+            rejection.got,
+        )),
+    }
 }
 
 /// A `Vector3` at `input[.field]`: exactly three components of a
 /// `Value::Vector` or `Value::List`, each read through `spec`. `Undef`, for
-/// the vector or a component, is `Unresolved`; any other shape is a
-/// `WrongShape`.
+/// the vector or a component, is `Unresolved`, and a refused component is
+/// `Rejected`; only a wrong container (not a Vector or List, the wrong
+/// arity) is a `WrongShape`.
 pub(crate) fn read_vec3(
     value: &Value,
     input: &'static str,
@@ -302,8 +322,8 @@ pub(crate) fn read_vec3(
 }
 
 /// A `List` at `input[.field]`, each entry read through `spec`. `Undef`, for
-/// the list or an entry, is `Unresolved`; any other non-list is a
-/// `WrongShape`.
+/// the list or an entry, is `Unresolved`, and a refused entry is `Rejected`;
+/// only a non-list is a `WrongShape`.
 pub(crate) fn read_list(
     value: &Value,
     input: &'static str,
@@ -348,19 +368,19 @@ fn read_number(
     }
 }
 
-/// The outcome of reading ONE numeric value — a component or a positional
-/// input — against an `ArgSpec`. `Undefined` stays distinct from `Rejected`
-/// because the caller decides what an unresolved value means at its position
-/// (PRD `dimension-checked-readers.md` decision 2).
+/// The outcome of reading ONE numeric value — a component, a list entry or a
+/// field's value — against an `ArgSpec`: any refused value is `Rejected` at
+/// its path. `Undefined` stays distinct from `Rejected` because the caller
+/// decides what an unresolved value means at its position (PRD
+/// `dimension-checked-readers.md` decision 2).
 pub(crate) enum ComponentRead {
     Accepted(f64),
     Undefined,
     Rejected(InputDecodeError),
 }
 
-/// Classify `value`, read at `input[.field]`, against `spec`: a refused
-/// `Scalar` is `Rejected` at that path, and any other refused value is a
-/// `WrongShape` naming the spec's type.
+/// Classify `value`, read at `input[.field]`, against `spec`: any refused
+/// value is `Rejected` at that path.
 pub(crate) fn read_component(
     value: &Value,
     input: &'static str,
@@ -370,35 +390,27 @@ pub(crate) fn read_component(
     match accept_arg(value, spec) {
         Acceptance::Accepted(si) => ComponentRead::Accepted(si),
         Acceptance::Undefined => ComponentRead::Undefined,
-        Acceptance::Rejected(rejection) if matches!(value, Value::Scalar { .. }) => {
-            ComponentRead::Rejected(InputDecodeError::new(
-                input,
-                field,
-                DecodeFailure::Rejected(rejection_at(input, field, rejection)),
-            ))
+        Acceptance::Rejected(rejection) => {
+            ComponentRead::Rejected(rejected_at(input, field, rejection))
         }
-        Acceptance::Rejected(rejection) => ComponentRead::Rejected(InputDecodeError::wrong_shape(
-            input,
-            field,
-            spec.type_name,
-            rejection.got,
-        )),
     }
 }
 
-/// The rejection of the value at `input[.field]`.
-fn rejection_at(
+/// The refusal, by its position's spec, of the value at `input[.field]`:
+/// the one place a spec refusal becomes a decode error.
+fn rejected_at(
     input: &'static str,
     field: Option<&'static str>,
     rejection: ArgRejection,
-) -> FieldRejection {
-    match field {
+) -> InputDecodeError {
+    let rejection = match field {
         Some(field) => FieldRejection::new(input, field, rejection),
         None => FieldRejection {
             path: input.to_string(),
             rejection,
         },
-    }
+    };
+    InputDecodeError::new(input, field, DecodeFailure::Rejected(rejection))
 }
 
 #[cfg(test)]

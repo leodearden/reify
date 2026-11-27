@@ -4869,7 +4869,10 @@ pub enum DiagnosticCode {
     ///
     /// Fires when a trampoline's stdlib input is not a structure
     /// (`NotAStructure`), lacks a declared non-`Option` field (`Missing`), or
-    /// carries a field of the wrong shape (`WrongShape`). β #8679 / γ #8683
+    /// carries a value of the wrong shape for its position (`WrongShape`: not
+    /// a list or vector, the wrong arity, a non-finite datum, a frame that
+    /// does not decode, a Rust-minted payload element of the wrong variant)
+    /// or a scalar positional input that is not a number. β #8679 / γ #8683
     /// add `UnknownVariant` together with its first producer.
     ///
     /// The `Missing` arm is unreachable from ctor-built values, because ctor
@@ -4880,9 +4883,11 @@ pub enum DiagnosticCode {
     ///
     /// Canonical message form: `"{target}: {input}[.{field}]: {reason}"`.
     ///
-    /// Distinct from `DimensionedArgRejected` (a wrong dimension, the decode
-    /// error's `Rejected` arm; esc-5791-3, one code per reason) and from
-    /// `FeaLoadKindUnsupported` (its `UnsupportedKind` arm).
+    /// Distinct from `DimensionedArgRejected` (the decode error's `Rejected`
+    /// arm: every value a field's, component's or list entry's `ArgSpec`
+    /// refuses, a wrong dimension or not a number at all; esc-5791-3, one
+    /// code per reason) and from `FeaLoadKindUnsupported` (its
+    /// `UnsupportedKind` arm).
     ComputeInputMalformed,
     /// Origin: `crates/reify-compiler/src/connect.rs::resolve_chain_endpoint`
     /// (spec §6.2 `chain` default-port inference).

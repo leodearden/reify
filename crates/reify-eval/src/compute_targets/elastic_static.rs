@@ -4405,7 +4405,8 @@ fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, I
 /// Per-component reader for a DIMENSIONED triple — `aabb_min`/`aabb_max`'s
 /// `Point3<Length>`. A bare `Value::Real`/`Value::Int` component there is a
 /// genuinely missing dimension, so it must fail (task #5080's contract, pinned
-/// by `extract_point3_si_rejects_non_scalar_component`).
+/// by `extract_point3_si_rejects_non_scalar_component`): a bare or
+/// non-numeric component is `Rejected` at its path, not a `WrongShape`.
 ///
 /// Task #7019: a thin adapter over `reify_ir::arg_acceptance::length_spec`,
 /// the single definition of this acceptance set (`Scalar{LENGTH}` only —
@@ -4438,8 +4439,9 @@ fn dimensioned_component(v: &Value, input: &'static str, field: &'static str) ->
 /// invariant I3) — this reader CONSUMES that spec rather than mirroring a
 /// sibling copy of it. A `Value::Scalar` carrying any OTHER dimension (e.g. a
 /// LENGTH-spelled axis) is now REJECTED instead of having its SI magnitude
-/// reinterpreted as the bare component; a genuinely non-numeric component
-/// still fails. `tensegrity_crack::crack_dimensionless_scalar` is the sibling
+/// reinterpreted as the bare component; a genuinely non-numeric component is
+/// `Rejected` at its path too, not a `WrongShape`.
+/// `tensegrity_crack::crack_dimensionless_scalar` is the sibling
 /// reader at the same Leg B position, consuming the same spec.
 ///
 /// Returns the three-way [`ComponentRead`], not a `Result`: this reader has
@@ -4452,10 +4454,11 @@ fn dimensionless_component(v: &Value, input: &'static str, field: &'static str) 
 /// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
 ///
 /// Used to parse `aabb_min` and `aabb_max` from the AsPrintedZones lambda.
-/// Those corners are `Point3<Length>`: a bare `Value::Real`/`Value::Int`
-/// component is a genuinely missing dimension and is rejected (task #5080),
-/// and (task #7019) a `Value::Scalar` carrying any dimension OTHER than
-/// LENGTH is now rejected too, instead of having its SI magnitude
+/// Those corners are `Point3<Length>`: a bare `Value::Real`/`Value::Int` or
+/// non-numeric component is a genuinely missing dimension and is `Rejected`,
+/// not a `WrongShape` (task #5080), and (task #7019) a `Value::Scalar`
+/// carrying any dimension OTHER than LENGTH is now rejected too, instead of
+/// having its SI magnitude
 /// reinterpreted as metres — see [`dimensioned_component`], a thin adapter
 /// over the canonical `reify_ir::arg_acceptance::length_spec` (PRD
 /// `dimension-checked-readers.md` invariant I3, "strict equality").
