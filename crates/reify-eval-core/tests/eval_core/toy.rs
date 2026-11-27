@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
-    Answer, Binding, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event, Failure,
-    Hash128, Held, Input, InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref,
-    Release, Request, RequestId, Root, Section, Snapshot, Step, Turn, Value,
+    Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event,
+    Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Outcome, OutsideFailure, Path,
+    Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot, Step, Turn, Value,
 };
 
 /// The content a test gives the core for one of its values: a hash of
@@ -32,6 +32,12 @@ impl Contented for i64 {
 impl Contented for bool {
     fn content(&self) -> Hash128 {
         Hash128::of_bytes(&[u8::from(*self)])
+    }
+}
+
+impl Contented for u64 {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(&self.to_le_bytes())
     }
 }
 
@@ -264,6 +270,10 @@ impl Kind for Scope {
     fn declares(out: &Members, step: &Step) -> Option<Declaration> {
         out.0.get(step).cloned()
     }
+
+    fn steps(out: &Members) -> impl Iterator<Item = Step> {
+        out.0.keys().cloned()
+    }
 }
 
 /// A scope whose members are the host-named input `members`, and nothing
@@ -296,6 +306,10 @@ impl Kind for Guard {
 
     fn declares(out: &Members, step: &Step) -> Option<Declaration> {
         out.0.get(step).cloned()
+    }
+
+    fn steps(out: &Members) -> impl Iterator<Item = Step> {
+        out.0.keys().cloned()
     }
 }
 
@@ -347,6 +361,10 @@ impl Kind for Collection {
             Step::Index(index) if *index < out.count => Some(out.element.clone()),
             _ => None,
         }
+    }
+
+    fn steps(out: &Elements) -> impl Iterator<Item = Step> {
+        (0..out.count).map(Step::index)
     }
 }
 
@@ -733,6 +751,11 @@ pub fn named<T: Value + Contented>(name: &str, value: T) -> (InputKey, Input) {
     (InputKey::named(name), input_of(value))
 }
 
+/// The snapshot's setting of `limit` (contract 7.6).
+pub fn limit(limit: Limit, value: u64) -> (InputKey, Input) {
+    (InputKey::Limit(limit), input_of(value))
+}
+
 /// The path of root `name`.
 pub fn at(name: &str) -> Path {
     Path::root(Root::named(name))
@@ -762,7 +785,18 @@ pub fn evaluate_to_idle(
     snapshot: &Snapshot,
     paths: &[&Path],
 ) -> (Request, Vec<Event>) {
-    let request = core.evaluate(snapshot, demand(paths.iter().copied()));
+    evaluate_within(core, snapshot, paths, Budget::unlimited())
+}
+
+/// A fresh request for `paths` on `snapshot` under `budget`, run to idle,
+/// and the events of that turn.
+pub fn evaluate_within(
+    core: &mut Core,
+    snapshot: &Snapshot,
+    paths: &[&Path],
+    budget: Budget,
+) -> (Request, Vec<Event>) {
+    let request = core.evaluate(snapshot, demand(paths.iter().copied()), budget);
     assert_eq!(core.turn(), Turn::Idle);
     (request, core.take_events())
 }

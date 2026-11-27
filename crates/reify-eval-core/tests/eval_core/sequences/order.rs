@@ -21,8 +21,8 @@ pub fn order_check<O: PartialEq + Debug + Clone>(
 
 mod tests {
     use reify_eval_core::{
-        Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Input, InputKey, Kind,
-        KindId, Outcome, Path, Produced, Ref, Root,
+        Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, Erased, Input, InputKey,
+        Kind, KindId, Outcome, Path, Produced, Ref, Root,
     };
 
     use super::super::fresh::{Answered, FreshMismatch};
@@ -87,7 +87,7 @@ mod tests {
         let snapshot = core.snapshot(inputs.clone());
         let mut answered = Vec::new();
         for name in ["a", "b"] {
-            let request = core.evaluate(&snapshot, Demand::of([at(name)]));
+            let request = core.evaluate(&snapshot, Demand::of([at(name)]), Budget::unlimited());
             core.run();
             let events = core.take_events();
             answered.push(Answered {
@@ -179,7 +179,7 @@ mod tests {
         let mut answered = Vec::new();
         for name in ["f", "e"] {
             let at = toy::below("R", &[name]);
-            let request = core.evaluate(&snapshot, Demand::of([at.clone()]));
+            let request = core.evaluate(&snapshot, Demand::of([at.clone()]), Budget::unlimited());
             core.run();
             let events = core.take_events();
             answered.push(Answered {

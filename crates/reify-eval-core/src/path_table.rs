@@ -18,6 +18,8 @@ enum Place {
 #[derive(Default)]
 pub(crate) struct PathTable {
     places: Vec<Place>,
+    /// How many steps below its root each path is, by its id.
+    depths: Vec<usize>,
     roots: BTreeMap<Root, PathId>,
     children: BTreeMap<(PathId, Step), PathId>,
 }
@@ -68,6 +70,11 @@ impl PathTable {
         }
     }
 
+    /// How many steps below its root `id` is: 0 for a root.
+    pub fn depth(&self, id: PathId) -> usize {
+        self.depths[id.0]
+    }
+
     pub fn path(&self, id: PathId) -> Path {
         let mut steps = Vec::new();
         let mut at = id;
@@ -86,7 +93,12 @@ impl PathTable {
     }
 
     fn push(&mut self, place: Place) -> PathId {
+        let depth = match &place {
+            Place::Root(_) => 0,
+            Place::Below { parent, .. } => self.depth(*parent) + 1,
+        };
         self.places.push(place);
+        self.depths.push(depth);
         PathId(self.places.len() - 1)
     }
 }

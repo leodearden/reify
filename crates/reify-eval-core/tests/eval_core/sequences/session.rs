@@ -1,20 +1,23 @@
 //! Runs a case on a core, as a host would, and checks what the core tells
 //! it: every final answer equals the reference interpreter's for its
 //! snapshot and path (check 1 of PRD 5.5), every request the core leaves
-//! idle holds one answer per demanded path, and a fresh core asked for the
-//! same paths in another order answers the same (the order check). What
-//! the run reached is counted, so a test can show it is not vacuous.
+//! idle holds one answer per demanded path unless the core ended it by its
+//! paths budget, which it may do only when the demand needs more paths
+//! resolved than the budget allows, and must do then for the first request
+//! on a snapshot, and a fresh core asked for the same paths in another
+//! order answers the same (the order check). What the run reached is
+//! counted, so a test can show it is not vacuous.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use reify_eval_core::{
-    Answer, Core, Demand, Erased, Event, Failure, Kind, Path, Request, RequestError, RequestId,
-    Snapshot, Step, Store,
+    Answer, Budget, Core, Demand, Erased, Event, Failure, Kind, Path, Ref, Request, RequestError,
+    RequestId, Snapshot, SnapshotId, Step, Store,
 };
 
 use super::case::{Case, HostEvent, Then};
-use super::design::{Inputs, ModelPath, ModelRef, ToyKind, Val, to_core};
+use super::design::{Inputs, Key, ModelPath, ModelRef, ToyKind, Val, to_core};
 use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
 use super::reference::{Expect, Expected, Invalid, Out, Reference};
 use super::seen::Seen;
@@ -66,6 +69,13 @@ shapes! {
     /// "cycle" at a path with no declaration of its own: one whose
     /// declaration waited on a ring.
     CycleThroughStructure,
+    /// A node deeper than the depth setting, or a path below one.
+    TooDeep,
+    /// A node declaring more children than the children-per-node setting,
+    /// or a path below one.
+    TooManyChildren,
+    /// A cell blocked by a ref whose answer is a limit failure.
+    BlockedByLimit,
     /// A box a shape made on the toy kernel.
     BoxValue,
     /// The volume a measure read from the toy kernel.
@@ -77,6 +87,12 @@ shapes! {
     DriveZeroEnded,
     /// An Edit from a snapshot other than the latest.
     EditFromNonLatest,
+    /// An Edit that sets or removes a limit setting.
+    LimitEdited,
+    /// A request given a budget, which the core ended when it ran out.
+    EndedByBudget,
+    /// A request given a budget, answered at every path it demanded.
+    AnsweredWithinBudget,
     /// An answer the order check compared.
     OrderComparison,
 }
@@ -168,11 +184,28 @@ pub enum Mismatch {
         snapshot: usize,
         path: ModelPath,
     },
-    /// The core ended a request.
+    /// The core ended a request otherwise than by the budget it was given.
     Ended {
         event: usize,
         snapshot: usize,
         error: RequestError,
+    },
+    /// An answer told to a request after the core ended it.
+    AnsweredAfterEnd {
+        event: usize,
+        snapshot: usize,
+        path: Path,
+    },
+    /// An Evaluate given a budget of `budget` paths, whose demand needs
+    /// `needed` resolved, was `ended` by the core, or answered, when the
+    /// budget does not allow it: ended within its budget, or, as the first
+    /// request on its snapshot, answered past it.
+    Budget {
+        event: usize,
+        snapshot: usize,
+        budget: u64,
+        needed: u64,
+        ended: bool,
     },
     /// A fresh core built on the session core's selection (check 2),
     /// asked in the session's order, answered otherwise.
@@ -223,6 +256,8 @@ pub enum MismatchKind {
     Unasked,
     Twice,
     Ended,
+    AnsweredAfterEnd,
+    Budget,
     Fresh,
     FreshUnanswered,
     Order,
@@ -238,6 +273,8 @@ impl Mismatch {
             Mismatch::Unasked { .. } => MismatchKind::Unasked,
             Mismatch::Twice { .. } => MismatchKind::Twice,
             Mismatch::Ended { .. } => MismatchKind::Ended,
+            Mismatch::AnsweredAfterEnd { .. } => MismatchKind::AnsweredAfterEnd,
+            Mismatch::Budget { .. } => MismatchKind::Budget,
             Mismatch::Fresh { .. } => MismatchKind::Fresh,
             Mismatch::FreshUnanswered { .. } => MismatchKind::FreshUnanswered,
             Mismatch::Order { .. } => MismatchKind::Order,
@@ -296,6 +333,29 @@ impl fmt::Display for Mismatch {
                 f,
                 "after event {event}, the core ended a request on snapshot {snapshot}: {error:?}"
             ),
+            Mismatch::AnsweredAfterEnd {
+                event,
+                snapshot,
+                path,
+            } => write!(
+                f,
+                "after event {event}, an answer at {path:?} on snapshot {snapshot} to a request \
+                 the core had ended"
+            ),
+            Mismatch::Budget {
+                event,
+                snapshot,
+                budget,
+                needed,
+                ended,
+            } => {
+                let outcome = if *ended { "ended" } else { "answered" };
+                write!(
+                    f,
+                    "after event {event}, a request on snapshot {snapshot} given a budget of \
+                     {budget} paths, whose demand needs {needed} resolved, was {outcome}"
+                )
+            }
             Mismatch::Fresh {
                 snapshot,
                 path,
@@ -346,6 +406,40 @@ impl fmt::Display for Mismatch {
     }
 }
 
+/// What the cell at `cell` reads at `at`, the ref it is blocked by: one of
+/// its bindings, or the element "from"/[i] its "pick" reads i for.
+fn blocking_read(reference: &mut Reference, cell: &ModelPath, at: &Ref) -> Option<Expect> {
+    let decl = reference.declaration_at(cell).ok()??;
+    let mut reads: Vec<ModelRef> = decl.bindings.into_keys().map(read_of).collect();
+    let pick = reference.read_at(cell, &read_of(String::from("pick")));
+    if let Ok(Expect::Value(Out::Int(pick))) = pick
+        && let Ok(pick) = u64::try_from(pick)
+    {
+        reads.push(ModelRef {
+            binding: String::from("from"),
+            steps: vec![Step::index(pick)],
+        });
+    }
+    let read = reads.into_iter().find(|read| read.to_core() == *at)?;
+    reference.read_at(cell, &read).ok()
+}
+
+/// The ref to the binding `binding` itself.
+fn read_of(binding: String) -> ModelRef {
+    ModelRef {
+        binding,
+        steps: Vec::new(),
+    }
+}
+
+/// Whether `read` is the failure of a limit setting.
+fn is_limit_failure(read: &Expect) -> bool {
+    matches!(
+        read,
+        Expect::Failure(Failure::TooDeep { .. } | Failure::TooManyChildren { .. })
+    )
+}
+
 /// A core with every honest toy kind and the toy kernel, built on
 /// `store`.
 pub fn toy_core(store: Store) -> Core {
@@ -386,6 +480,12 @@ struct Opened {
     event: usize,
     /// Whether a Drive left it live, unfinished.
     left_live: bool,
+    /// The paths budget it was given; none for no bound.
+    budget: Option<u64>,
+    /// Whether it was the first request opened on its core snapshot.
+    first_on_snapshot: bool,
+    /// Whether the core ended it when its budget ran out.
+    ended_by_budget: bool,
     demanded: BTreeMap<Path, ModelPath>,
     told: BTreeSet<Path>,
 }
@@ -396,6 +496,9 @@ struct Session {
     snapshots: Vec<Snapshot>,
     references: Vec<Option<Reference>>,
     requests: BTreeMap<RequestId, Opened>,
+    /// Every core snapshot a request has been opened on. Model snapshots
+    /// with equal inputs are one core snapshot, with one index.
+    opened_on: BTreeSet<SnapshotId>,
     /// The first final answer at each path of each snapshot, in order.
     first: Vec<Answered<Seen>>,
     answered: BTreeSet<(usize, Path)>,
@@ -412,6 +515,7 @@ impl Session {
             snapshots: vec![initial],
             core,
             requests: BTreeMap::new(),
+            opened_on: BTreeSet::new(),
             first: Vec::new(),
             answered: BTreeSet::new(),
             reach: Reach::default(),
@@ -424,6 +528,9 @@ impl Session {
                 if *from + 1 != self.snapshots.len() {
                     self.reach.reached(Shape::EditFromNonLatest);
                 }
+                if changes.iter().any(|(key, _)| matches!(key, Key::Limit(_))) {
+                    self.reach.reached(Shape::LimitEdited);
+                }
                 let changed = changes
                     .iter()
                     .map(|(key, value)| (key.to_core(), value.as_ref().map(Val::to_core)));
@@ -431,12 +538,18 @@ impl Session {
                 self.snapshots.push(next);
                 self.take_events(at)
             }
-            HostEvent::Evaluate { on, paths, then } => {
-                let request = self.open(at, *on, paths, false);
+            HostEvent::Evaluate {
+                on,
+                paths,
+                budget,
+                then,
+            } => {
+                let request = self.open(at, *on, paths, false, *budget);
                 self.core.run();
                 self.close(request, *then);
                 self.take_events(at)?;
-                self.complete(at, Some(request))
+                self.complete(at, Some(request))?;
+                self.within_budget(at, request)
             }
             HostEvent::Drive {
                 on,
@@ -444,7 +557,7 @@ impl Session {
                 turns,
                 then,
             } => {
-                let request = self.open(at, *on, paths, *then == Then::Leave);
+                let request = self.open(at, *on, paths, *then == Then::Leave, None);
                 for _ in 0..*turns {
                     self.core.turn();
                 }
@@ -561,21 +674,34 @@ impl Session {
             .unwrap_or_else(|| panic!("event {at} names snapshot {index}, which is not made yet"))
     }
 
-    fn open(&mut self, at: usize, on: usize, paths: &[ModelPath], left_live: bool) -> RequestId {
+    fn open(
+        &mut self,
+        at: usize,
+        on: usize,
+        paths: &[ModelPath],
+        left_live: bool,
+        budget: Option<u64>,
+    ) -> RequestId {
         let demanded: BTreeMap<_, _> = paths
             .iter()
             .map(|path| (path.to_core(), path.clone()))
             .collect();
         let snapshot = self.snapshot(at, on).clone();
-        let handle = self
-            .core
-            .evaluate(&snapshot, Demand::of(demanded.keys().cloned()));
+        let first_on_snapshot = self.opened_on.insert(snapshot.id());
+        let handle = self.core.evaluate(
+            &snapshot,
+            Demand::of(demanded.keys().cloned()),
+            budget.map_or_else(Budget::unlimited, Budget::paths),
+        );
         let id = handle.id();
         let opened = Opened {
             handle: Some(handle),
             snapshot: on,
             event: at,
             left_live,
+            budget,
+            first_on_snapshot,
+            ended_by_budget: false,
             demanded,
             told: BTreeSet::new(),
         };
@@ -601,17 +727,82 @@ impl Session {
                     answer,
                     ..
                 } => self.answered(at, request, path, answer)?,
-                Event::Ended { request, error, .. } => {
-                    let snapshot = self.opened(request).snapshot;
-                    return Err(Mismatch::Ended {
-                        event: at,
-                        snapshot,
-                        error,
-                    });
-                }
+                Event::Ended { request, error, .. } => self.ended(at, request, error)?,
                 Event::Progress { .. } => {}
             }
         }
+        Ok(())
+    }
+
+    /// Accepts the core's end of `request` after event `at` only as the end
+    /// of the budget it was given, told once; the request is then owed no
+    /// answer, and ending it again does nothing.
+    fn ended(
+        &mut self,
+        at: usize,
+        request: RequestId,
+        error: RequestError,
+    ) -> Result<(), Mismatch> {
+        let opened = self.opened(request);
+        match &error {
+            RequestError::PathsBudgetExhausted { budget }
+                if opened.budget == Some(*budget) && !opened.ended_by_budget =>
+            {
+                opened.ended_by_budget = true;
+                if let Some(handle) = opened.handle.take() {
+                    self.core.end(handle);
+                }
+                Ok(())
+            }
+            _ => Err(Mismatch::Ended {
+                event: at,
+                snapshot: opened.snapshot,
+                error,
+            }),
+        }
+    }
+
+    /// Checks what the budget of `request`, an Evaluate run until the core
+    /// is idle, did: the core ends a request only when its demand needs
+    /// more paths resolved than its budget allows, and, for the first
+    /// request on its snapshot, whose resolutions no other request shares,
+    /// always then. What the demand needs is what a fresh reference
+    /// resolves answering it.
+    fn within_budget(&mut self, at: usize, request: RequestId) -> Result<(), Mismatch> {
+        let opened = &self.requests[&request];
+        let Some(budget) = opened.budget else {
+            return Ok(());
+        };
+        let (snapshot, ended) = (opened.snapshot, opened.ended_by_budget);
+        let mut fresh = Reference::new(self.models[snapshot].clone());
+        for path in opened.demanded.values() {
+            fresh.answer(path).map_err(|invalid| Mismatch::Invalid {
+                event: at,
+                snapshot,
+                invalid,
+            })?;
+        }
+        let needed = u64::try_from(fresh.paths_resolved()).expect("a count fits u64");
+        let past = budget < needed;
+        let allowed = if opened.first_on_snapshot {
+            ended == past
+        } else {
+            !ended || past
+        };
+        if !allowed {
+            return Err(Mismatch::Budget {
+                event: at,
+                snapshot,
+                budget,
+                needed,
+                ended,
+            });
+        }
+        let shape = match ended {
+            true => Shape::EndedByBudget,
+            false => Shape::AnsweredWithinBudget,
+        };
+        self.reach.reached(shape);
         Ok(())
     }
 
@@ -631,6 +822,13 @@ impl Session {
     ) -> Result<(), Mismatch> {
         let opened = self.opened(request);
         let snapshot = opened.snapshot;
+        if opened.ended_by_budget {
+            return Err(Mismatch::AnsweredAfterEnd {
+                event: at,
+                snapshot,
+                path,
+            });
+        }
         let late_for_left_live = opened.left_live && opened.event < at;
         let Some(model_path) = opened.demanded.get(&path).cloned() else {
             return Err(Mismatch::Unasked {
@@ -716,8 +914,15 @@ impl Session {
             {
                 reached.push(Shape::DivisionByZero)
             }
-            (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { .. })) => {
-                reached.push(Shape::BlockedBy)
+            (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { at })) => {
+                reached.push(Shape::BlockedBy);
+                if blocking_read(reference, path, at).is_some_and(|read| is_limit_failure(&read)) {
+                    reached.push(Shape::BlockedByLimit);
+                }
+            }
+            (_, Expect::Failure(Failure::TooDeep { .. })) => reached.push(Shape::TooDeep),
+            (_, Expect::Failure(Failure::TooManyChildren { .. })) => {
+                reached.push(Shape::TooManyChildren)
             }
             (Some(_), Expect::Failure(Failure::Cycle)) => reached.push(Shape::Cycle),
             (None, Expect::Failure(Failure::Cycle)) => reached.push(Shape::CycleThroughStructure),
@@ -753,13 +958,13 @@ impl Session {
         self.references[snapshot].get_or_insert_with(|| Reference::new(model.clone()))
     }
 
-    /// Every live request, and `this` request, holds an answer at each
-    /// path it demanded: the core is idle, so none is still coming.
+    /// Every live request, and `this` request unless the core ended it by
+    /// its budget, holds an answer at each path it demanded: the core is
+    /// idle, so none is still coming.
     fn complete(&self, at: usize, this: Option<RequestId>) -> Result<(), Mismatch> {
-        let owed = self
-            .requests
-            .iter()
-            .filter(|(id, opened)| opened.handle.is_some() || Some(**id) == this);
+        let owed = self.requests.iter().filter(|(id, opened)| {
+            !opened.ended_by_budget && (opened.handle.is_some() || Some(**id) == this)
+        });
         for (_, opened) in owed {
             let missing = opened
                 .demanded
@@ -825,17 +1030,20 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 0,
                     paths: vec![r(&["a"]), r(&["b"])],
+                    budget: None,
                     then: Then::End,
                 },
                 edit_x(0, 5),
                 HostEvent::Evaluate {
                     on: 1,
                     paths: vec![r(&["b"])],
+                    budget: None,
                     then: Then::End,
                 },
                 HostEvent::Evaluate {
                     on: 0,
                     paths: vec![r(&["b"]), r(&[])],
+                    budget: None,
                     then: Then::Leave,
                 },
             ],
@@ -861,6 +1069,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 1,
                     paths: vec![r(&["b"])],
+                    budget: None,
                     then: Then::End,
                 },
             ],
@@ -898,12 +1107,154 @@ mod tests {
             events: vec![HostEvent::Evaluate {
                 on: 0,
                 paths: vec![r(&["a"]), r(&["b"]), r(&["c", "x"])],
+                budget: None,
                 then: Then::End,
             }],
         };
         let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
         assert!(reach.count(Shape::Cycle) > 0, "{reach:?}");
         assert!(reach.count(Shape::CycleThroughStructure) > 0, "{reach:?}");
+    }
+
+    #[test]
+    fn limit_failures_a_cell_blocked_by_one_and_an_edit_of_a_limit_are_counted() {
+        let case = Case {
+            inputs: inputs([
+                (root("r"), declaration(scope("r.m"))),
+                (
+                    named("r.m"),
+                    members([
+                        (step("c"), collection(input("two"), input("e"))),
+                        (step("p"), picker(input("one"), declarer([step("c")]))),
+                    ]),
+                ),
+                (named("two"), int(2)),
+                (named("one"), int(1)),
+                (named("e"), declaration(cell([]))),
+                (depth_limit(), bound(1)),
+            ]),
+            events: vec![
+                HostEvent::Evaluate {
+                    on: 0,
+                    paths: vec![r(&["p"]), path("r", [step("c"), index(0)])],
+                    budget: None,
+                    then: Then::End,
+                },
+                HostEvent::Edit {
+                    from: 0,
+                    changes: vec![(children_limit(), Some(bound(1)))],
+                },
+                HostEvent::Evaluate {
+                    on: 1,
+                    paths: vec![r(&[]), r(&["p"])],
+                    budget: None,
+                    then: Then::End,
+                },
+            ],
+        };
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        let shapes = [
+            Shape::TooDeep,
+            Shape::BlockedByLimit,
+            Shape::LimitEdited,
+            Shape::TooManyChildren,
+        ];
+        for shape in shapes {
+            assert!(reach.count(shape) > 0, "{shape:?}: {reach:?}");
+        }
+    }
+
+    /// Root cell "c" over two inputs, evaluated with `budgets` in turn.
+    fn sum_of_two_within(budgets: &[Option<u64>]) -> Case {
+        let evaluate = |budget| HostEvent::Evaluate {
+            on: 0,
+            paths: vec![path("c", [])],
+            budget,
+            then: Then::End,
+        };
+        Case {
+            inputs: inputs([
+                (root("c"), declaration(cell([input("a"), input("b")]))),
+                (named("a"), int(2)),
+                (named("b"), int(3)),
+            ]),
+            events: budgets.iter().copied().map(evaluate).collect(),
+        }
+    }
+
+    #[test]
+    fn a_request_the_core_ends_by_its_budget_is_owed_no_answer() {
+        let case = sum_of_two_within(&[Some(0)]);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::EndedByBudget), 1, "{reach:?}");
+        assert_eq!(reach.answered(), 0, "{reach:?}");
+    }
+
+    #[test]
+    fn a_request_within_its_budget_is_answered() {
+        let case = sum_of_two_within(&[Some(1)]);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::AnsweredWithinBudget), 1, "{reach:?}");
+        assert_eq!(reach.checked_on(0), 1, "{reach:?}");
+    }
+
+    #[test]
+    fn a_request_after_a_budget_end_on_the_same_snapshot_is_answered_and_checked() {
+        let case = sum_of_two_within(&[Some(0), None]);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::EndedByBudget), 1, "{reach:?}");
+        assert_eq!(reach.checked_on(0), 1, "{reach:?}");
+    }
+
+    /// Registered in place of the toy cell: reads its binding "extra",
+    /// which the reference's cell never reads, then runs the toy cell.
+    struct OverReadingCell;
+
+    impl Kind for OverReadingCell {
+        type Out = i64;
+        const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
+
+        async fn run(cx: &Cx) -> Produced<i64> {
+            let _ = cx.read::<i64>(&Ref::binding("extra")).await;
+            <toy::Cell as Kind>::run(cx).await
+        }
+    }
+
+    #[test]
+    fn a_core_resolving_paths_the_demand_does_not_need_is_reported_against_the_budget() {
+        let over_reading = decl(
+            ToyKind::Cell,
+            [("0", input("y")), ("extra", declarer([step("a")]))],
+        );
+        let case = Case {
+            inputs: inputs([
+                (root("r"), declaration(scope("r.m"))),
+                (
+                    named("r.m"),
+                    members([(step("a"), cell([input("x")])), (step("b"), over_reading)]),
+                ),
+                (named("x"), int(1)),
+                (named("y"), int(2)),
+            ]),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![r(&["b"])],
+                budget: Some(2),
+                then: Then::End,
+            }],
+        };
+        let expected = Mismatch::Budget {
+            event: 0,
+            snapshot: 0,
+            budget: 2,
+            needed: 2,
+            ended: true,
+        };
+        assert_eq!(
+            check(&case, &with_cell_kind::<OverReadingCell>),
+            Err(expected)
+        );
     }
 
     /// Registered in place of the toy cell: answers 0 whatever it binds.
@@ -953,6 +1304,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 1,
                     paths: vec![path("c", [])],
+                    budget: None,
                     then: Then::End,
                 },
             ],
@@ -997,6 +1349,7 @@ mod tests {
             events: vec![HostEvent::Evaluate {
                 on: 0,
                 paths: vec![r(&["a"])],
+                budget: None,
                 then: Then::End,
             }],
         }
@@ -1052,6 +1405,7 @@ mod tests {
         let evaluate = |name| HostEvent::Evaluate {
             on: 0,
             paths: vec![path(name, [])],
+            budget: None,
             then: Then::End,
         };
         let case = Case {
@@ -1089,6 +1443,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 0,
                     paths: vec![path("c1", [])],
+                    budget: None,
                     then: Then::End,
                 },
             ],

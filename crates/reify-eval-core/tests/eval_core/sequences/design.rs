@@ -7,7 +7,9 @@
 
 use std::collections::BTreeMap;
 
-use reify_eval_core::{Binding, Declaration, Input, InputKey, Kind, KindId, Path, Ref, Root, Step};
+use reify_eval_core::{
+    Binding, Declaration, Input, InputKey, Kind, KindId, Limit, Path, Ref, Root, Step,
+};
 
 use crate::toy;
 
@@ -37,6 +39,8 @@ pub struct ModelRef {
 pub enum Key {
     Root(String),
     Named(String),
+    /// A limit setting (contract 7.6), whose value is a `Val::Bound`.
+    Limit(Limit),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -58,6 +62,8 @@ pub enum Val {
     Bool(bool),
     Members(BTreeMap<Step, Decl>),
     Decl(Decl),
+    /// The value of a limit setting.
+    Bound(u64),
 }
 
 pub type Inputs = BTreeMap<Key, Val>;
@@ -106,6 +112,7 @@ impl Key {
         match self {
             Key::Root(name) => InputKey::root(name.as_str()),
             Key::Named(name) => InputKey::named(name.as_str()),
+            Key::Limit(limit) => InputKey::limit(*limit),
         }
     }
 }
@@ -157,6 +164,7 @@ impl Val {
             Val::Bool(value) => toy::input_of(*value),
             Val::Members(members) => toy::input_of(toy::Members(core_members(members))),
             Val::Decl(decl) => toy::input_of(decl.to_core()),
+            Val::Bound(bound) => toy::input_of(*bound),
         }
     }
 }
@@ -291,6 +299,21 @@ pub fn root(name: &str) -> Key {
 /// The key of the host-named input `name`.
 pub fn named(name: &str) -> Key {
     Key::Named(name.to_owned())
+}
+
+/// The key of the depth setting.
+pub fn depth_limit() -> Key {
+    Key::Limit(Limit::Depth)
+}
+
+/// The key of the children-per-node setting.
+pub fn children_limit() -> Key {
+    Key::Limit(Limit::ChildrenPerNode)
+}
+
+/// A limit setting's value.
+pub fn bound(bound: u64) -> Val {
+    Val::Bound(bound)
 }
 
 pub fn inputs(entries: impl IntoIterator<Item = (Key, Val)>) -> Inputs {

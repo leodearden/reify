@@ -7,8 +7,9 @@ use super::design::{Bind, Decl, ModelPath, ModelRef, ToyKind, Val, decl};
 
 /// The cases one step smaller than `case`, largest reductions first: an
 /// event dropped, a demanded path dropped or shortened, a Drive made an
-/// Evaluate, a request ended rather than left, an edit's change dropped,
-/// an initial input dropped, then one value made smaller.
+/// Evaluate, a request ended rather than left, an Evaluate's budget
+/// dropped, an edit's change dropped, an initial input dropped, then one
+/// value made smaller.
 pub fn candidates(case: &Case) -> Vec<Case> {
     let mut all: Vec<_> = (0..case.events.len())
         .map(|at| without_event(case, at))
@@ -42,6 +43,7 @@ pub fn candidates(case: &Case) -> Vec<Case> {
         } => vec![HostEvent::Evaluate {
             on: *on,
             paths: paths.clone(),
+            budget: None,
             then: *then,
         }],
         _ => Vec::new(),
@@ -50,10 +52,12 @@ pub fn candidates(case: &Case) -> Vec<Case> {
         HostEvent::Evaluate {
             on,
             paths,
+            budget,
             then: Then::Leave,
         } => vec![HostEvent::Evaluate {
             on: *on,
             paths: paths.clone(),
+            budget: *budget,
             then: Then::End,
         }],
         HostEvent::Drive {
@@ -66,6 +70,20 @@ pub fn candidates(case: &Case) -> Vec<Case> {
             paths: paths.clone(),
             turns: *turns,
             then: Then::End,
+        }],
+        _ => Vec::new(),
+    }));
+    all.extend(each_event(case, |event| match event {
+        HostEvent::Evaluate {
+            on,
+            paths,
+            budget: Some(_),
+            then,
+        } => vec![HostEvent::Evaluate {
+            on: *on,
+            paths: paths.clone(),
+            budget: None,
+            then: *then,
         }],
         _ => Vec::new(),
     }));
@@ -114,9 +132,9 @@ pub fn candidates(case: &Case) -> Vec<Case> {
 }
 
 /// A measure each candidate of a case strictly lowers: a count of its
-/// events, paths, steps, inputs, changes and bindings, a Drive above an
-/// Evaluate, a request left above one ended, any other kind above a cell,
-/// and an int by its distance from zero.
+/// events, paths, steps, inputs, changes, budgets and bindings, a Drive
+/// above an Evaluate, a request left above one ended, any other kind above
+/// a cell, and an int by its distance from zero.
 pub fn size(case: &Case) -> u64 {
     let inputs: u64 = case
         .inputs
@@ -136,7 +154,12 @@ fn event_size(event: &HostEvent) -> u64 {
             let change = |value: &Option<Val>| 1 + value.as_ref().map_or(0, value_size);
             1 + changes.iter().map(|(_, value)| change(value)).sum::<u64>()
         }
-        HostEvent::Evaluate { paths, then, .. } => 2 + request(paths, then),
+        HostEvent::Evaluate {
+            paths,
+            budget,
+            then,
+            ..
+        } => 2 + u64::from(budget.is_some()) + request(paths, then),
         HostEvent::Drive { paths, then, .. } => 3 + request(paths, then),
     }
 }
@@ -147,6 +170,7 @@ fn value_size(value: &Val) -> u64 {
         Val::Bool(value) => u64::from(*value),
         Val::Members(members) => members.values().map(|decl| 1 + decl_size(decl)).sum(),
         Val::Decl(decl) => decl_size(decl),
+        Val::Bound(bound) => *bound,
     }
 }
 
@@ -218,9 +242,12 @@ fn demanded(event: &HostEvent) -> Option<&Vec<ModelPath>> {
 
 fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
     match event {
-        HostEvent::Evaluate { on, then, .. } => HostEvent::Evaluate {
+        HostEvent::Evaluate {
+            on, budget, then, ..
+        } => HostEvent::Evaluate {
             on: *on,
             paths,
+            budget: *budget,
             then: *then,
         },
         HostEvent::Drive {
@@ -235,9 +262,9 @@ fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
     }
 }
 
-/// The values one step smaller than `value`: an int toward zero, true
-/// made false, a member dropped or made smaller, a declaration made
-/// smaller.
+/// The values one step smaller than `value`: an int or a bound toward
+/// zero, true made false, a member dropped or made smaller, a declaration
+/// made smaller.
 fn smaller_values(value: &Val) -> Vec<Val> {
     match value {
         Val::Int(value) => {
@@ -267,6 +294,15 @@ fn smaller_values(value: &Val) -> Vec<Val> {
             dropped.chain(shrunk).map(Val::Members).collect()
         }
         Val::Decl(decl) => smaller_decls(decl).into_iter().map(Val::Decl).collect(),
+        Val::Bound(bound) => {
+            let mut smaller = Vec::new();
+            for toward in [0, bound / 2, bound.saturating_sub(1)] {
+                if toward != *bound && !smaller.contains(&toward) {
+                    smaller.push(toward);
+                }
+            }
+            smaller.into_iter().map(Val::Bound).collect()
+        }
     }
 }
 
@@ -317,6 +353,7 @@ mod tests {
         let evaluate = |on| HostEvent::Evaluate {
             on,
             paths: vec![path("c", [])],
+            budget: None,
             then: Then::End,
         };
         let case = Case {

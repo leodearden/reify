@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 
 use reify_eval_core::{
-    Answer, Core, Demand, Erased, Event, Input, InputKey, Path, RequestError, RequestId,
+    Answer, Budget, Core, Demand, Erased, Event, Input, InputKey, Path, RequestError, RequestId,
 };
 
 /// What a session first observed at `path` of snapshot `snapshot`.
@@ -67,7 +67,11 @@ pub fn fresh_check<O: PartialEq + Debug + Clone>(
         let snapshot = made
             .entry(first.snapshot)
             .or_insert_with(|| core.snapshot(snapshots[first.snapshot].clone()));
-        let request = core.evaluate(snapshot, Demand::of([first.path.clone()]));
+        let request = core.evaluate(
+            snapshot,
+            Demand::of([first.path.clone()]),
+            Budget::unlimited(),
+        );
         core.run();
         let told = told(core.take_events(), request.id(), &first.path);
         core.end(request);

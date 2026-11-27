@@ -2,6 +2,7 @@
 //! Part A of docs/evaluation-core-contract.md specifies.
 
 mod answer;
+mod budget;
 mod builder;
 mod cancel;
 mod content;
@@ -26,6 +27,8 @@ mod key;
 mod kind;
 mod kind_id;
 mod kinds;
+mod limit_check;
+mod limits;
 mod lookup;
 mod mailbox;
 mod outcome;
@@ -48,6 +51,7 @@ mod task;
 mod waits;
 
 pub use answer::Answer;
+pub use budget::Budget;
 pub use builder::Builder;
 pub use counters::Counters;
 pub use cx::Cx;
@@ -59,7 +63,7 @@ pub use failure::{Failure, OutsideFailure, ResourceDeath};
 pub use hash::Hash128;
 pub use held::{Held, Release};
 pub use host::Core;
-pub use input::{Input, InputKey};
+pub use input::{Input, InputKey, Limit};
 pub use kind::Kind;
 pub use kind_id::KindId;
 pub use kinds::DuplicateKind;

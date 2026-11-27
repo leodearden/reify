@@ -1,9 +1,13 @@
 //! Seeded random cases: a toy design of cells and, as features allow,
-//! scopes, guards, collections, dividing cells, and shapes and measures on
-//! the toy kernel, and a sequence of host events on it. With dividing
+//! scopes, guards, collections, dividing cells, shapes and measures on the
+//! toy kernel, and limit settings, and a sequence of host events on it,
+//! whose edits may set or remove a limit setting and whose evaluations may
+//! be given a paths budget. With dividing
 //! cells on, every members input the generator makes ends in a pair: a
 //! cell dividing by an input held at zero, and a sibling cell blocked by
-//! it.
+//! it. With limits on, a members input at times holds, before that pair,
+//! the deep pair: a collection, and a sibling cell reading its first
+//! element, a read a depth setting can cut.
 //! With cycles off every design is acyclic by construction (the ordinal
 //! rule: member m_k reaches through its declarer only the declarer itself
 //! or members m_j with j < k). With cycles on, a member cell's term may
@@ -15,13 +19,13 @@
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
-use reify_eval_core::Step;
+use reify_eval_core::{Limit, Step};
 
 use super::case::{Case, HostEvent, Then, edited};
 use super::design::{
-    Decl, Inputs, Key, ModelPath, ToyKind, Val, cell, collection, declaration, declarer, divided,
-    flag, guard, index, input, int, measure, members, named, passed, path, picker, root, scope,
-    shape, step,
+    Decl, Inputs, Key, ModelPath, ToyKind, Val, bound, cell, collection, declaration, declarer,
+    divided, flag, guard, index, input, int, measure, members, named, passed, path, picker, root,
+    scope, shape, step,
 };
 use super::rng::XorShift64Star;
 
@@ -53,6 +57,10 @@ pub struct Features {
     pub kernel: bool,
     /// Member cells naming a sibling at their own ordinal or a later one.
     pub cycles: bool,
+    /// Limit settings, in the initial design and set or removed by edits.
+    pub limits: bool,
+    /// Evaluations given a paths budget.
+    pub budgets: bool,
 }
 
 impl Features {
@@ -65,6 +73,8 @@ impl Features {
             divide: false,
             kernel: false,
             cycles: false,
+            limits: false,
+            budgets: false,
         }
     }
 
@@ -74,6 +84,8 @@ impl Features {
             divide: true,
             kernel: true,
             cycles: true,
+            limits: true,
+            budgets: true,
             ..Self::structure()
         }
     }
@@ -154,6 +166,7 @@ enum Change {
     Member,
     Remove,
     Root,
+    Limit,
 }
 
 struct Generator {
@@ -204,7 +217,27 @@ impl Generator {
             self.roots.push(name);
         }
         self.paths.push(path("nowhere", []));
+        if self.features.limits {
+            for limit in [Limit::Depth, Limit::ChildrenPerNode] {
+                if self.rng.chance(1, 2) {
+                    needed.push((Key::Limit(limit), bound(self.limit_value(limit))));
+                }
+            }
+        }
         needed.into_iter().collect()
+    }
+
+    /// A setting of `limit` that cuts into the design's nesting without
+    /// failing most of it. Members sit at depth 1, their members and
+    /// elements at 2, and those members' elements at 3. A level holds up
+    /// to four drawn members, the deep pair and the blocked pair; a count
+    /// reads up to 4.
+    fn limit_value(&mut self, limit: Limit) -> u64 {
+        let least = match limit {
+            Limit::Depth => 1,
+            Limit::ChildrenPerNode => 5,
+        };
+        least + self.rng.below(3) as u64
     }
 
     /// A root's declaration: mostly a scope.
@@ -379,7 +412,8 @@ impl Generator {
     }
 
     /// A new members input for the node at `at`: one to four drawn members,
-    /// then, with divide on, the blocked pair.
+    /// then, with limits on and at times, the deep pair, then, with divide
+    /// on, the blocked pair.
     fn level(&mut self, at: &ModelPath, depth: usize, kind: ToyKind, needed: &mut Needed) -> Level {
         let count = 1 + self.rng.below(4);
         let mut level = Level {
@@ -396,11 +430,42 @@ impl Generator {
             earlier.push((ordinal, decl.kind));
             held.insert(member_step(ordinal), decl);
         }
+        if self.features.limits && self.rng.chance(1, 2) {
+            self.deep_pair(&mut level, &mut held, needed);
+        }
         if self.features.divide {
             self.blocked_pair(&mut level, &mut held, needed);
         }
         needed.push((named(&level.input), members(held)));
         level
+    }
+
+    /// Appends to `held`, the members of `level`, a collection of one to
+    /// four elements and a sibling cell whose only term reads its first
+    /// element, one level deeper than the cell: a read a depth setting can
+    /// cut while leaving the cell itself within it.
+    fn deep_pair(
+        &mut self,
+        level: &mut Level,
+        held: &mut BTreeMap<Step, Decl>,
+        needed: &mut Needed,
+    ) {
+        let counted = member_step(level.ordinals);
+        let reader = member_step(level.ordinals + 1);
+        level.ordinals += 2;
+        let count = self.fresh("n");
+        needed.push((named(&count), int(1 + self.rng.below(4) as i64)));
+        self.counts.push(count.clone());
+        let element = self.fresh("e");
+        needed.push((named(&element), declaration(self.element())));
+        held.insert(counted.clone(), collection(input(&count), input(&element)));
+        held.insert(
+            reader.clone(),
+            cell([declarer([counted.clone(), index(0)])]),
+        );
+        let elements = level.at.child(counted);
+        self.paths
+            .extend([elements.child(index(0)), elements, level.at.child(reader)]);
     }
 
     /// Appends to `held`, the members of `level`, a cell dividing by a new
@@ -474,6 +539,7 @@ impl Generator {
                     2 | 3 => HostEvent::Evaluate {
                         on: self.snapshot(snapshots.len()),
                         paths: self.demand(),
+                        budget: self.budget(),
                         then: *self.rng.choose(&[Then::Leave, Then::End]),
                     },
                     _ => {
@@ -507,6 +573,16 @@ impl Generator {
         }
     }
 
+    /// With budgets on, at times a paths budget, spread around what a
+    /// demand needs resolved: each path, its ancestors, and what their
+    /// nodes read.
+    fn budget(&mut self) -> Option<u64> {
+        if !(self.features.budgets && self.rng.chance(1, 2)) {
+            return None;
+        }
+        Some(self.rng.below(12) as u64)
+    }
+
     fn demand(&mut self) -> Vec<ModelPath> {
         (0..1 + self.rng.below(4))
             .map(|_| self.rng.choose(&self.paths).clone())
@@ -532,6 +608,9 @@ impl Generator {
         }
         if !self.levels.is_empty() {
             sorts.extend([Change::Member; 3]);
+        }
+        if self.features.limits {
+            sorts.push(Change::Limit);
         }
         let mut needed = Needed::new();
         let mut changes = match *self.rng.choose(&sorts) {
@@ -563,9 +642,21 @@ impl Generator {
                 let decl = self.root_decl(&name, &mut needed);
                 vec![(root(&name), Some(declaration(decl)))]
             }
+            Change::Limit => vec![self.limit_change(current)],
         };
         changes.extend(needed.into_iter().map(|(key, value)| (key, Some(value))));
         changes
+    }
+
+    /// A limit setting set to a new value, or, at times where it is set,
+    /// removed.
+    fn limit_change(&mut self, current: &Inputs) -> (Key, Option<Val>) {
+        let limit = *self.rng.choose(&[Limit::Depth, Limit::ChildrenPerNode]);
+        let key = Key::Limit(limit);
+        if current.contains_key(&key) && self.rng.chance(1, 2) {
+            return (key, None);
+        }
+        (key, Some(bound(self.limit_value(limit))))
     }
 
     /// A member of some level added at the next ordinal, replaced, or
@@ -631,7 +722,7 @@ mod tests {
 
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Bind, Decl, Key, ToyKind, Val};
-    use super::super::reference::{Expect, Reference, first_invalid};
+    use super::super::reference::{Expect, Invalid, Reference, first_invalid};
     use super::{
         BLOCKED_PAIR_ZERO, Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate,
     };
@@ -654,7 +745,7 @@ mod tests {
             match value {
                 Val::Decl(decl) => vec![decl],
                 Val::Members(members) => members.values().collect(),
-                Val::Int(_) | Val::Bool(_) => Vec::new(),
+                Val::Int(_) | Val::Bool(_) | Val::Bound(_) => Vec::new(),
             }
         }
         values(case)
@@ -711,9 +802,13 @@ mod tests {
             divide: true,
             kernel: true,
             cycles: true,
+            limits: true,
+            budgets: true,
         };
         assert_eq!(Features::every(), every);
         assert!(!Features::structure().cycles);
+        assert!(!Features::structure().limits);
+        assert!(!Features::structure().budgets);
         for seed in GATE_SEEDS {
             let case = generate(seed, every, GATE_EVENTS);
             assert_eq!(gate_case(seed), case, "seed {seed}");
@@ -740,6 +835,8 @@ mod tests {
             divide: false,
             kernel: false,
             cycles: false,
+            limits: false,
+            budgets: false,
         };
         let every = Features::every();
         let some_off = [
@@ -801,6 +898,94 @@ mod tests {
         }
     }
 
+    /// Every key an edit of `case` sets or removes.
+    fn edited_keys(case: &Case) -> impl Iterator<Item = &Key> {
+        case.events.iter().flat_map(|event| match event {
+            HostEvent::Edit { changes, .. } => changes.iter().map(|(key, _)| key).collect(),
+            _ => Vec::new(),
+        })
+    }
+
+    fn is_limit(key: &&Key) -> bool {
+        matches!(key, Key::Limit(_))
+    }
+
+    fn is_limit_failure(outcome: &Result<Expect, Invalid>) -> bool {
+        matches!(
+            outcome,
+            Ok(Expect::Failure(
+                Failure::TooDeep { .. } | Failure::TooManyChildren { .. }
+            ))
+        )
+    }
+
+    #[test]
+    fn with_limits_off_no_case_holds_a_limit_key_or_answers_a_limit_failure() {
+        let limits_off = [
+            Features::structure(),
+            Features {
+                limits: false,
+                ..Features::every()
+            },
+        ];
+        for features in limits_off {
+            for seed in GATE_SEEDS {
+                let case = generate(seed, features, GATE_EVENTS);
+                let mut keys = case.inputs.keys().chain(edited_keys(&case));
+                let limit = keys.find(is_limit);
+                assert_eq!(limit, None, "seed {seed}, {features:?}");
+                let demanded: BTreeSet<_> = case.demanded().collect();
+                for inputs in case.snapshots() {
+                    let mut reference = Reference::new(inputs);
+                    for path in &demanded {
+                        let outcome = reference.answer(path).map(|answer| answer.outcome);
+                        assert!(
+                            !is_limit_failure(&outcome),
+                            "seed {seed}, {features:?}: {path:?} answers {outcome:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The budget of each Evaluate of `case`.
+    fn budgets(case: &Case) -> impl Iterator<Item = Option<u64>> {
+        case.events.iter().filter_map(|event| match event {
+            HostEvent::Evaluate { budget, .. } => Some(*budget),
+            HostEvent::Edit { .. } | HostEvent::Drive { .. } => None,
+        })
+    }
+
+    #[test]
+    fn with_budgets_off_no_evaluate_has_a_budget() {
+        let budgets_off = [
+            Features::structure(),
+            Features {
+                budgets: false,
+                ..Features::every()
+            },
+        ];
+        for features in budgets_off {
+            for seed in GATE_SEEDS {
+                let case = generate(seed, features, GATE_EVENTS);
+                let budgeted = budgets(&case).find(Option::is_some);
+                assert_eq!(budgeted, None, "seed {seed}, {features:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_gate_cases_set_limits_initially_and_by_edits() {
+        let (mut initial, mut edited) = (0, 0);
+        for (_, case) in gate_cases() {
+            initial += case.inputs.keys().filter(is_limit).count();
+            edited += edited_keys(&case).filter(is_limit).count();
+        }
+        assert!(initial > 0, "no gate case starts with a limit setting");
+        assert!(edited > 0, "no gate case edits a limit setting");
+    }
+
     #[test]
     fn the_gate_cases_reach_every_kind_binding_and_event_shape() {
         let mut kinds = BTreeSet::new();
@@ -808,7 +993,9 @@ mod tests {
         let (mut drawn_divisors, mut blocked_pairs) = (0, 0);
         let (mut edits_off_latest, mut evaluations_off_latest) = (0, 0);
         let (mut zero_left, mut zero_ended) = (0, 0);
+        let mut budgeted = 0;
         for (_, case) in gate_cases() {
+            budgeted += budgets(&case).filter(Option::is_some).count();
             for decl in decls(&case) {
                 kinds.insert(decl.kind);
                 pickers +=
@@ -873,6 +1060,7 @@ mod tests {
             ),
             ("drives of no turns left live", zero_left),
             ("drives of no turns ended", zero_ended),
+            ("evaluations with a budget", budgeted),
         ];
         for (shape, count) in counts {
             assert!(count > 0, "the gate cases hold no {shape}");

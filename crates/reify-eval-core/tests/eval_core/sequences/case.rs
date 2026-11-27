@@ -19,10 +19,12 @@ pub enum HostEvent {
         from: usize,
         changes: Vec<(Key, Option<Val>)>,
     },
-    /// A request for `paths` on snapshot `on`, run until the core is idle.
+    /// A request for `paths` on snapshot `on`, run until the core is idle,
+    /// given a budget of `budget` paths resolved, or none for no bound.
     Evaluate {
         on: usize,
         paths: Vec<ModelPath>,
+        budget: Option<u64>,
         then: Then,
     },
     /// A request for `paths` on snapshot `on`, given `turns` turns.
@@ -111,6 +113,7 @@ mod tests {
         HostEvent::Evaluate {
             on,
             paths: vec![path("c", [])],
+            budget: None,
             then: Then::End,
         }
     }

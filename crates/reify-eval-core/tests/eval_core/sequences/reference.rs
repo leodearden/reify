@@ -11,7 +11,7 @@ use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use reify_eval_core::{Declaration, Failure, Kind, Step};
+use reify_eval_core::{Declaration, Failure, Kind, Limit, Step};
 
 use super::case::Case;
 use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, ToyKind, Val};
@@ -113,6 +113,10 @@ enum Typed<T> {
 /// The answers of one snapshot.
 pub struct Reference {
     inputs: Inputs,
+    /// The snapshot's depth setting.
+    depth: Option<u64>,
+    /// The snapshot's children-per-node setting.
+    children: Option<u64>,
     answers: BTreeMap<ModelPath, Result<Rc<Expected>, Invalid>>,
     declared: BTreeMap<ModelPath, Declared>,
     in_progress: BTreeSet<ModelPath>,
@@ -122,6 +126,8 @@ pub struct Reference {
 impl Reference {
     pub fn new(inputs: Inputs) -> Self {
         Self {
+            depth: setting(&inputs, Limit::Depth),
+            children: setting(&inputs, Limit::ChildrenPerNode),
             inputs,
             answers: BTreeMap::new(),
             declared: BTreeMap::new(),
@@ -185,6 +191,14 @@ impl Reference {
         self.work_outs
     }
 
+    /// How many distinct paths the reference has worked out the
+    /// declaration of: the paths the core resolves for the same reads. A
+    /// path waiting on a ring halts before it is worked out, as the core
+    /// answers it "cycle" without resolving it.
+    pub fn paths_resolved(&self) -> usize {
+        self.declared.len()
+    }
+
     /// The declaration of the node at `path`, if one is declared there.
     pub fn declaration_at(&mut self, path: &ModelPath) -> Result<Option<Decl>, Invalid> {
         Ok(match self.declaration(path).map_err(Halt::invalid)? {
@@ -225,12 +239,13 @@ impl Reference {
         };
         Ok(Expected {
             node: Some(decl.kind),
-            outcome,
+            outcome: self.within_children(decl.kind, outcome),
         })
     }
 
     /// A root from its snapshot input, read as a declaration; any other
-    /// path from what its parent's answer declares at its step.
+    /// path from what its parent's answer declares at its step. A node
+    /// deeper than the depth setting is that failure instead.
     fn declaration(&mut self, path: &ModelPath) -> Result<Declared, Halt> {
         if let Some(known) = self.declared.get(path) {
             return Ok(known.clone());
@@ -255,8 +270,40 @@ impl Reference {
                 }
             }
         };
+        let declared = match (declared, self.too_deep(path)) {
+            (Declared::Node(_), Some(failure)) => Declared::Settled(Expect::Failure(failure)),
+            (declared, _) => declared,
+        };
         self.declared.insert(path.clone(), declared.clone());
         Ok(declared)
+    }
+
+    /// The failure of a node at `path` if it is more steps below its root
+    /// than the depth setting allows.
+    fn too_deep(&self, path: &ModelPath) -> Option<Failure> {
+        let limit = self.depth?;
+        let depth = u64::try_from(path.steps.len()).expect("a path's depth fits in a u64");
+        (depth > limit).then_some(Failure::TooDeep { limit })
+    }
+
+    /// `outcome`, what a node of `kind` works out, or the failure of a
+    /// value that declares more children than the children setting allows.
+    fn within_children(&self, kind: ToyKind, outcome: Expect) -> Expect {
+        let (Some(limit), Expect::Value(out)) = (self.children, &outcome) else {
+            return outcome;
+        };
+        let children = match (kind, out) {
+            (ToyKind::Scope | ToyKind::Guard, Out::Members(members)) => {
+                u64::try_from(members.len()).expect("a count of members fits in a u64")
+            }
+            (ToyKind::Collection, Out::Elements { count, .. }) => *count,
+            _ => 0,
+        };
+        if children > limit {
+            Expect::Failure(Failure::TooManyChildren { limit })
+        } else {
+            outcome
+        }
     }
 
     fn input(&self, key: &Key) -> Expect {
@@ -476,6 +523,21 @@ fn out_of(value: &Val) -> Out {
         Val::Bool(value) => Out::Bool(*value),
         Val::Members(members) => Out::Members(members.clone()),
         Val::Decl(decl) => Out::Decl(decl.clone()),
+        Val::Bound(_) => {
+            unreachable!("a limit setting is under a limit key, which no binding reads")
+        }
+    }
+}
+
+/// The snapshot's setting of `limit`, if any.
+///
+/// # Panics
+///
+/// If the setting is not a bound, as the core refuses it.
+fn setting(inputs: &Inputs, limit: Limit) -> Option<u64> {
+    match inputs.get(&Key::Limit(limit))? {
+        Val::Bound(bound) => Some(*bound),
+        other => panic!("the limit setting {limit:?} must be a bound, and is {other:?}"),
     }
 }
 
@@ -1064,6 +1126,7 @@ mod tests {
             events: vec![HostEvent::Evaluate {
                 on: 0,
                 paths: vec![at("r", &["a"])],
+                budget: None,
                 then: Then::End,
             }],
         };
@@ -1113,5 +1176,154 @@ mod tests {
             answer(&design, &at("c", &[])),
             Err(Invalid::Overflow { path: at("c", &[]) })
         );
+    }
+
+    /// Root scope `r` whose member `inner` is a scope over "inner.m"
+    /// holding the cell c over "x", beside the cell `reader` over inner/c;
+    /// under the depth setting `depth`, if any.
+    fn nested_r(depth: Option<u64>) -> Inputs {
+        let mut design = scope_r(
+            members([
+                (step("inner"), scope("inner.m")),
+                (step("reader"), cell([declarer([step("inner"), step("c")])])),
+            ]),
+            &[("x", 4)],
+        );
+        design.insert(named("inner.m"), members([(step("c"), cell([input("x")]))]));
+        design.extend(depth.map(|depth| (depth_limit(), bound(depth))));
+        design
+    }
+
+    fn settled(failure: Failure) -> Result<Expected, Invalid> {
+        Ok(Expected {
+            node: None,
+            outcome: Expect::Failure(failure),
+        })
+    }
+
+    #[test]
+    fn under_a_depth_setting_a_member_answers_and_a_member_of_its_scope_is_too_deep() {
+        let design = nested_r(Some(1));
+        let inner = answer(&design, &at("r", &["inner"])).map(|expected| expected.outcome);
+        assert!(
+            matches!(inner, Ok(Expect::Value(Out::Members(_)))),
+            "{inner:?}"
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["inner", "c"])),
+            settled(Failure::TooDeep { limit: 1 })
+        );
+    }
+
+    #[test]
+    fn a_path_past_the_depth_setting_that_nothing_declares_is_absent() {
+        let design = nested_r(Some(1));
+        assert_eq!(
+            answer(&design, &at("r", &["inner", "missing"])),
+            absent(None)
+        );
+    }
+
+    #[test]
+    fn a_path_below_a_too_deep_node_answers_its_failure() {
+        let design = nested_r(Some(1));
+        assert_eq!(
+            answer(&design, &at("r", &["inner", "c", "x"])),
+            settled(Failure::TooDeep { limit: 1 })
+        );
+    }
+
+    #[test]
+    fn a_cell_reading_a_too_deep_member_is_blocked_by_it() {
+        let design = nested_r(Some(1));
+        assert_eq!(answer(&design, &at("r", &["reader"])), blocked_at("0"));
+    }
+
+    #[test]
+    fn with_no_limit_setting_nothing_is_bounded() {
+        let design = nested_r(None);
+        assert_eq!(
+            answer(&design, &at("r", &["inner", "c"])),
+            int_of(ToyKind::Cell, 4)
+        );
+    }
+
+    #[test]
+    fn a_children_setting_fails_a_scope_holding_more_members_and_each_member() {
+        let held = members([
+            (step("a"), cell([input("x")])),
+            (step("b"), cell([input("x")])),
+        ]);
+        let mut design = scope_r(held, &[("x", 4)]);
+        design.insert(children_limit(), bound(1));
+        let too_many = Failure::TooManyChildren { limit: 1 };
+        assert_eq!(
+            answer(&design, &at("r", &[])),
+            Ok(Expected {
+                node: Some(ToyKind::Scope),
+                outcome: Expect::Failure(too_many.clone()),
+            })
+        );
+        assert_eq!(answer(&design, &at("r", &["a"])), settled(too_many));
+    }
+
+    #[test]
+    fn a_children_setting_fails_a_collection_past_it_and_answers_one_at_it() {
+        for (count, fails) in [(2, true), (1, false)] {
+            let design = inputs([
+                (
+                    root("list"),
+                    declaration(collection(input("n"), input("e"))),
+                ),
+                (named("n"), int(count)),
+                (named("e"), declaration(cell([input("x")]))),
+                (children_limit(), bound(1)),
+            ]);
+            let found = answer(&design, &at("list", &[])).map(|expected| expected.outcome);
+            if fails {
+                assert_eq!(
+                    found,
+                    Ok(Expect::Failure(Failure::TooManyChildren { limit: 1 }))
+                );
+            } else {
+                assert!(
+                    matches!(found, Ok(Expect::Value(Out::Elements { count: 1, .. }))),
+                    "{found:?}"
+                );
+            }
+        }
+    }
+
+    /// How many paths a fresh reference works out the declaration of to
+    /// answer `at`.
+    fn paths_resolved_for(design: &Inputs, at: &ModelPath) -> usize {
+        let mut reference = Reference::new(design.clone());
+        reference.answer(at).expect("the design is valid");
+        reference.paths_resolved()
+    }
+
+    #[test]
+    fn the_paths_resolved_are_the_ancestors_and_the_read_targets_of_a_demand() {
+        let held = members([
+            (step("a"), cell([input("x")])),
+            (step("b"), cell([declarer([step("a")])])),
+        ]);
+        let design = scope_r(held, &[("x", 4)]);
+        assert_eq!(paths_resolved_for(&design, &at("r", &["b"])), 3);
+    }
+
+    #[test]
+    fn a_path_waiting_on_a_ring_is_answered_without_being_resolved() {
+        let design = scope_r(
+            members([(step("c"), cell([declarer([step("c"), step("x")])]))]),
+            &[],
+        );
+        assert_eq!(paths_resolved_for(&design, &at("r", &["c"])), 2);
+    }
+
+    #[test]
+    fn a_path_off_a_ring_below_it_is_resolved_to_the_ring_s_cycle() {
+        let design = two_cell_ring([]);
+        assert_eq!(paths_resolved_for(&design, &at("r", &["a", "x"])), 4);
     }
 }

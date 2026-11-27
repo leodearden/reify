@@ -2,7 +2,7 @@
 //! call of design.rs's constructors or an enum variant, so a failing case
 //! found by the random run can be pasted in as a named test.
 
-use reify_eval_core::Step;
+use reify_eval_core::{Limit, Step};
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{
@@ -76,6 +76,8 @@ fn key_text(key: &Key) -> String {
     match key {
         Key::Root(name) => format!("root({name:?})"),
         Key::Named(name) => format!("named({name:?})"),
+        Key::Limit(Limit::Depth) => String::from("depth_limit()"),
+        Key::Limit(Limit::ChildrenPerNode) => String::from("children_limit()"),
     }
 }
 
@@ -158,6 +160,7 @@ fn val_text(value: &Val) -> String {
             format!("members([{}])", list(each))
         }
         Val::Decl(decl) => format!("declaration({})", decl_text(decl)),
+        Val::Bound(bound) => format!("bound({bound})"),
     }
 }
 
@@ -165,6 +168,13 @@ fn then_text(then: Then) -> &'static str {
     match then {
         Then::Leave => "Then::Leave",
         Then::End => "Then::End",
+    }
+}
+
+fn budget_text(budget: Option<u64>) -> String {
+    match budget {
+        Some(budget) => format!("Some({budget})"),
+        None => String::from("None"),
     }
 }
 
@@ -187,9 +197,15 @@ fn event_text(event: &HostEvent) -> String {
                 list(each)
             )
         }
-        HostEvent::Evaluate { on, paths, then } => format!(
-            "HostEvent::Evaluate {{ on: {on}, paths: {}, then: {} }}",
+        HostEvent::Evaluate {
+            on,
+            paths,
+            budget,
+            then,
+        } => format!(
+            "HostEvent::Evaluate {{ on: {on}, paths: {}, budget: {}, then: {} }}",
             paths_text(paths),
+            budget_text(*budget),
             then_text(*then)
         ),
         HostEvent::Drive {
@@ -251,6 +267,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 1,
                     paths: vec![path("r", [step("m0")]), path("g", [])],
+                    budget: Some(5),
                     then: Then::Leave,
                 },
                 HostEvent::Drive {
@@ -285,7 +302,7 @@ fn printed_case() {
         ]),
         events: vec![
             HostEvent::Edit { from: 0, changes: vec![(named("i"), Some(int(4))), (named("f"), None)] },
-            HostEvent::Evaluate { on: 1, paths: vec![path("r", [step("m0")]), path("g", [])], then: Then::Leave },
+            HostEvent::Evaluate { on: 1, paths: vec![path("r", [step("m0")]), path("g", [])], budget: Some(5), then: Then::Leave },
             HostEvent::Drive { on: 0, paths: vec![path("r", [step("m1"), index(3)])], turns: 2, then: Then::End },
         ],
     };

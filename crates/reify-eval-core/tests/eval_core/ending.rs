@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use reify_eval_core::{
-    Answer, Binding, Core, Cx, Declaration, Hash128, Held, Input, InputKey, Kind, KindId, Outcome,
-    Produced, Ref, RequestId, Snapshot, Turn,
+    Answer, Binding, Budget, Core, Cx, Declaration, Hash128, Held, Input, InputKey, Kind, KindId,
+    Outcome, Produced, Ref, RequestId, Snapshot, Turn,
 };
 
 use crate::toy::{self, BoxHandle, BoxShape, Pair, Scope, Shape, ToyKernel, Watch};
@@ -20,7 +20,7 @@ fn a_request_ended_while_its_body_s_section_runs_leaves_the_kernel_holding_nothi
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
     let ended = request.id();
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
@@ -83,7 +83,7 @@ fn a_body_dropped_because_its_request_ended_reads_cancelled_as_it_is_dropped() {
         ),
         toy::root("witnessed", witnessed),
     ]);
-    let request = core.evaluate(&snapshot, toy::roots(&["witnessed"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["witnessed"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
 
@@ -122,7 +122,7 @@ fn a_request_ended_while_its_body_holds_what_a_section_made_leaves_the_kernel_ho
     let builder = toy::with_toys().kind::<TwoBoxes>().expect("distinct kinds");
     let (mut core, keeper) = toy::gated(builder, &watch);
     let snapshot = core.snapshot([toy::root("pair", Declaration::new(TwoBoxes::ID))]);
-    let request = core.evaluate(&snapshot, toy::roots(&["pair"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["pair"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
 
     keeper.let_one_through();
@@ -149,7 +149,7 @@ fn an_answer_the_host_drops_is_released_on_the_kernel_s_thread() {
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
     core.run();
 
     let events = core.take_events();
@@ -190,9 +190,9 @@ fn ending_a_request_drops_only_the_bodies_no_other_live_request_wants() {
         toy::root("x", toy::shape("one")),
         toy::root("y", toy::shape("two")),
     ]);
-    let first = core.evaluate(&snapshot, toy::roots(&["x", "y"]));
+    let first = core.evaluate(&snapshot, toy::roots(&["x", "y"]), Budget::unlimited());
     let ended = first.id();
-    let second = core.evaluate(&snapshot, toy::roots(&["y"]));
+    let second = core.evaluate(&snapshot, toy::roots(&["y"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::SectionsRunning(2));
     keeper.entered();
 
@@ -228,8 +228,8 @@ fn live_requests_are_served_in_order_of_arrival() {
         toy::root("large", toy::shape("three")),
     ]);
 
-    let _requests =
-        ["large", "small", "middle"].map(|name| core.evaluate(&snapshot, toy::roots(&[name])));
+    let _requests = ["large", "small", "middle"]
+        .map(|name| core.evaluate(&snapshot, toy::roots(&[name]), Budget::unlimited()));
     core.run();
 
     assert_eq!(watch.sides_in_order(), [3, 1, 2]);
@@ -276,8 +276,8 @@ fn ending_a_request_keeps_a_node_a_body_of_another_live_request_is_reading() {
     let watch = Watch::default();
     let (mut core, keeper, snapshot) = box_and_volume(&watch);
     let (shape, volume) = (toy::below("R", &["box"]), toy::below("R", &["vol"]));
-    let first = core.evaluate(&snapshot, toy::demand([&shape]));
-    let second = core.evaluate(&snapshot, toy::demand([&volume]));
+    let first = core.evaluate(&snapshot, toy::demand([&shape]), Budget::unlimited());
+    let second = core.evaluate(&snapshot, toy::demand([&volume]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
 
@@ -296,7 +296,7 @@ fn ending_a_request_drops_the_nodes_only_its_bodies_were_reading() {
     let watch = Watch::default();
     let (mut core, keeper, snapshot) = box_and_volume(&watch);
     let volume = toy::below("R", &["vol"]);
-    let request = core.evaluate(&snapshot, toy::demand([&volume]));
+    let request = core.evaluate(&snapshot, toy::demand([&volume]), Budget::unlimited());
     let ended = request.id();
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
@@ -322,13 +322,13 @@ fn a_body_queued_when_its_request_ended_and_demanded_again_waits_only_on_the_cor
         ]),
     ));
     let snapshot = core.snapshot(inputs);
-    let _answered = core.evaluate(&snapshot, toy::roots(&["R"]));
+    let _answered = core.evaluate(&snapshot, toy::roots(&["R"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let a = toy::below("R", &["a"]);
 
-    let first = core.evaluate(&snapshot, toy::demand([&a]));
+    let first = core.evaluate(&snapshot, toy::demand([&a]), Budget::unlimited());
     core.end(first);
-    let second = core.evaluate(&snapshot, toy::demand([&a]));
+    let second = core.evaluate(&snapshot, toy::demand([&a]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &second, &a);
@@ -372,7 +372,7 @@ fn end_while_a_ring_awaits_a_section(
     snapshot: &Snapshot,
 ) -> RequestId {
     let a = toy::below("R", &["a"]);
-    let request = core.evaluate(snapshot, toy::demand([&a]));
+    let request = core.evaluate(snapshot, toy::demand([&a]), Budget::unlimited());
     let ended = request.id();
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();

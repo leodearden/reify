@@ -1,6 +1,7 @@
 //! The core as a host drives it: snapshots in, requests opened and ended,
 //! events out. One thread drives it at a time, through `&mut self`.
 
+use crate::budget::Budget;
 use crate::counters::Counters;
 use crate::demand::Demand;
 use crate::event::Event;
@@ -24,13 +25,18 @@ impl Core {
     }
 
     /// Opens a request on `snapshot` for the answers at the paths `demand`
-    /// names.
+    /// names, which may spend `budget` (contract 7.6). Each path the core
+    /// resolves is charged to every live request whose demand needs it. A
+    /// request that needs more paths than its budget allows is ended, told
+    /// as one `Event::Ended` with `RequestError::PathsBudgetExhausted`, and
+    /// the work no other live request waits on is dropped.
     ///
     /// # Panics
     ///
-    /// If another core made `snapshot`.
-    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand) -> Request {
-        self.executor.evaluate(snapshot, demand)
+    /// If another core made `snapshot`, or if a limit setting of `snapshot`
+    /// is not a u64.
+    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand, budget: Budget) -> Request {
+        self.executor.evaluate(snapshot, demand, budget)
     }
 
     /// Ends `request`, dropping every node in progress that no live request

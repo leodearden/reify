@@ -35,4 +35,12 @@ pub trait Kind: 'static {
     fn declares(_out: &Self::Out, _step: &Step) -> Option<Declaration> {
         None
     }
+
+    /// The steps at which a node whose value is `out` declares children
+    /// (contract 2.2): exactly those `declares` gives a declaration for and
+    /// no other, each once, in a fixed order. A kind whose values declare
+    /// no children keeps this.
+    fn steps(_out: &Self::Out) -> impl Iterator<Item = Step> {
+        std::iter::empty()
+    }
 }
