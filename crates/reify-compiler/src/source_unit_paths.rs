@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
-use reify_ir::{CompiledExpr, MemberKey};
+use reify_ir::{CompiledExpr, CompiledFunction, MemberKey};
 
 use crate::datum_projection::{DatumProjectionResolution, datum_projection_result_type};
 use crate::expr::{
@@ -54,29 +54,92 @@ pub(crate) fn compile_member_path(
     recorder: &SourceUnitRecorder,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> PathOutcome {
-    let (root, hops) = path_of(expr).ok_or(NotAPath::ByReceiverType)?;
-    let (mut steps, mut target) = root_target(root, scope)?;
+    match walk_path(expr, scope, diagnostics) {
+        Ok(Walked::Reached { steps, target }) => {
+            let ty = target.value_type(scope).ok_or(NotAPath::ByReceiverType)?;
+            Ok(recorder.reference(ReferenceRoot::Own, steps, ReferenceRead::Value, ty))
+        }
+        Ok(Walked::Datum { steps, name, ty }) => {
+            let ty_of_prefix = Type::StructureRef(name.definition);
+            let receiver = recorder.reference(
+                ReferenceRoot::Own,
+                steps,
+                ReferenceRead::Value,
+                ty_of_prefix,
+            );
+            Ok(CompiledExpr::method_call(receiver, name.member, vec![], ty))
+        }
+        Err(Halt::Poison(poison)) => Ok(*poison),
+        Err(Halt::NotAPath(why)) => Err(why),
+    }
+}
+
+/// `present(<path>)` in the source-unit mode: a read of whether the thing the
+/// path reaches is present, which the evaluator's caller tests. `None` leaves
+/// the call to the existing compile: a user's function named `present`
+/// shadows the test, and an argument that is not a path is not one.
+pub(crate) fn compile_presence(
+    args: &[reify_ast::Expr],
+    arg_names: &[Option<String>],
+    scope: &CompilationScope,
+    recorder: &SourceUnitRecorder,
+    functions: &[CompiledFunction],
+) -> Option<CompiledExpr> {
+    if functions.iter().any(|function| function.name == "present") {
+        return None;
+    }
+    let ([argument], [None]) = (args, arg_names) else {
+        return None;
+    };
+    // An argument that does not resolve cleanly is compiled, and its errors
+    // reported, by the existing compile.
+    let mut unreported = Vec::new();
+    let Ok(Walked::Reached { steps, target }) = walk_path(argument, scope, &mut unreported) else {
+        return None;
+    };
+    target.value_type(scope)?;
+    Some(recorder.reference(
+        ReferenceRoot::Own,
+        steps,
+        ReferenceRead::Presence,
+        Type::Bool,
+    ))
+}
+
+/// Where a path written in the source leads.
+enum Walked<'s> {
+    /// The steps reach `target`.
+    Reached {
+        steps: Vec<SourceStep>,
+        target: Target<'s>,
+    },
+    /// The path ends in an intrinsic datum of the instance the steps reach.
+    Datum {
+        steps: Vec<SourceStep>,
+        name: DatumName,
+        ty: Type,
+    },
+}
+
+/// Resolve `expr` as a path, hop by hop.
+fn walk_path<'s>(
+    expr: &reify_ast::Expr,
+    scope: &'s CompilationScope,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Walked<'s>, Halt> {
+    let (root, hops) = path_of(expr).ok_or(Halt::NotAPath(NotAPath::ByReceiverType))?;
+    let (mut steps, mut target) = root_target(root, scope).map_err(Halt::NotAPath)?;
     let last = hops.len().saturating_sub(1);
     for (position, hop) in hops.iter().enumerate() {
-        match next_target(target, hop, &mut steps, scope, expr.span, diagnostics) {
-            Ok(Next::Into(next)) => target = next,
-            Ok(Next::Datum { name, ty }) if position == last => {
-                let ty_of_prefix = Type::StructureRef(name.definition);
-                let receiver = recorder.reference(
-                    ReferenceRoot::Own,
-                    steps,
-                    ReferenceRead::Value,
-                    ty_of_prefix,
-                );
-                return Ok(CompiledExpr::method_call(receiver, name.member, vec![], ty));
+        match next_target(target, hop, &mut steps, scope, expr.span, diagnostics)? {
+            Next::Into(next) => target = next,
+            Next::Datum { name, ty } if position == last => {
+                return Ok(Walked::Datum { steps, name, ty });
             }
-            Ok(Next::Datum { .. }) => return Err(NotAPath::ByReceiverType),
-            Err(Halt::Poison(poison)) => return Ok(*poison),
-            Err(Halt::NotAPath(why)) => return Err(why),
+            Next::Datum { .. } => return Err(Halt::NotAPath(NotAPath::ByReceiverType)),
         }
     }
-    let ty = target.value_type(scope).ok_or(NotAPath::ByReceiverType)?;
-    Ok(recorder.reference(ReferenceRoot::Own, steps, ReferenceRead::Value, ty))
+    Ok(Walked::Reached { steps, target })
 }
 
 /// One step of a path as the AST writes it.

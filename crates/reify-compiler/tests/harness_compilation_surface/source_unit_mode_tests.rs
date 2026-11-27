@@ -671,10 +671,7 @@ structure def Asm {
 fn member_reads_that_may_be_absent_are_references() {
     let module = compile_clean(MAY_BE_ABSENT_SOURCE);
     let registry = template_registry(&module);
-    let mut scope = definition_scope(&module, &registry, "Asm");
-    // The second output declares a guarded sub that today's compile does not
-    // elaborate (task 8414), as the member table will.
-    scope.sub_component_types.insert("fan".into(), "Fan".into());
+    let scope = may_be_absent_scope(&module, &registry);
     let real = Type::dimensionless_scalar();
 
     let real_or_int = Type::Union(vec![real.clone(), Type::Int]);
@@ -965,8 +962,9 @@ fn auto_constructor_argument_is_an_unknown_reference() {
     assert_eq!(argument.result_type, Type::dimensionless_scalar());
 }
 
-/// The scope of `Asm` in the may-be-absent fixture, with the guarded sub `fan`
-/// declared as the member table will declare it.
+/// The scope of `Asm` in the may-be-absent fixture. The second output declares
+/// a guarded sub that today's compile does not elaborate (task 8414), as the
+/// member table will, so `fan` is added by hand.
 fn may_be_absent_scope<'a>(
     module: &'a CompiledModule,
     registry: &'a HashMap<String, &'a TopologyTemplate>,

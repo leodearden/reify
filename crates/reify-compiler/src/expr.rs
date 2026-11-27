@@ -2417,6 +2417,13 @@ fn compile_expr_guarded_with_expected_inner(
             if let Some(diagnostic) = later_declared_structure_error(scope, name, expr.span) {
                 return make_poison_literal(diagnostics, diagnostic);
             }
+            if name == "present"
+                && let Some(unit) = scope.source_unit()
+                && let Some(read) =
+                    source_unit_paths::compile_presence(args, arg_names, scope, unit, functions)
+            {
+                return read;
+            }
 
             // ── task 3808 (δ): semantic gate — reject `auto` in function-call args ──
             // Named-arg `auto` (both strict `ExprKind::Auto { free: false }` and free
