@@ -543,76 +543,117 @@ fn member_of<'s>(
     }
 }
 
+/// The kinds of member a definition declares.
+#[derive(Clone, Copy)]
+enum MemberKind {
+    Cell,
+    Cluster,
+    Sub,
+    Geometry,
+    Port,
+}
+
+/// The order a member name is looked up in. A cluster precedes a sub because
+/// each arm's sub is also recorded under the cluster's name, and the cluster
+/// is what the name means.
+const MEMBER_LOOKUP_ORDER: [MemberKind; 5] = [
+    MemberKind::Cell,
+    MemberKind::Cluster,
+    MemberKind::Sub,
+    MemberKind::Geometry,
+    MemberKind::Port,
+];
+
 /// A member of the definition the scope describes, from the scope's maps.
 fn own_member<'s>(member: &str, scope: &'s CompilationScope<'s>) -> Option<Target<'s>> {
-    if let Some((id, ty)) = scope.resolve(member)
-        && id.entity == scope.entity_name
-    {
-        return Some(Target::Cell(ty.clone()));
-    }
-    if let Some(definition) = scope.sub_component_types.get(member) {
-        let definition = definition.clone();
-        if scope.collection_sub_names.contains(member) {
-            return Some(Target::Collection(definition));
+    MEMBER_LOOKUP_ORDER
+        .into_iter()
+        .find_map(|kind| own_member_of_kind(kind, member, scope))
+}
+
+fn own_member_of_kind<'s>(
+    kind: MemberKind,
+    member: &str,
+    scope: &'s CompilationScope<'s>,
+) -> Option<Target<'s>> {
+    match kind {
+        MemberKind::Cell => scope
+            .resolve(member)
+            .filter(|(id, _)| id.entity == scope.entity_name)
+            .map(|(_, ty)| Target::Cell(ty.clone())),
+        MemberKind::Cluster => scope.resolve_match_arm_group(member).map(cluster),
+        MemberKind::Sub => {
+            let definition = scope.sub_component_types.get(member)?.clone();
+            if scope.collection_sub_names.contains(member) {
+                return Some(Target::Collection(definition));
+            }
+            if let Some(keys) = scope.keyed_sub_keys.get(member) {
+                let keys = DeclaredKeys::Own(keys);
+                return Some(Target::Keyed { definition, keys });
+            }
+            Some(Target::Instance(Definition::Named(definition)))
         }
-        if let Some(keys) = scope.keyed_sub_keys.get(member) {
-            let keys = DeclaredKeys::Own(keys);
-            return Some(Target::Keyed { definition, keys });
-        }
-        return Some(Target::Instance(Definition::Named(definition)));
+        MemberKind::Geometry => scope
+            .geometry_realization_names
+            .contains(member)
+            .then_some(Target::Geometry),
+        MemberKind::Port => scope.port_names.contains(member).then(|| Target::Port {
+            definition: Definition::OfScope(scope),
+            port: member.to_string(),
+        }),
     }
-    if let Some(group) = scope.resolve_match_arm_group(member) {
-        return Some(cluster(group));
-    }
-    if scope.geometry_realization_names.contains(member) {
-        return Some(Target::Geometry);
-    }
-    scope.port_names.contains(member).then(|| Target::Port {
-        definition: Definition::OfScope(scope),
-        port: member.to_string(),
-    })
 }
 
 /// A member of another definition, from its template.
 fn template_member<'s>(template: &'s TopologyTemplate, member: &str) -> Option<Target<'s>> {
-    if let Some(cell) =
-        declared_cells(template).find(|cell| cell.id.member == member && !member.starts_with("__"))
-    {
-        return Some(Target::Cell(cell.cell_type.clone()));
+    MEMBER_LOOKUP_ORDER
+        .into_iter()
+        .find_map(|kind| template_member_of_kind(kind, template, member))
+}
+
+fn template_member_of_kind<'s>(
+    kind: MemberKind,
+    template: &'s TopologyTemplate,
+    member: &str,
+) -> Option<Target<'s>> {
+    match kind {
+        MemberKind::Cell => declared_cells(template)
+            .find(|cell| cell.id.member == member && !member.starts_with("__"))
+            .map(|cell| Target::Cell(cell.cell_type.clone())),
+        MemberKind::Cluster => template
+            .match_arm_groups
+            .iter()
+            .find(|g| g.name == member)
+            .map(cluster),
+        MemberKind::Sub => {
+            let sub = template
+                .sub_components
+                .iter()
+                .find(|sub| sub.name == member)?;
+            let definition = sub.element_structure_name().to_string();
+            Some(if sub.is_collection {
+                Target::Collection(definition)
+            } else if !sub.keyed_members.is_empty() {
+                let keys = DeclaredKeys::Template(&sub.keyed_members);
+                Target::Keyed { definition, keys }
+            } else {
+                Target::Instance(Definition::Named(definition))
+            })
+        }
+        MemberKind::Geometry => template
+            .realizations
+            .iter()
+            .any(|r| r.name.as_deref() == Some(member))
+            .then_some(Target::Geometry),
+        MemberKind::Port => template
+            .ports
+            .iter()
+            .any(|port| port.name == member)
+            .then(|| Target::Port {
+                definition: Definition::Named(template.name.clone()),
+                port: member.to_string(),
+            }),
     }
-    if let Some(group) = template.match_arm_groups.iter().find(|g| g.name == member) {
-        return Some(cluster(group));
-    }
-    if let Some(sub) = template
-        .sub_components
-        .iter()
-        .find(|sub| sub.name == member)
-    {
-        let definition = sub.element_structure_name().to_string();
-        return Some(if sub.is_collection {
-            Target::Collection(definition)
-        } else if !sub.keyed_members.is_empty() {
-            let keys = DeclaredKeys::Template(&sub.keyed_members);
-            Target::Keyed { definition, keys }
-        } else {
-            Target::Instance(Definition::Named(definition))
-        });
-    }
-    if template
-        .realizations
-        .iter()
-        .any(|r| r.name.as_deref() == Some(member))
-    {
-        return Some(Target::Geometry);
-    }
-    template
-        .ports
-        .iter()
-        .any(|port| port.name == member)
-        .then(|| Target::Port {
-            definition: Definition::Named(template.name.clone()),
-            port: member.to_string(),
-        })
 }
 
 /// A definition's value cells, guarded ones included.
