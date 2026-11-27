@@ -3247,19 +3247,24 @@ fn push_op_contract_failure(ctx: &EvalContext, code: DiagnosticCode) {
 /// Reify eval can have observable effects — a failing contract/op pushes a
 /// diagnostic into the RefCell-backed `EvalContext` — so eagerly evaluating the
 /// unused branch could surface a spurious diagnostic that a lazy map_or would
-/// not.  This mirrors Rust's own `Option::map_or` laziness.
+/// not.  This mirrors Rust's own `Option::map_or` laziness. Under a reader that
+/// may answer "not here yet" every argument is evaluated up front instead (see
+/// [`CombinatorArg`]), and a pending one makes the call pending with `f` unapplied.
 ///
 /// Precondition: `args.len() == 3` (guaranteed by the caller's arity gate).
 fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
+    let mark = ctx.pending_mark();
     let subject = eval_expr(&args[0], ctx);
+    let dflt = CombinatorArg::of(&args[1], ctx);
+    let f = CombinatorArg::of(&args[2], ctx);
+    if ctx.pending_since(mark) {
+        return Value::Undef;
+    }
     match subject {
         // some(x) -> apply f to the inner value; `dflt` (args[1]) is NOT evaluated.
-        Value::Option(Some(inner)) => {
-            let f = eval_expr(&args[2], ctx);
-            apply_lambda(&f, &[*inner], ctx)
-        }
+        Value::Option(Some(inner)) => apply_lambda(&f.into_value(ctx), &[*inner], ctx),
         // none -> dflt; the function arg `f` (args[2]) is NOT evaluated.
-        Value::Option(None) => eval_expr(&args[1], ctx),
+        Value::Option(None) => dflt.into_value(ctx),
         // undef subject (Kleene INV-2) — propagate Undef; neither branch evaluated.
         Value::Undef => Value::Undef,
         // non-Option subject (type error) — degrade gracefully; neither branch evaluated.
@@ -3311,10 +3316,17 @@ fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
 /// Evaluation is LAZY: `f` (args[1]) is only evaluated in the `Err` arm,
 /// mirroring `eval_map_or`'s laziness convention (the Ok-case never evaluates
 /// `f`, so a failing/side-effecting `f` expression never runs when unneeded).
+/// Under a reader that may answer "not here yet" `f` is evaluated up front, as
+/// in `eval_map_or`, and applied only to an `Err` payload.
 ///
 /// Precondition: `args.len() == 2` (guaranteed by the caller's arity gate).
 fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
+    let mark = ctx.pending_mark();
     let subject = eval_expr(&args[0], ctx);
+    let f = CombinatorArg::of(&args[1], ctx);
+    if ctx.pending_since(mark) {
+        return Value::Undef;
+    }
     match subject {
         // Ok{..} -> return the subject unchanged; `f` (args[1]) is NOT evaluated.
         Value::Enum {
@@ -3328,7 +3340,7 @@ fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
             ref variant,
             ref payload,
         } if type_name == "Result" && variant == "Err" => {
-            let f = eval_expr(&args[1], ctx);
+            let f = f.into_value(ctx);
             // The compiler (variant_construct.rs) guarantees every `Err`
             // payload carries exactly one field named "error" — surface a
             // violation via debug_assert (a wiring bug, not a user-reachable
@@ -3361,6 +3373,31 @@ fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
         Value::Undef => Value::Undef,
         // non-Result subject (type error) — degrade gracefully; f is NOT evaluated.
         _ => Value::Undef,
+    }
+}
+
+/// An argument of `map_or` / `map_err` that only some subjects use: evaluated
+/// up front under a reader that may answer "not here yet", so that one round
+/// asks for every cell it reads, and otherwise only when a subject uses it.
+enum CombinatorArg<'e> {
+    Evaluated(Value),
+    Unevaluated(&'e CompiledExpr),
+}
+
+impl<'e> CombinatorArg<'e> {
+    fn of(expr: &'e CompiledExpr, ctx: &EvalContext) -> Self {
+        if ctx.reads_every_operand() {
+            CombinatorArg::Evaluated(eval_expr(expr, ctx))
+        } else {
+            CombinatorArg::Unevaluated(expr)
+        }
+    }
+
+    fn into_value(self, ctx: &EvalContext) -> Value {
+        match self {
+            CombinatorArg::Evaluated(value) => value,
+            CombinatorArg::Unevaluated(expr) => eval_expr(expr, ctx),
+        }
     }
 }
 
