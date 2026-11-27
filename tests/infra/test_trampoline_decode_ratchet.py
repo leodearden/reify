@@ -8,6 +8,7 @@ tests/infra/test_trampoline_decode_ratchet.sh. Later S15 leaves add their rows t
 this file. Run this file directly to print each row's measured count.
 """
 
+import fnmatch
 import re
 import sys
 import unittest
@@ -67,6 +68,11 @@ REGISTRY_FREE_LITERAL = re.compile(r"StructureTypeId\(\s*(?:u32::MAX|0)\s*\)")
 REGISTRY_META_BY_ID = re.compile(
     r"\.(?:meta|declared_bounds|name_for)\(\s*&?\s*"
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\.type_id\b")
+READ_SCALAR_SI = re.compile(r"\bread_scalar_si\b")
+SILENT_ZERO = re.compile(r"unwrap_or\(\s*0\.0\s*\)|=>\s*0\.0\b|\[\s*0\.0\s*;\s*3\s*\]")
+# A construction opens its body at the line end or with a `field:`; a pattern
+# opens it with `..` or a shorthand `field,`.
+INLINE_FAILED = re.compile(r"ComputeOutcome::Failed\s*\{(?:\s*$|\s*[A-Za-z_]\w*\s*:(?!:))")
 
 
 def result_type_write(structure):
@@ -82,18 +88,42 @@ def result_type_write(structure):
                       + r'(?:\.(?:to_string|to_owned|into)\(\))?\s*,')
 
 
-def _is_excluded(path, excluded):
-    return any(path.startswith(entry) if entry.endswith("/") else path == entry
-               for entry in excluded)
+def _is_excluded(path, excluded, excluded_names):
+    name = path.rsplit("/", 1)[-1]
+    return (any(path.startswith(entry) if entry.endswith("/") else path == entry
+                for entry in excluded)
+            or any(fnmatch.fnmatchcase(name, pattern) for pattern in excluded_names))
 
 
-def scan_set(root, globs, excluded):
+def scan_set(root, globs, excluded, excluded_names=()):
     """Repo-relative posix paths the globs match, minus each path equal to an
-    excluded file entry or under an excluded directory entry (ending in '/')."""
+    excluded file entry or under an excluded directory entry (ending in '/'),
+    and minus each path whose file name matches an excluded name pattern."""
     root = Path(root)
     matched = {path.relative_to(root).as_posix()
                for glob in globs for path in root.glob(glob) if path.is_file()}
-    return tuple(sorted(path for path in matched if not _is_excluded(path, excluded)))
+    return tuple(sorted(path for path in matched
+                        if not _is_excluded(path, excluded, excluded_names)))
+
+
+def reify_eval_production(root, excluded=()):
+    """reify-eval's src/ files minus its test-only files (a `#[cfg(test)] mod`
+    declared from a parent, which the lexer cannot see) and `excluded`."""
+    return scan_set(root, (REIFY_EVAL_SOURCES,), excluded, SRC_TEST_ONLY_NAMES)
+
+
+def param_literal(param):
+    return re.compile('"' + re.escape(param) + '"')
+
+
+def decoded_param_read_row(root, structure_slug, param):
+    """C1 inv 1: a declared param is read only by its decoder in stdlib_inputs."""
+    return rcr.Row(row_id=f"decoded-param-read-{structure_slug}-{param.replace('_', '-')}",
+                   construct=param_literal(param),
+                   view=rcr.View.STARTS_IN_CODE,
+                   paths=reify_eval_production(
+                       root, (STDLIB_INPUTS,) + PARAM_LABEL_ALLOWLIST.get(param, ())),
+                   baseline=0, target=0, lowered_by="α #8674")
 
 
 def rows(root):
@@ -128,6 +158,31 @@ def rows(root):
                 paths=scan_set(root, (RUST_SOURCES, GUI_SOURCES),
                                TEST_ONLY + GUI_TEST_ONLY + (MASS_PROPERTIES_OWNER,)),
                 baseline=0, target=0, lowered_by="η #8697"),
+    ) + tuple(decoded_param_read_row(root, "elastic-material", param)
+              for param in ELASTIC_MATERIAL_PARAMS) + (
+        rcr.Row(row_id="read-scalar-si",
+                construct=READ_SCALAR_SI,
+                view=rcr.View.CODE,
+                paths=reify_eval_production(root),
+                baseline=0, target=0, lowered_by="α #8674"),
+        rcr.Row(row_id="modal-silent-zero",
+                construct=SILENT_ZERO,
+                view=rcr.View.CODE,
+                paths=(MODAL_OPS,),
+                baseline=4, target=3,
+                lowered_by="β #8679 (ModalOptions.shift_frequency); the rest are "
+                           "non-input index/sampler residuals"),
+        rcr.Row(row_id="inline-failed",
+                construct=INLINE_FAILED,
+                view=rcr.View.CODE,
+                paths=STDLIB_INPUTS_CONSUMERS,
+                baseline=6, target=6,
+                lowered_by="hold: non-decode outcomes, S16 trampoline factoring"),
+        rcr.Row(row_id="inline-failed-shell-extract",
+                construct=INLINE_FAILED,
+                view=rcr.View.CODE,
+                paths=(SHELL_EXTRACT,),
+                baseline=13, target=1, lowered_by="λ #8706"),
     )
 
 
@@ -198,6 +253,11 @@ def evaluate_by_id(root):
     return {result.row.row_id: result for result in rcr.evaluate(rows(root), root)}
 
 
+def evaluate_row(root, row_id):
+    (result,) = rcr.evaluate([row for row in rows(root) if row.row_id == row_id], root)
+    return result
+
+
 class EveryRowHasAFlagClearFixture(TempRoot):
 
     def test_fixture_ids_match_row_ids(self):
@@ -262,7 +322,7 @@ class RowsFlagAndClear(TempRoot):
                 root = self.fresh_root()
                 write_clean_twin(root)
                 location = append_sample(root, sample_file(row_id), line)
-                result = evaluate_by_id(root)[row_id]
+                result = evaluate_row(root, row_id)
                 self.assertEqual(result.count, result.row.baseline + 1)
                 self.assertIsNotNone(result.violation)
                 self.assertIn(row_id, result.violation)
@@ -450,7 +510,7 @@ class RowExclusions(TempRoot):
         root = self.fresh_root()
         write_clean_twin(root)
         write_file(root, case.rel or sample_file(row_id), case.text, mode="a")
-        return evaluate_by_id(root)[row_id]
+        return evaluate_row(root, row_id)
 
     def test_excluded_spellings_do_not_count(self):
         for row_id, cases in NOT_COUNTED.items():
