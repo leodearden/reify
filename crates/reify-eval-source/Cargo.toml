@@ -1,0 +1,17 @@
+[package]
+name = "reify-eval-source"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The second output of the new evaluation core: a program's definition list and member tables, lowered from source (docs/prds/instances-on-the-core.md section 5.2)"
+
+[dependencies]
+workspace-feature-union.workspace = true
+reify-compiler.workspace = true
+reify-ast.workspace = true
+reify-syntax.workspace = true
+reify-core.workspace = true
+reify-ir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -4560,8 +4560,10 @@ dependencies = [
 name = "reify-eval-instances"
 version = "0.1.0"
 dependencies = [
+ "reify-ast",
  "reify-core",
  "reify-eval-core",
+ "reify-eval-source",
  "reify-expr",
  "reify-ir",
  "reify-syntax",
@@ -4570,6 +4572,19 @@ dependencies = [
  "toml 0.8.2",
  "tree-sitter",
  "tree-sitter-reify",
+ "workspace-feature-union",
+]
+
+[[package]]
+name = "reify-eval-source"
+version = "0.1.0"
+dependencies = [
+ "reify-ast",
+ "reify-compiler",
+ "reify-core",
+ "reify-ir",
+ "reify-syntax",
+ "tempfile",
  "workspace-feature-union",
 ]
 
