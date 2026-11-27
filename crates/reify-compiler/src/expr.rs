@@ -3118,8 +3118,20 @@ fn compile_expr_guarded_with_expected_inner(
                     Vec::with_capacity(compiled_args.len());
                 for (pidx, (pname, _)) in params.iter().enumerate() {
                     if let Some(call_idx) = param_arg[pidx] {
-                        ordered_args
-                            .push(((*pname).to_string(), compiled_args[call_idx].clone()));
+                        // In the source-unit mode an `auto` argument is an
+                        // unknown of the instance that wrote it.
+                        let is_auto =
+                            matches!(args[call_idx].kind, reify_ast::ExprKind::Auto { .. });
+                        let argument = match scope.source_unit() {
+                            Some(unit) if is_auto => {
+                                let declared =
+                                    template.value_cells.iter().find(|vc| vc.id.member == *pname);
+                                let ty = declared.map_or(Type::Error, |vc| vc.cell_type.clone());
+                                unit.argument_unknown(pname, ty)
+                            }
+                            _ => compiled_args[call_idx].clone(),
+                        };
+                        ordered_args.push(((*pname).to_string(), argument));
                     }
                 }
                 // Unknown named args (no matching param): diagnose, then keep the

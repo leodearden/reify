@@ -59,22 +59,42 @@ impl SourceUnitRecorder {
         read: ReferenceRead,
         ty: Type,
     ) -> CompiledExpr {
-        let mut references = self.references.borrow_mut();
-        let known = references
+        let known = self
+            .references
+            .borrow()
             .iter()
             .find(|r| r.root == root && r.steps == steps && r.read == read)
             .map(|r| r.id.clone());
-        let id = known.unwrap_or_else(|| {
-            let id = ValueCellId::new(LOCAL_REFERENCE_ENTITY, references.len().to_string());
-            references.push(LocalReference {
-                id: id.clone(),
-                root,
-                steps,
-                read,
-            });
-            id
-        });
+        let id = known.unwrap_or_else(|| self.mint(root, steps, read));
         CompiledExpr::value_ref(id, ty)
+    }
+
+    /// A read of the unknown an `auto` argument for `parameter` stands for,
+    /// typed as the parameter. Never shared: each `auto` written is its own
+    /// unknown.
+    pub(crate) fn argument_unknown(&self, parameter: &str, ty: Type) -> CompiledExpr {
+        let read = ReferenceRead::ArgumentUnknown {
+            parameter: parameter.to_string(),
+        };
+        let id = self.mint(ReferenceRoot::Own, Vec::new(), read);
+        CompiledExpr::value_ref(id, ty)
+    }
+
+    fn mint(
+        &self,
+        root: ReferenceRoot,
+        steps: Vec<SourceStep>,
+        read: ReferenceRead,
+    ) -> ValueCellId {
+        let mut references = self.references.borrow_mut();
+        let id = ValueCellId::new(LOCAL_REFERENCE_ENTITY, references.len().to_string());
+        references.push(LocalReference {
+            id: id.clone(),
+            root,
+            steps,
+            read,
+        });
+        id
     }
 }
 
@@ -104,13 +124,13 @@ pub fn compile_source_unit(
     );
     drop(unit_scope);
     let read = ids_read(&tree);
-    let references = recorder
+    let references: Vec<LocalReference> = recorder
         .references
         .into_inner()
         .into_iter()
         .filter(|r| read.contains(&r.id))
         .collect();
-    let instance_requests = instance_requests(&tree);
+    let instance_requests = instance_requests(&tree, &references);
     CompiledSourceUnit {
         expr: tree,
         references,
@@ -122,8 +142,13 @@ pub fn compile_source_unit(
 /// keyed by its place, the child indices from the root in
 /// `CompiledExpr::for_each_child` order, because a unit's content holds no
 /// source position (PRD §5.2).
-fn instance_requests(tree: &CompiledExpr) -> Vec<InstanceRequest> {
-    fn visit(node: &CompiledExpr, place: &mut Vec<usize>, requests: &mut Vec<InstanceRequest>) {
+fn instance_requests(tree: &CompiledExpr, references: &[LocalReference]) -> Vec<InstanceRequest> {
+    fn visit(
+        node: &CompiledExpr,
+        place: &mut Vec<usize>,
+        references: &[LocalReference],
+        requests: &mut Vec<InstanceRequest>,
+    ) {
         if let CompiledExprKind::StructureInstanceCtor {
             type_name,
             ordered_args,
@@ -135,9 +160,9 @@ fn instance_requests(tree: &CompiledExpr) -> Vec<InstanceRequest> {
                 definition: type_name.clone(),
                 arguments: ordered_args
                     .iter()
-                    .map(|(parameter, _)| RequestArgument {
+                    .map(|(parameter, argument)| RequestArgument {
                         parameter: parameter.clone(),
-                        unknown: None,
+                        unknown: argument_unknown_read(argument, references),
                     })
                     .collect(),
             });
@@ -145,14 +170,30 @@ fn instance_requests(tree: &CompiledExpr) -> Vec<InstanceRequest> {
         let mut index = 0;
         node.for_each_child(&mut |child| {
             place.push(index);
-            visit(child, place, requests);
+            visit(child, place, references, requests);
             place.pop();
             index += 1;
         });
     }
     let mut requests = Vec::new();
-    visit(tree, &mut Vec::new(), &mut requests);
+    visit(tree, &mut Vec::new(), references, &mut requests);
     requests
+}
+
+/// The unknown an argument is, when it is the read of an `auto` argument's
+/// unknown (see [`SourceUnitRecorder::argument_unknown`]).
+fn argument_unknown_read(
+    argument: &CompiledExpr,
+    references: &[LocalReference],
+) -> Option<ValueCellId> {
+    let CompiledExprKind::ValueRef(id) = &argument.kind else {
+        return None;
+    };
+    references
+        .iter()
+        .find(|r| &r.id == id)
+        .filter(|r| matches!(r.read, ReferenceRead::ArgumentUnknown { .. }))
+        .map(|r| r.id.clone())
 }
 
 /// Every cell id the tree reads, lambda bodies included. A table entry minted
