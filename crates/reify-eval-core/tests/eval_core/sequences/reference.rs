@@ -1114,4 +1114,153 @@ mod tests {
             Err(Invalid::Overflow { path: at("c", &[]) })
         );
     }
+
+    /// Root scope `r` whose member `inner` is a scope over "inner.m"
+    /// holding the cell c over "x", beside the cell `reader` over inner/c;
+    /// under the depth setting `depth`, if any.
+    fn nested_r(depth: Option<u64>) -> Inputs {
+        let mut design = scope_r(
+            members([
+                (step("inner"), scope("inner.m")),
+                (step("reader"), cell([declarer([step("inner"), step("c")])])),
+            ]),
+            &[("x", 4)],
+        );
+        design.insert(named("inner.m"), members([(step("c"), cell([input("x")]))]));
+        design.extend(depth.map(|depth| (depth_limit(), bound(depth))));
+        design
+    }
+
+    fn settled(failure: Failure) -> Result<Expected, Invalid> {
+        Ok(Expected {
+            node: None,
+            outcome: Expect::Failure(failure),
+        })
+    }
+
+    #[test]
+    fn under_a_depth_setting_a_member_answers_and_a_member_of_its_scope_is_too_deep() {
+        let design = nested_r(Some(1));
+        let inner = answer(&design, &at("r", &["inner"])).map(|expected| expected.outcome);
+        assert!(
+            matches!(inner, Ok(Expect::Value(Out::Members(_)))),
+            "{inner:?}"
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["inner", "c"])),
+            settled(Failure::TooDeep { limit: 1 })
+        );
+    }
+
+    #[test]
+    fn a_path_past_the_depth_setting_that_nothing_declares_is_absent() {
+        let design = nested_r(Some(1));
+        assert_eq!(
+            answer(&design, &at("r", &["inner", "missing"])),
+            absent(None)
+        );
+    }
+
+    #[test]
+    fn a_path_below_a_too_deep_node_answers_its_failure() {
+        let design = nested_r(Some(1));
+        assert_eq!(
+            answer(&design, &at("r", &["inner", "c", "x"])),
+            settled(Failure::TooDeep { limit: 1 })
+        );
+    }
+
+    #[test]
+    fn a_cell_reading_a_too_deep_member_is_blocked_by_it() {
+        let design = nested_r(Some(1));
+        assert_eq!(answer(&design, &at("r", &["reader"])), blocked_at("0"));
+    }
+
+    #[test]
+    fn with_no_limit_setting_nothing_is_bounded() {
+        let design = nested_r(None);
+        assert_eq!(
+            answer(&design, &at("r", &["inner", "c"])),
+            int_of(ToyKind::Cell, 4)
+        );
+    }
+
+    #[test]
+    fn a_children_setting_fails_a_scope_holding_more_members_and_each_member() {
+        let held = members([
+            (step("a"), cell([input("x")])),
+            (step("b"), cell([input("x")])),
+        ]);
+        let mut design = scope_r(held, &[("x", 4)]);
+        design.insert(children_limit(), bound(1));
+        let too_many = Failure::TooManyChildren { limit: 1 };
+        assert_eq!(
+            answer(&design, &at("r", &[])),
+            Ok(Expected {
+                node: Some(ToyKind::Scope),
+                outcome: Expect::Failure(too_many.clone()),
+            })
+        );
+        assert_eq!(answer(&design, &at("r", &["a"])), settled(too_many));
+    }
+
+    #[test]
+    fn a_children_setting_fails_a_collection_past_it_and_answers_one_at_it() {
+        for (count, fails) in [(2, true), (1, false)] {
+            let design = inputs([
+                (
+                    root("list"),
+                    declaration(collection(input("n"), input("e"))),
+                ),
+                (named("n"), int(count)),
+                (named("e"), declaration(cell([input("x")]))),
+                (children_limit(), bound(1)),
+            ]);
+            let found = answer(&design, &at("list", &[])).map(|expected| expected.outcome);
+            if fails {
+                assert_eq!(
+                    found,
+                    Ok(Expect::Failure(Failure::TooManyChildren { limit: 1 }))
+                );
+            } else {
+                assert!(
+                    matches!(found, Ok(Expect::Value(Out::Elements { count: 1, .. }))),
+                    "{found:?}"
+                );
+            }
+        }
+    }
+
+    /// How many paths a fresh reference works out the declaration of to
+    /// answer `at`.
+    fn paths_resolved_for(design: &Inputs, at: &ModelPath) -> usize {
+        let mut reference = Reference::new(design.clone());
+        reference.answer(at).expect("the design is valid");
+        reference.paths_resolved()
+    }
+
+    #[test]
+    fn the_paths_resolved_are_the_ancestors_and_the_read_targets_of_a_demand() {
+        let held = members([
+            (step("a"), cell([input("x")])),
+            (step("b"), cell([declarer([step("a")])])),
+        ]);
+        let design = scope_r(held, &[("x", 4)]);
+        assert_eq!(paths_resolved_for(&design, &at("r", &["b"])), 3);
+    }
+
+    #[test]
+    fn a_path_waiting_on_a_ring_is_answered_without_being_resolved() {
+        let design = scope_r(
+            members([(step("c"), cell([declarer([step("c"), step("x")])]))]),
+            &[],
+        );
+        assert_eq!(paths_resolved_for(&design, &at("r", &["c"])), 2);
+    }
+
+    #[test]
+    fn a_path_off_a_ring_below_it_is_resolved_to_the_ring_s_cycle() {
+        let design = two_cell_ring([]);
+        assert_eq!(paths_resolved_for(&design, &at("r", &["a", "x"])), 4);
+    }
 }
