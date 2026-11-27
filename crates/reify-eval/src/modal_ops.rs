@@ -4888,6 +4888,64 @@ mod tests {
         ]
     }
 
+    // ── S15 α T1/T2 (task 8674): free vibration decodes an ElasticMaterial ──
+
+    fn run_free_vibration(material: Value) -> ComputeOutcome {
+        let mut inputs = modal_inputs(0.5, 0.05, 0.05, 7850.0, 2, None);
+        inputs[0] = material;
+        solve_modal_analysis_trampoline(
+            &inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    /// The presets carry a positive density, so the density guard passes and
+    /// the material decode is what fails, with ONE coded Error naming the
+    /// trait path.
+    #[test]
+    fn free_vibration_fails_a_malformed_elastic_material_naming_the_trait_path() {
+        use crate::compute_targets::stdlib_inputs::test_support::{
+            assert_one_coded_error, material_missing_poisson_ratio,
+            material_with_length_youngs_modulus,
+        };
+        assert_one_coded_error(
+            &run_free_vibration(material_missing_poisson_ratio()),
+            reify_core::DiagnosticCode::ComputeInputMalformed,
+            "ElasticMaterial.poisson_ratio",
+        );
+        assert_one_coded_error(
+            &run_free_vibration(material_with_length_youngs_modulus()),
+            reify_core::DiagnosticCode::DimensionedArgRejected,
+            "ElasticMaterial.youngs_modulus",
+        );
+    }
+
+    /// An unresolved modulus fails quietly: Undef in, Undef out.
+    #[test]
+    fn free_vibration_fails_an_unresolved_youngs_modulus_quietly() {
+        use crate::compute_targets::stdlib_inputs::test_support::{
+            hand_built_material, steel_density,
+        };
+        let material = hand_built_material(vec![
+            ("youngs_modulus", Value::Undef),
+            ("poisson_ratio", Value::Real(0.29)),
+            ("density", steel_density()),
+        ]);
+        match run_free_vibration(material) {
+            ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            } => {
+                assert!(diagnostics.is_empty(), "{diagnostics:?}");
+                assert!(structured_detail.is_empty());
+            }
+            other => panic!("an Undef youngs_modulus must fail quietly, got {other:?}"),
+        }
+    }
+
     /// Number of `Mode`s in a `Completed` `ModalResult` outcome (panics if the
     /// outcome is not a well-shaped Completed ModalResult).
     fn modes_len(outcome: &ComputeOutcome) -> usize {
