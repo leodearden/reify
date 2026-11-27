@@ -664,3 +664,109 @@ fn an_optimized_function_called_with_an_undefined_argument_evaluates_its_body_wi
         Evaluated::Value(millimetres(5.0))
     );
 }
+
+// ── map_or and map_err evaluate every argument ─────────────────────────────
+
+fn option_int() -> Type {
+    Type::Option(Box::new(Type::Int))
+}
+
+fn result_type() -> Type {
+    Type::Enum("Result".to_string())
+}
+
+/// `|x| body`, capturing `captures`.
+fn lambda(body: CompiledExpr, captures: &[&ValueCellId]) -> CompiledExpr {
+    let ty = Type::Function {
+        params: vec![Type::Int],
+        return_type: Box::new(body.result_type.clone()),
+    };
+    CompiledExpr::lambda(
+        vec![("x".to_string(), Some(Type::Int))],
+        vec![lambda_param()],
+        body,
+        captures.iter().map(|id| (*id).clone()).collect(),
+        ty,
+    )
+}
+
+fn lambda_param() -> ValueCellId {
+    ValueCellId::new("__lambda", "x")
+}
+
+fn identity(captures: &[&ValueCellId]) -> CompiledExpr {
+    lambda(read_int(&lambda_param()), captures)
+}
+
+fn map_or(subject: CompiledExpr, default: CompiledExpr, f: CompiledExpr) -> CompiledExpr {
+    CompiledExpr::user_function_call("map_or".to_string(), vec![subject, default, f], Type::Int)
+}
+
+fn map_err(subject: CompiledExpr, f: CompiledExpr) -> CompiledExpr {
+    CompiledExpr::user_function_call("map_err".to_string(), vec![subject, f], result_type())
+}
+
+fn result_value(variant: &str, field: &str, n: i64) -> Value {
+    Value::Enum {
+        type_name: "Result".to_string(),
+        variant: variant.to_string(),
+        payload: vec![(field.to_string(), Value::Int(n))],
+    }
+}
+
+#[test]
+fn map_or_on_some_evaluates_its_default_too_and_keeps_its_value() {
+    let d = cell("d");
+    let reader = TestReader::new().with(&d, Value::Int(9));
+    let subject = CompiledExpr::option_some(int(1), option_int());
+    let expr = map_or(subject, read_int(&d), identity(&[]));
+    let expected = old_eval(&expr, &reader);
+    assert_eq!(expected, Value::Int(1));
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(expected));
+    assert_eq!(asked(&reader), ids(&[&d]));
+}
+
+#[test]
+fn map_or_on_none_evaluates_its_function_expression_too_and_gives_the_default() {
+    let (c, d) = (cell("c"), cell("d"));
+    let reader = TestReader::new().with(&c, Value::Int(5)).with(&d, Value::Int(9));
+    let expr = map_or(CompiledExpr::option_none(option_int()), read_int(&d), identity(&[&c]));
+    assert_eq!(old_eval(&expr, &reader), Value::Int(9));
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(Value::Int(9)));
+    assert_eq!(asked(&reader), ids(&[&c, &d]));
+}
+
+#[test]
+fn map_or_on_a_pending_subject_evaluates_every_argument_and_is_pending() {
+    let (c, d, s) = (cell("c"), cell("d"), cell("s"));
+    let reader = TestReader::new()
+        .not_yet(&s)
+        .with(&c, Value::Int(5))
+        .with(&d, Value::Int(9));
+    let expr = map_or(read(&s, option_int()), read_int(&d), identity(&[&c]));
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&s, &d, &c]));
+}
+
+#[test]
+fn map_err_on_ok_evaluates_its_function_expression_but_does_not_apply_it() {
+    let c = cell("c");
+    let reader = TestReader::new().with(&c, Value::Int(5));
+    let ok = result_value("Ok", "value", 4);
+    let expr = map_err(
+        CompiledExpr::literal(ok.clone(), result_type()),
+        lambda(panic_on_eval_sentinel(), &[&c]),
+    );
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(ok));
+    assert_eq!(asked(&reader), ids(&[&c]));
+}
+
+#[test]
+fn map_err_on_err_applies_its_function_as_the_old_entry_does() {
+    let reader = TestReader::new();
+    let err = result_value("Err", "error", 4);
+    let expr = map_err(CompiledExpr::literal(err, result_type()), identity(&[]));
+    let expected = old_eval(&expr, &reader);
+    assert!(!expected.is_undef(), "the old entry gives a value");
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(expected));
+}
