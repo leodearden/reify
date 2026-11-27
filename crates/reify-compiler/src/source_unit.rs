@@ -224,18 +224,17 @@ fn argument_unknown_read(
 /// form the mode's hooks miss reds here, naming the id it leaked. A release
 /// build skips the census.
 fn debug_assert_reads_are_local(read: &HashSet<ValueCellId>, references: &[LocalReference]) {
-    if !cfg!(debug_assertions) {
-        return;
-    }
-    let binder_suffix = format!(".{LOCAL_REFERENCE_ENTITY}");
-    let leaked: Vec<&ValueCellId> = read
-        .iter()
-        .filter(|id| !references.iter().any(|r| &r.id == *id))
-        .filter(|id| !(id.entity.starts_with('$') && id.entity.ends_with(&binder_suffix)))
-        .collect();
+    let leaked = || {
+        let binder_suffix = format!(".{LOCAL_REFERENCE_ENTITY}");
+        read.iter()
+            .filter(|id| !references.iter().any(|r| &r.id == *id))
+            .filter(|id| !(id.entity.starts_with('$') && id.entity.ends_with(&binder_suffix)))
+            .collect::<Vec<&ValueCellId>>()
+    };
     debug_assert!(
-        leaked.is_empty(),
-        "a source unit reads ids that are neither local references nor its binders: {leaked:?}"
+        leaked().is_empty(),
+        "a source unit reads ids that are neither local references nor its binders: {:?}",
+        leaked()
     );
 }
 
