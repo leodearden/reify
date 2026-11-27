@@ -13,12 +13,16 @@ use std::collections::{BTreeSet, HashMap};
 
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DimensionVector, Type, ValueCellId};
-use reify_expr::{CellRead, EvalContext, Evaluated, PendingReader, eval_expr, eval_expr_or_pending};
+use reify_expr::{
+    CellRead, EvalContext, Evaluated, PendingReader, eval_expr, eval_expr_or_pending,
+};
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledMatchArm, CompiledPattern,
     ComputeDispatch, ComputeDispatchOutcome, SelectorKind, Value, ValueMap,
 };
-use reify_test_support::builders::{compiled_function, conditional_expr, list_expr, std_call};
+use reify_test_support::builders::{
+    compiled_function, conditional_expr, list_expr, map_expr, std_call,
+};
 
 // ── The test reader ─────────────────────────────────────────────────────────
 
@@ -157,7 +161,10 @@ fn with_every_cell_here_the_value_is_the_old_entrys_value() {
             "a list literal",
             list_expr(vec![read_int(&a), read_int(&b), int(9)]),
         ),
-        ("a stdlib call", std_call("abs", vec![read_int(&a)], Type::Int)),
+        (
+            "a stdlib call",
+            std_call("abs", vec![read_int(&a)], Type::Int),
+        ),
         (
             "a match on a stored enum",
             CompiledExpr::match_expr(
@@ -227,14 +234,8 @@ fn deciding_left_values() -> Vec<(BinOp, Value)> {
 /// `op(read(x), read(y))` and `op(read(y), read(x))`.
 fn both_orders(op: BinOp, x: &ValueCellId, y: &ValueCellId) -> [(&'static str, CompiledExpr); 2] {
     [
-        (
-            "x first",
-            binop(op, read_bool(x), read_bool(y), Type::Bool),
-        ),
-        (
-            "y first",
-            binop(op, read_bool(y), read_bool(x), Type::Bool),
-        ),
+        ("x first", binop(op, read_bool(x), read_bool(y), Type::Bool)),
+        ("y first", binop(op, read_bool(y), read_bool(x), Type::Bool)),
     ]
 }
 
@@ -253,7 +254,11 @@ fn a_logical_operator_whose_left_operand_decides_still_reads_the_right_and_keeps
                 Evaluated::Value(expected),
                 "{op:?} with x = {left:?}, {order}"
             );
-            assert_eq!(asked(&reader), ids(&[&x, &y]), "{op:?} with x = {left:?}, {order}");
+            assert_eq!(
+                asked(&reader),
+                ids(&[&x, &y]),
+                "{op:?} with x = {left:?}, {order}"
+            );
         }
     }
 }
@@ -270,7 +275,11 @@ fn a_logical_operator_whose_left_operand_decides_is_pending_when_the_other_is_no
                 Evaluated::Pending,
                 "{op:?} with x = {left:?}, {order}"
             );
-            assert_eq!(asked(&reader), ids(&[&x, &y]), "{op:?} with x = {left:?}, {order}");
+            assert_eq!(
+                asked(&reader),
+                ids(&[&x, &y]),
+                "{op:?} with x = {left:?}, {order}"
+            );
         }
     }
 }
@@ -282,7 +291,11 @@ fn if_then_else(condition: CompiledExpr, a: &ValueCellId, b: &ValueCellId) -> Co
 }
 
 /// `match discriminant { Red => read(a), _ => read(b) }`.
-fn match_red_or_other(discriminant: CompiledExpr, a: &ValueCellId, b: &ValueCellId) -> CompiledExpr {
+fn match_red_or_other(
+    discriminant: CompiledExpr,
+    a: &ValueCellId,
+    b: &ValueCellId,
+) -> CompiledExpr {
     CompiledExpr::match_expr(
         discriminant,
         vec![
@@ -354,7 +367,11 @@ fn a_match_on_a_variant_whose_payload_is_not_here_yet_evaluates_no_arm() {
         .with(&b, Value::Int(2));
     let expr = match_red_or_other(red_with_shade(read_int(&c)), &a, &b);
     assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
-    assert_eq!(asked(&reader), ids(&[&c]), "the tag is known, but no arm is evaluated");
+    assert_eq!(
+        asked(&reader),
+        ids(&[&c]),
+        "the tag is known, but no arm is evaluated"
+    );
 }
 
 #[test]
@@ -385,8 +402,16 @@ fn an_if_or_a_match_whose_condition_is_here_evaluates_only_the_taken_arm() {
             .with(&b, Value::Int(2));
         let expected = old_eval(&expr, &reader);
         assert!(!expected.is_undef(), "{name}: the old entry gives a value");
-        assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(expected), "{name}");
-        assert_eq!(asked(&reader), expected_asks, "{name}: only the taken arm is evaluated");
+        assert_eq!(
+            pending_eval(&expr, &reader),
+            Evaluated::Value(expected),
+            "{name}"
+        );
+        assert_eq!(
+            asked(&reader),
+            expected_asks,
+            "{name}: only the taken arm is evaluated"
+        );
     }
 }
 
@@ -402,7 +427,11 @@ fn loop_var() -> ValueCellId {
     ValueCellId::new("$quant0.S", "p")
 }
 
-fn quantifier(kind: QuantifierKind, collection: CompiledExpr, predicate: CompiledExpr) -> CompiledExpr {
+fn quantifier(
+    kind: QuantifierKind,
+    collection: CompiledExpr,
+    predicate: CompiledExpr,
+) -> CompiledExpr {
     CompiledExpr::quantifier(kind, "p".to_string(), loop_var(), collection, predicate)
 }
 
@@ -477,7 +506,11 @@ fn later_element_reads_other(other: &ValueCellId) -> CompiledExpr {
         CompiledExpr::literal(Value::Bool(false), Type::Bool),
         read_bool(other),
     );
-    quantifier(QuantifierKind::ForAll, list_expr(vec![int(0), int(1)]), body)
+    quantifier(
+        QuantifierKind::ForAll,
+        list_expr(vec![int(0), int(1)]),
+        body,
+    )
 }
 
 #[test]
@@ -485,13 +518,19 @@ fn a_value_quantifier_decided_by_its_first_element_still_evaluates_the_later_one
     let other = cell("other");
 
     let reader = TestReader::new().not_yet(&other);
-    assert_eq!(pending_eval(&later_element_reads_other(&other), &reader), Evaluated::Pending);
+    assert_eq!(
+        pending_eval(&later_element_reads_other(&other), &reader),
+        Evaluated::Pending
+    );
     assert_eq!(asked(&reader), ids(&[&other]));
 
     let reader = TestReader::new().with(&other, Value::Bool(true));
     let expr = later_element_reads_other(&other);
     assert_eq!(old_eval(&expr, &reader), Value::Bool(false));
-    assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(Value::Bool(false)));
+    assert_eq!(
+        pending_eval(&expr, &reader),
+        Evaluated::Value(Value::Bool(false))
+    );
     assert_eq!(asked(&reader), ids(&[&other]));
 }
 
@@ -524,8 +563,15 @@ fn a_quantifier_over_an_empty_list_asks_nothing_and_keeps_its_value() {
         let empty = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
         let expr = quantifier(kind, empty, read_bool(&a));
         let expected = old_eval(&expr, &reader);
-        assert!(!expected.is_undef(), "{kind:?}: the old entry gives a value");
-        assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(expected), "{kind:?}");
+        assert!(
+            !expected.is_undef(),
+            "{kind:?}: the old entry gives a value"
+        );
+        assert_eq!(
+            pending_eval(&expr, &reader),
+            Evaluated::Value(expected),
+            "{kind:?}"
+        );
         assert_eq!(asked(&reader), BTreeSet::new(), "{kind:?}");
     }
 }
@@ -570,7 +616,11 @@ fn a_user_function_called_with_an_undefined_argument_is_entered() {
         eval_expr_or_pending(&expr, &ctx, &reader),
         Evaluated::Value(millimetres(5.0))
     );
-    assert_eq!(eval_expr(&expr, &ctx), Value::Undef, "the old entry does not enter it");
+    assert_eq!(
+        eval_expr(&expr, &ctx),
+        Value::Undef,
+        "the old entry does not enter it"
+    );
 }
 
 #[test]
@@ -583,7 +633,10 @@ fn a_user_function_called_with_a_pending_argument_is_not_entered() {
     let ctx = EvalContext::new(&empty, &functions);
 
     let reader = TestReader::new().not_yet(&c);
-    assert_eq!(eval_expr_or_pending(&expr, &ctx, &reader), Evaluated::Pending);
+    assert_eq!(
+        eval_expr_or_pending(&expr, &ctx, &reader),
+        Evaluated::Pending
+    );
     assert_eq!(asked(&reader), ids(&[&c]));
 }
 
@@ -625,16 +678,15 @@ fn a_built_in_called_with_an_undefined_argument_is_not_run() {
 #[test]
 fn a_built_in_whose_argument_holds_a_pending_read_in_a_container_is_not_run() {
     let c = cell("c");
-    let expr = std_call(
-        "probe",
-        vec![list_expr(vec![read_int(&c)])],
-        Type::Int,
-    );
+    let expr = std_call("probe", vec![list_expr(vec![read_int(&c)])], Type::Int);
     let empty = ValueMap::new();
     let ctx = EvalContext::simple(&empty).with_symbolic_selector_ctor(panicking_hook);
 
     let reader = TestReader::new().not_yet(&c);
-    assert_eq!(eval_expr_or_pending(&expr, &ctx, &reader), Evaluated::Pending);
+    assert_eq!(
+        eval_expr_or_pending(&expr, &ctx, &reader),
+        Evaluated::Pending
+    );
 }
 
 /// A compute dispatcher that panics if anything is dispatched to it.
@@ -651,7 +703,10 @@ fn an_optimized_function_called_with_an_undefined_argument_evaluates_its_body_wi
     let u = cell("u");
     let five = CompiledFunction {
         optimized_target: Some("solver::five".to_string()),
-        ..unary_fn("five", CompiledExpr::literal(millimetres(5.0), Type::length()))
+        ..unary_fn(
+            "five",
+            CompiledExpr::literal(millimetres(5.0), Type::length()),
+        )
     };
     let expr = call(&five, vec![read(&u, Type::length())]);
     let functions = [five];
@@ -729,10 +784,19 @@ fn map_or_on_some_evaluates_its_default_too_and_keeps_its_value() {
 #[test]
 fn map_or_on_none_evaluates_its_function_expression_too_and_gives_the_default() {
     let (c, d) = (cell("c"), cell("d"));
-    let reader = TestReader::new().with(&c, Value::Int(5)).with(&d, Value::Int(9));
-    let expr = map_or(CompiledExpr::option_none(option_int()), read_int(&d), identity(&[&c]));
+    let reader = TestReader::new()
+        .with(&c, Value::Int(5))
+        .with(&d, Value::Int(9));
+    let expr = map_or(
+        CompiledExpr::option_none(option_int()),
+        read_int(&d),
+        identity(&[&c]),
+    );
     assert_eq!(old_eval(&expr, &reader), Value::Int(9));
-    assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(Value::Int(9)));
+    assert_eq!(
+        pending_eval(&expr, &reader),
+        Evaluated::Value(Value::Int(9))
+    );
     assert_eq!(asked(&reader), ids(&[&c, &d]));
 }
 
@@ -812,20 +876,13 @@ fn flat_map_stops_at_the_first_non_list_result_under_the_old_entry() {
 /// sorts before `String` in `Value`'s order, so the first case's key is not
 /// a String, which decides the call; reaching case "a" panics.
 fn worst_case_decided_by_its_first_key() -> CompiledExpr {
-    let mut cases = std::collections::BTreeMap::new();
-    cases.insert(Value::Int(0), Value::Int(1));
-    cases.insert(Value::String("a".to_string()), Value::Int(2));
-    let mut outer = std::collections::BTreeMap::new();
-    outer.insert(Value::String("cases".to_string()), Value::Map(cases));
-    let ty = Type::Map(Box::new(Type::String), Box::new(Type::Int));
-    std_call(
-        "worst_case",
-        vec![
-            CompiledExpr::literal(Value::Map(outer), ty),
-            panics_unless_one(),
-        ],
-        Type::String,
-    )
+    let cases = map_expr(vec![(int(0), int(1)), (string("a"), int(2))]);
+    let outer = map_expr(vec![(string("cases"), cases)]);
+    std_call("worst_case", vec![outer, panics_unless_one()], Type::String)
+}
+
+fn string(s: &str) -> CompiledExpr {
+    CompiledExpr::literal(Value::String(s.to_string()), Type::String)
 }
 
 #[test]
