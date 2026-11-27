@@ -250,3 +250,76 @@ fn a_ref_with_steps_below_a_snapshot_input_names_nothing_and_reads_absent() {
     let answer = i64_at(&mut core, inputs, &toy::at("lone"));
     assert_eq!(answer, Answer::Final(Outcome::Absent));
 }
+
+/// A binding to the constant `value`, held in the declaration itself.
+fn constant(value: i64) -> Binding {
+    Binding::Constant(toy::input_of(value))
+}
+
+#[test]
+fn a_read_through_a_constant_binding_answers_its_value() {
+    let mut core = toy::with_cell().build();
+    let inputs = vec![toy::root("lone", toy::cell_over([constant(5)]))];
+
+    let answer = i64_at(&mut core, inputs, &toy::at("lone"));
+    assert_eq!(answer, Answer::Final(Outcome::of(5)));
+}
+
+#[test]
+fn a_ref_with_steps_below_a_constant_reads_absent() {
+    let mut core = toy::with_cell().build();
+    let inputs = vec![
+        toy::named("zero", 0_i64),
+        toy::root("lone", toy::picker(toy::input("zero"), constant(5))),
+    ];
+
+    let answer = i64_at(&mut core, inputs, &toy::at("lone"));
+    assert_eq!(answer, Answer::Final(Outcome::Absent));
+}
+
+/// The inputs of root scopes R1 and R2, whose binding "y" is the constant
+/// each is given, over one members input: a cell `c` over what the
+/// declarer's "y" names.
+fn scopes_with_constants(r1: i64, r2: i64) -> Vec<(InputKey, Input)> {
+    let members = toy::members([("c", toy::cell_over([passed("y")]))]);
+    let scope = |y| toy::scope("shared.members").bind("y", constant(y));
+    vec![
+        toy::named("shared.members", members),
+        toy::root("R1", scope(r1)),
+        toy::root("R2", scope(r2)),
+    ]
+}
+
+#[test]
+fn children_given_an_equal_constant_by_two_parents_share_one_stored_result() {
+    let mut core = toy::with_scope().build();
+    let snapshot = core.snapshot(scopes_with_constants(5, 5));
+
+    for root in ["R1", "R2"] {
+        let c = toy::below(root, &["c"]);
+        let answer = toy::answer_alone(&mut core, &snapshot, &c).downcast::<i64>();
+        assert_eq!(answer, Answer::Final(Outcome::of(5)), "{root}");
+    }
+    assert_eq!(core.counters().body_runs(Cell::ID), 1);
+}
+
+#[test]
+fn changing_a_constant_runs_the_body_of_the_node_that_reads_it_and_no_other() {
+    let mut core = toy::with_scope().build();
+    let c = toy::below("R1", &["c"]);
+    assert_eq!(
+        i64_at(&mut core, scopes_with_constants(5, 5), &c),
+        Answer::Final(Outcome::of(5))
+    );
+    let (cells, scopes) = (
+        core.counters().body_runs(Cell::ID),
+        core.counters().body_runs(toy::Scope::ID),
+    );
+
+    assert_eq!(
+        i64_at(&mut core, scopes_with_constants(6, 5), &c),
+        Answer::Final(Outcome::of(6))
+    );
+    assert_eq!(core.counters().body_runs(Cell::ID), cells + 1);
+    assert_eq!(core.counters().body_runs(toy::Scope::ID), scopes);
+}

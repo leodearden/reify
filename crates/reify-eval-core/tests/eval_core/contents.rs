@@ -3,7 +3,7 @@
 //! what each binding names, never the order the bindings were set in.
 
 use reify_eval_core::{
-    Binding, Declaration, InputKey, Kind, KindId, Link, Ref, Space, Step, StepKey,
+    Binding, Declaration, Input, InputKey, Kind, KindId, Link, Ref, Space, Step, StepKey,
 };
 
 use crate::toy::{self, Cell};
@@ -107,6 +107,38 @@ fn a_chain_step_s_links_and_space_enter_a_declaration_s_content() {
         ),
     ];
     for (what, one, other) in differing {
+        assert_ne!(one.content(), other.content(), "{what}");
+    }
+}
+
+#[test]
+fn a_constant_s_content_is_part_of_its_declaration_s_content() {
+    let with = |constant: Input| base().bind("0", Binding::Constant(constant));
+
+    assert_eq!(with(toy::input_of(5_i64)), with(toy::input_of(5_i64)));
+    assert_eq!(
+        with(toy::input_of(5_i64)).content(),
+        with(toy::input_of(5_i64)).content()
+    );
+    let differing = [
+        (
+            "the value",
+            with(toy::input_of(5_i64)),
+            with(toy::input_of(6_i64)),
+        ),
+        (
+            "the type, under one host content",
+            with(toy::input_of(5_i64)),
+            with(toy::input_of(5_u64)),
+        ),
+        (
+            "a constant and an input",
+            with(toy::input_of(5_i64)),
+            base().bind("0", toy::input("5")),
+        ),
+    ];
+    for (what, one, other) in differing {
+        assert_ne!(one, other, "{what}");
         assert_ne!(one.content(), other.content(), "{what}");
     }
 }
