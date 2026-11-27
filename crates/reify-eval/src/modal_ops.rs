@@ -54,7 +54,7 @@ use crate::compute_targets::bc_resolve::named_leaf_target;
 use crate::compute_targets::result_topology::carried_topology_from_result;
 use crate::compute_targets::stdlib_inputs::{
     DecodeFailure, DecodeStdlibInput, InputDecodeError, positional, read_list, read_positional,
-    read_vec3, required_field, required_value, structure_fields,
+    read_vec3, required_field, required_field_or_bare, required_value, structure_fields,
 };
 use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -1404,6 +1404,16 @@ pub(crate) struct ModalTrampolineRun {
     pub(crate) reused_assembly: bool,
 }
 
+impl ModalTrampolineRun {
+    /// The run that fails `modal_analysis` on a decode error.
+    fn decode_failed(err: InputDecodeError) -> Self {
+        Self {
+            outcome: err.into_failed(MODAL_ANALYSIS),
+            reused_assembly: false,
+        }
+    }
+}
+
 /// In-crate modal core behind [`solve_modal_analysis_trampoline`], adding the
 /// task-κ warm-state cache — reuse the assembled `(K, M)` across calls whose
 /// [`ModalCacheKey`] matches — on top of the assemble → eigensolve → shape
@@ -1518,12 +1528,7 @@ pub(crate) fn run_modal_analysis(
     // After the density guard and the damping plan, so their ordering holds.
     let material = match IsotropicElastic::decode(&value_inputs[0]) {
         Ok(material) => material,
-        Err(err) => {
-            return ModalTrampolineRun {
-                outcome: err.into_failed(MODAL_ANALYSIS),
-                reused_assembly: false,
-            };
-        }
+        Err(err) => return ModalTrampolineRun::decode_failed(err),
     };
 
     // ── (3) geometry scalars (SI metres) ─────────────────────────────────────
@@ -1536,12 +1541,7 @@ pub(crate) fn run_modal_analysis(
     })();
     let (length, width, height) = match dims {
         Ok(dims) => dims,
-        Err(err) => {
-            return ModalTrampolineRun {
-                outcome: err.into_failed(MODAL_ANALYSIS),
-                reused_assembly: false,
-            };
-        }
+        Err(err) => return ModalTrampolineRun::decode_failed(err),
     };
     // Build the beam mesh once and share it between the BC realization (4) and
     // the eigensolve (5); both index DOFs against the same node numbering.
@@ -1550,7 +1550,10 @@ pub(crate) fn run_modal_analysis(
     // ── (4) ModalOptions: eigen knobs, excitation direction, damping, BCs ────
     let options = &value_inputs[4];
     let (n_modes, tol, max_iters, sigma) = extract_eigen_knobs(options);
-    let reference_direction = extract_reference_direction(options);
+    let reference_direction = match extract_reference_direction(options) {
+        Ok(direction) => direction,
+        Err(err) => return ModalTrampolineRun::decode_failed(err),
+    };
     // Task #6878: `plan` / `damping_diagnostics` are already resolved at (1b)
     // above — genuinely above the mesh build, not merely above the assembly —
     // because the planner's rejection arm must short-circuit before any of it.
@@ -2185,6 +2188,10 @@ fn mechanism_shift_unsupported_diagnostic(shift_hz: f64) -> Option<Diagnostic> {
 /// Closed-chain mechanisms (any non-empty `loop_closures` list) are not
 /// supported and return the degenerate result. Only open-chain mechanisms are
 /// handled.
+/// The stdlib fn [`run_mechanism_modal`] implements, named in its decode
+/// diagnostics.
+const MECHANISM_MODAL_ANALYSIS: &str = "mechanism_modal_analysis";
+
 fn run_mechanism_modal(
     value_inputs: &[Value],
     _prior_warm_state: Option<&OpaqueState>,
@@ -2380,7 +2387,11 @@ fn run_mechanism_modal(
     // with its own `E_MechanismModal*` Error and has no modes to damp, so the
     // Error is the louder and correct signal there.
     let options = value_inputs.get(1).unwrap_or(&Value::Undef);
-    let (alpha, beta) = match classify_damping(options) {
+    let damping = match classify_damping(options) {
+        Ok(damping) => damping,
+        Err(err) => return err.into_failed(MECHANISM_MODAL_ANALYSIS),
+    };
+    let (alpha, beta) = match damping {
         DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
         DampingKind::Unsupported(type_name) => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -3372,21 +3383,6 @@ fn displacement_series_outcome(series: Vec<f64>) -> ComputeOutcome {
     }
 }
 
-/// Read an SI scalar magnitude from a numeric `Value`, tolerating the runtime
-/// spellings a stdlib numeric field takes: `Scalar { si_value }` (dimensioned —
-/// geometry, density, E), `Real`, and `Int`. Non-numeric values read as `0.0`
-/// (the upstream type-checker guarantees the shape; this is a defensive floor,
-/// not a validation point — mirrors buckling's permissive scalar reads).
-fn read_scalar_si(val: &Value) -> f64 {
-    match val {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        Value::Int(n) => *n as f64,
-        _ => 0.0,
-    }
-}
-
-
 /// Read the per-material hysteretic loss factor η off a material value.
 ///
 /// `Some(η)` means "this material conforms to `trait Damped`
@@ -3410,40 +3406,25 @@ fn read_scalar_si(val: &Value) -> f64 {
 /// `Some(0.0)`, accepted) distinct from a NON-conformer (`None`, rejected) — a
 /// distinction a bare `f64` cannot carry.
 ///
-/// The numeric read is gated on the value actually BEING one of the spellings a
-/// stdlib `Real` field takes, rather than delegating to [`read_scalar_si`]
-/// unconditionally: that helper's `_ => 0.0` floor is precisely the behaviour
-/// that must not fire here. `loss_factor : Real` is DIMENSIONLESS, so the
-/// `Value::Scalar` arm is gated on that dimension too — [`read_scalar_si`] is
-/// dimension-BLIND (it takes `si_value` off any `Scalar` whatsoever), so an
-/// ungated arm would read a `Scalar<Pressure>` — a hand-built or mis-typed
-/// `loss_factor` — straight through as a loss factor and turn it into ζ = η/2.
-/// That is the same silent-substitution shape the `Option` exists to prevent,
-/// one variant down; a dimensioned `loss_factor` is not a conformer, it is a
-/// malformed one, and `None` routes it to `E_ModalDampingMaterialNotDamped`
-/// rather than to a fabricated damping ratio. A negative or non-finite η is
-/// rejected for the same reason — `trait Damped`'s `constraint loss_factor >= 0`
+/// `loss_factor : Real` reads through `dimensionless_spec` at
+/// `Damped.loss_factor`, under the one refusal rule: a present value the spec
+/// refuses (a dimensioned `Scalar`, a non-number) is an `Err` naming that path,
+/// never a silent non-conformer, and an `Undef` one is unresolved. A negative
+/// or non-finite η is `None` — `trait Damped`'s `constraint loss_factor >= 0`
 /// is the CHECK-time gate on the author surface, but a hand-built runtime value
 /// can carry a NaN past it, and a NaN ζ must not reach `Mode.damping_ratio`.
-fn extract_loss_factor(val: &Value) -> Option<f64> {
-    let Value::StructureInstance(data) = val else {
-        return None;
+fn extract_loss_factor(material: &Value) -> Result<Option<f64>, InputDecodeError> {
+    let Value::StructureInstance(data) = material else {
+        return Ok(None);
     };
-    let raw = data.fields.get("loss_factor")?;
-    // Gate on the VARIANT (and, for `Scalar`, on the dimension), then convert.
-    // `read_scalar_si` is reused for the conversion so the tolerated spellings
-    // cannot drift apart from it, but its catch-all is deliberately unreachable
-    // from here and its dimension-blindness is deliberately fenced off.
-    let tolerated = match raw {
-        Value::Real(_) | Value::Int(_) => true,
-        Value::Scalar { dimension, .. } => *dimension == DimensionVector::DIMENSIONLESS,
-        _ => false,
-    };
-    if !tolerated {
-        return None;
+    match required_field(data, "Damped", "loss_factor", &dimensionless_spec()) {
+        Ok(eta) => Ok((eta.is_finite() && eta >= 0.0).then_some(eta)),
+        Err(InputDecodeError {
+            failure: DecodeFailure::Missing,
+            ..
+        }) => Ok(None),
+        Err(err) => Err(err),
     }
-    let eta = read_scalar_si(raw);
-    (eta.is_finite() && eta >= 0.0).then_some(eta)
 }
 
 /// Extract the eigensolver knobs `(n_modes, tol, max_iters, sigma)` from a
@@ -3525,32 +3506,34 @@ fn extract_shift_frequency_hz(options: &Value) -> f64 {
 
 /// Extract the unit excitation `reference_direction` (along which per-mode
 /// participation mass is projected) from a `ModalOptions` StructureInstance.
-/// Reads the `Value::Vector` field's three components (each via
-/// [`read_scalar_si`]) and normalizes to a unit vector — realizing the
-/// `reference_direction.norm() > 0` invariant deferred from the structure-def to
-/// this trampoline (the `reference_direction` field note on `structure def
-/// ModalOptions`, modal_analysis.ri — cited by name, not by line: that block has
-/// moved twice since the line range originally written here). A missing / degenerate
-/// (zero-norm) direction falls back to the slender bending default `[0, 0, 1]`.
-fn extract_reference_direction(val: &Value) -> [f64; 3] {
-    let default_dir = [0.0, 0.0, 1.0];
-    let raw = match val {
-        Value::StructureInstance(data) => match data.fields.get("reference_direction") {
-            Some(Value::Vector(items)) if items.len() == 3 => [
-                read_scalar_si(&items[0]),
-                read_scalar_si(&items[1]),
-                read_scalar_si(&items[2]),
-            ],
-            _ => return default_dir,
-        },
-        _ => return default_dir,
+/// Reads the `Value::Vector` field's three components as dimensionless numbers
+/// at `ModalOptions.reference_direction` and normalizes to a unit vector —
+/// realizing the `reference_direction.norm() > 0` invariant deferred from the
+/// structure-def to this trampoline (the `reference_direction` field note on
+/// `structure def ModalOptions`, modal_analysis.ri — cited by name, not by
+/// line: that block has moved twice since the line range originally written
+/// here). A missing / non-vector / degenerate (zero-norm) direction falls back
+/// to the slender bending default `[0, 0, 1]`.
+fn extract_reference_direction(options: &Value) -> Result<[f64; 3], InputDecodeError> {
+    const BENDING: [f64; 3] = [0.0, 0.0, 1.0];
+    let Value::StructureInstance(data) = options else {
+        return Ok(BENDING);
+    };
+    let raw = match data.fields.get("reference_direction") {
+        Some(direction @ Value::Vector(items)) if items.len() == 3 => read_vec3(
+            direction,
+            "ModalOptions",
+            Some("reference_direction"),
+            &dimensionless_spec(),
+        )?,
+        _ => return Ok(BENDING),
     };
     let norm = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
-    if norm > 0.0 {
+    Ok(if norm > 0.0 {
         [raw[0] / norm, raw[1] / norm, raw[2] / norm]
     } else {
-        default_dir
-    }
+        BENDING
+    })
 }
 
 /// How a `DampingDescriptor` value classifies against the refinements this
@@ -3602,12 +3585,12 @@ enum DampingKind {
 /// and a non-structure `val` all classify as [`DampingKind::Absent`]. This
 /// wrapper owns only that field lookup; the type-name discrimination itself is
 /// [`classify_descriptor`].
-fn classify_damping(val: &Value) -> DampingKind {
+fn classify_damping(val: &Value) -> Result<DampingKind, InputDecodeError> {
     let Value::StructureInstance(data) = val else {
-        return DampingKind::Absent;
+        return Ok(DampingKind::Absent);
     };
     let Some(damping) = data.fields.get("damping") else {
-        return DampingKind::Absent;
+        return Ok(DampingKind::Absent);
     };
     classify_descriptor(damping)
 }
@@ -3630,24 +3613,24 @@ fn classify_damping(val: &Value) -> DampingKind {
 /// `DampingDescriptor`, so it is classified by this same code. That is what
 /// guarantees a descriptor added here is automatically understood in `extra`
 /// position too, rather than needing a second, drifting match.
-fn classify_descriptor(val: &Value) -> DampingKind {
+///
+/// `RayleighDamping`'s `alpha : Frequency` and `beta : Time` are required, and
+/// read under the transitional bare rule (`accept_field_or_bare`): a legacy
+/// bare number still reads as SI, a wrong dimension is refused.
+fn classify_descriptor(val: &Value) -> Result<DampingKind, InputDecodeError> {
     let Value::StructureInstance(descriptor) = val else {
-        return DampingKind::Absent;
+        return Ok(DampingKind::Absent);
     };
-    match descriptor.type_name.as_str() {
-        "RayleighDamping" => {
-            let alpha = descriptor
-                .fields
-                .get("alpha")
-                .map(read_scalar_si)
-                .unwrap_or(0.0);
-            let beta = descriptor
-                .fields
-                .get("beta")
-                .map(read_scalar_si)
-                .unwrap_or(0.0);
-            DampingKind::Rayleigh { alpha, beta }
-        }
+    Ok(match descriptor.type_name.as_str() {
+        "RayleighDamping" => DampingKind::Rayleigh {
+            alpha: required_field_or_bare(
+                descriptor,
+                "RayleighDamping",
+                "alpha",
+                &frequency_spec(),
+            )?,
+            beta: required_field_or_bare(descriptor, "RayleighDamping", "beta", &time_spec())?,
+        },
         "NoDamping" => DampingKind::NoDamping,
         // Task #6878. A missing / `Value::Undef` `extra` recurses to `Absent`
         // through the guard above: the stdlib default
@@ -3658,10 +3641,10 @@ fn classify_descriptor(val: &Value) -> DampingKind {
         "MaterialDamping" => DampingKind::Material {
             extra: Box::new(classify_descriptor(
                 descriptor.fields.get("extra").unwrap_or(&Value::Undef),
-            )),
+            )?),
         },
         other => DampingKind::Unsupported(other.to_string()),
-    }
+    })
 }
 
 /// The per-solve damping contributions [`run_modal_analysis`] applies, resolved
@@ -3756,7 +3739,8 @@ fn plan_modal_damping(
         beta: 0.0,
     };
     let no_diagnostics = Vec::new();
-    Ok(match classify_damping(options) {
+    let damping = classify_damping(options).map_err(|err| err.into_failed(MODAL_ANALYSIS))?;
+    Ok(match damping {
         DampingKind::Absent | DampingKind::NoDamping => (UNDAMPED, no_diagnostics),
         DampingKind::Rayleigh { alpha, beta } => (
             ModalDampingPlan {
@@ -3798,7 +3782,9 @@ fn plan_modal_damping(
             // this descriptor asks, and `Err` is the only honest reply. Folding
             // `None` to 0.0 here would be precisely the silent ζ = 0 PRD §C6
             // forbids, reconstructed inside the fn built to prevent it.
-            let Some(eta) = extract_loss_factor(material) else {
+            let Some(eta) =
+                extract_loss_factor(material).map_err(|err| err.into_failed(MODAL_ANALYSIS))?
+            else {
                 return Err(material_not_damped_outcome(material_type_name(material)));
             };
             let mut diagnostics = Vec::new();
@@ -7172,8 +7158,9 @@ mod tests {
     /// Fields are DIMENSIONED (`Frequency`, `Time`) to match both the stdlib
     /// declaration (task #6093) and what the migrated corpus evaluates to, so
     /// these fixtures cannot pass on a shape real input no longer produces.
-    /// `read_scalar_si` stays deliberately tolerant of bare `Real`; gating it
-    /// belongs to docs/prds/v0_6/dimension-checked-readers.md.
+    /// The Rayleigh read stays deliberately tolerant of bare `Real`
+    /// (`accept_field_or_bare`); retiring that tolerance belongs to
+    /// docs/prds/v0_6/dimension-checked-readers.md.
     fn rayleigh_damping(alpha: f64, beta: f64) -> Value {
         struct_instance(
             "RayleighDamping",
@@ -7194,6 +7181,11 @@ mod tests {
                 ),
             ],
         )
+    }
+
+    /// [`classify_damping`] of options that must decode.
+    fn classified(options: &Value) -> DampingKind {
+        classify_damping(options).expect("these damping options decode")
     }
 
     /// Assemble a `ModalOptions`-shaped instance from the given fields.
@@ -7543,25 +7535,29 @@ mod tests {
         };
 
         // Non-unit input is normalized to a unit vector.
-        let got = extract_reference_direction(&dir(3.0, 0.0, 0.0));
+        let got = extract_reference_direction(&dir(3.0, 0.0, 0.0)).expect("decodes");
         assert!((got[0] - 1.0).abs() < 1e-12 && got[1] == 0.0 && got[2] == 0.0);
-        let got = extract_reference_direction(&dir(0.0, 0.0, 2.0));
+        let got = extract_reference_direction(&dir(0.0, 0.0, 2.0)).expect("decodes");
         assert!(got[0] == 0.0 && got[1] == 0.0 && (got[2] - 1.0).abs() < 1e-12);
 
         // Zero-norm → bending default; missing field → default; non-struct → default.
         assert_eq!(
             extract_reference_direction(&dir(0.0, 0.0, 0.0)),
-            [0.0, 0.0, 1.0]
+            Ok([0.0, 0.0, 1.0])
         );
         assert_eq!(
             extract_reference_direction(&modal_options(vec![])),
-            [0.0, 0.0, 1.0]
+            Ok([0.0, 0.0, 1.0])
         );
-        assert_eq!(extract_reference_direction(&Value::Undef), [0.0, 0.0, 1.0]);
+        assert_eq!(
+            extract_reference_direction(&Value::Undef),
+            Ok([0.0, 0.0, 1.0])
+        );
     }
 
-    /// `read_scalar_si`'s BARE-`Value::Real` tolerance on the Rayleigh
-    /// coefficients, asserted through the PRODUCTION seam (task #6093
+    /// The BARE-`Value::Real` tolerance on the Rayleigh coefficients (the
+    /// transitional bare rule of `accept_field_or_bare`), asserted through the
+    /// PRODUCTION seam (task #6093
     /// amendment; re-targeted onto `classify_damping` by the #6878 amendment
     /// pass, which deleted the test-only `extract_damping` view this used to be
     /// written against — a witness that pins a `#[cfg(test)]` helper cannot
@@ -7586,10 +7582,10 @@ mod tests {
             modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
         assert_eq!(
             classify_damping(&dimensioned),
-            DampingKind::Rayleigh {
+            Ok(DampingKind::Rayleigh {
                 alpha: 0.5,
                 beta: 1e-6
-            }
+            })
         );
 
         // Legacy bare-`Real` damping fields still read identically to the
@@ -7609,7 +7605,7 @@ mod tests {
             classify_damping(&dimensioned),
             "classify_damping must fold bare Value::Real fields to the same \
              (alpha, beta) as the dimensioned Value::Scalar fields — \
-             read_scalar_si's tolerance is deliberate and is not this task's \
+             the bare tolerance is deliberate and is not this task's \
              to tighten (docs/prds/v0_6/dimension-checked-readers.md)"
         );
     }
@@ -7640,15 +7636,12 @@ mod tests {
     /// that distinction, and collapsing them is the single most likely way to
     /// get this wrong.
     ///
-    /// The numeric-spelling arms mirror [`read_scalar_si`]'s tolerated shapes:
-    /// `loss_factor : Real` is dimensionless, but a `Value::Scalar` spelling
-    /// must not be mis-read as absent. The rejection arms are what
-    /// `read_scalar_si` alone cannot give — its `_ => 0.0` floor is exactly the
-    /// behaviour that must NOT fire here, and its DIMENSION-BLINDNESS is the
-    /// second thing it cannot give: it takes `si_value` off any `Scalar`
-    /// whatsoever, so both sides of the dimension gate are asserted below
-    /// (DIMENSIONLESS accepted, PRESSURE rejected). Without the rejection arm a
-    /// dimensioned `loss_factor` would silently become ζ = η/2.
+    /// The accepted spellings are `dimensionless_spec`'s: `loss_factor : Real`
+    /// is dimensionless, but a dimensionless `Value::Scalar` spelling must not
+    /// be mis-read as absent. A value that spec refuses (a dimensioned
+    /// `Scalar`, a non-number) is a refused input rather than a non-conformer,
+    /// pinned through the trampoline by
+    /// `material_damping_refuses_a_loss_factor_the_spec_refuses`.
     ///
     /// RED before step-6: `extract_loss_factor` does not exist.
     #[test]
@@ -7665,13 +7658,13 @@ mod tests {
         // ── ACCEPTED: the numeric spellings a stdlib `Real` field can take ──
         assert_eq!(
             extract_loss_factor(&material_with(Value::Real(0.0006))),
-            Some(0.0006),
+            Ok(Some(0.0006)),
             "a `Real` loss_factor — the shape Steel_AISI_1045 actually \
              evaluates to — must read back exactly"
         );
         assert_eq!(
             extract_loss_factor(&material_with(Value::Int(0))),
-            Some(0.0),
+            Ok(Some(0.0)),
             "an `Int` loss_factor must read as a conforming material, not as \
              absent"
         );
@@ -7680,11 +7673,10 @@ mod tests {
                 si_value: 0.02,
                 dimension: DimensionVector::DIMENSIONLESS,
             })),
-            Some(0.02),
+            Ok(Some(0.02)),
             "a dimensionless `Scalar` spelling must read as a conforming \
              material — `loss_factor : Real` is dimensionless, but a Scalar \
-             spelling must not be mistaken for absence (mirrors \
-             read_scalar_si's tolerated shapes)"
+             spelling must not be mistaken for absence"
         );
 
         // η = 0 IS A CONFORMER. This is the boundary most likely to be wrongly
@@ -7693,7 +7685,7 @@ mod tests {
         // declared a loss factor at all, even though both give ζ_material = 0.
         assert_eq!(
             extract_loss_factor(&material_with(Value::Real(0.0))),
-            Some(0.0),
+            Ok(Some(0.0)),
             "η = 0.0 is an explicitly UNDAMPED CONFORMER and must NOT collapse \
              to None — a `Damped` material that declares zero loss is valid \
              input, not a rejection"
@@ -7708,7 +7700,7 @@ mod tests {
                     ("poisson_ratio".to_string(), Value::Real(0.29)),
                 ],
             )),
-            None,
+            Ok(None),
             "a StructureInstance with NO loss_factor field is the B8 case: an \
              ElasticMaterial that does not conform to `Damped`. This is THE \
              signal — it must be None, never Some(0.0)"
@@ -7718,7 +7710,7 @@ mod tests {
         // `material_damping_refuses_a_loss_factor_the_spec_refuses` pins it.
         assert_eq!(
             extract_loss_factor(&Value::Undef),
-            None,
+            Ok(None),
             "a non-StructureInstance material value must be None"
         );
 
@@ -7730,7 +7722,7 @@ mod tests {
         for bad in [-1e-6, -0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert_eq!(
                 extract_loss_factor(&material_with(Value::Real(bad))),
-                None,
+                Ok(None),
                 "a negative or non-finite η ({bad}) must be rejected — \
                  `trait Damped`'s `constraint loss_factor >= 0` is the \
                  check-time gate, but the trampoline must not propagate a \
@@ -7789,7 +7781,7 @@ mod tests {
         // is — but the trampoline must not ASSUME a well-formed value, and an
         // arm that silently invented `NoDamping` here would be claiming to have
         // seen a default that was never written.
-        match classify_damping(&material_options(vec![])) {
+        match classified(&material_options(vec![])) {
             DampingKind::Material { extra } => assert_eq!(
                 *extra,
                 DampingKind::Absent,
@@ -7802,7 +7794,7 @@ mod tests {
 
         // (ii) `extra: NoDamping()` — the stdlib default, i.e. what every real
         // author-surface `MaterialDamping()` actually carries.
-        match classify_damping(&material_options(vec![(
+        match classified(&material_options(vec![(
             "extra".to_string(),
             struct_instance("NoDamping", vec![]),
         )])) {
@@ -7819,7 +7811,7 @@ mod tests {
         // at the author surface. The coefficients must survive classification
         // intact, because the producer calls `rayleigh_damping_ratio` on them
         // verbatim.
-        match classify_damping(&material_options(vec![(
+        match classified(&material_options(vec![(
             "extra".to_string(),
             rayleigh_damping(0.5, 1e-6),
         )])) {
@@ -7839,7 +7831,7 @@ mod tests {
         // (iv) `extra: <a refinement this trampoline does not implement>`. The
         // nested descriptor is carried, never flattened away: its runtime
         // type_name is what step-12's `W_ModalDampingUnsupportedExtra` names.
-        match classify_damping(&material_options(vec![(
+        match classified(&material_options(vec![(
             "extra".to_string(),
             struct_instance("HystereticDamping", vec![]),
         )])) {
@@ -13306,7 +13298,7 @@ mod tests {
         {
             assert!(
                 matches!(
-                    classify_damping(&modal_options(vec![(
+                    classified(&modal_options(vec![(
                         "damping".to_string(),
                         rayleigh_damping(0.5, 1e-6),
                     )])),
@@ -13317,7 +13309,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    classify_damping(&modal_options(vec![(
+                    classified(&modal_options(vec![(
                         "damping".to_string(),
                         struct_instance("NoDamping", vec![]),
                     )])),
@@ -13329,17 +13321,17 @@ mod tests {
             );
             assert!(
                 matches!(
-                    classify_damping(&struct_instance("ModalOptions", vec![])),
+                    classified(&struct_instance("ModalOptions", vec![])),
                     DampingKind::Absent
                 ),
                 "Case C: a missing damping field must classify as Absent"
             );
             assert!(
-                matches!(classify_damping(&Value::Undef), DampingKind::Absent),
+                matches!(classified(&Value::Undef), DampingKind::Absent),
                 "Case C: a non-StructureInstance options value must classify as \
                  Absent, not Unsupported"
             );
-            match classify_damping(&modal_options(vec![(
+            match classified(&modal_options(vec![(
                 "damping".to_string(),
                 struct_instance(
                     "HystereticDamping",

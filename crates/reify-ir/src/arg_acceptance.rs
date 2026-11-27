@@ -842,6 +842,17 @@ pub fn accept_field(
     accept_present_field(data.fields.get(key), spec, accept_arg)
 }
 
+/// [`accept_field`] for a position that still takes the legacy bare spelling:
+/// the field twin of [`accept_arg_or_bare`], which stays the one home of the
+/// transitional bare rule.
+pub fn accept_field_or_bare(
+    data: &crate::value::StructureInstanceData,
+    key: &str,
+    spec: &ArgSpec,
+) -> FieldAcceptance {
+    accept_present_field(data.fields.get(key), spec, accept_arg_or_bare)
+}
+
 /// The strict struct-field reader: [`accept_field`] as a reader's `Result`.
 ///
 /// `Ok(Some(si))` accepted; `Ok(None)` for a field that is absent, `none` or

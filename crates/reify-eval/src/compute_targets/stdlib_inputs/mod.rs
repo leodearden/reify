@@ -14,6 +14,7 @@ use reify_ir::{StructureInstanceData, Value};
 use crate::ComputeOutcome;
 use crate::arg_acceptance::{
     Acceptance, ArgRejection, ArgSpec, FieldAcceptance, FieldRejection, accept_arg, accept_field,
+    accept_field_or_bare,
 };
 
 mod elastic_material;
@@ -191,7 +192,27 @@ pub(crate) fn required_field(
     key: &'static str,
     spec: &ArgSpec,
 ) -> Result<f64, InputDecodeError> {
-    match accept_field(data, key, spec) {
+    decoded_field(accept_field(data, key, spec), input, key)
+}
+
+/// [`required_field`] for a position that still takes the legacy bare
+/// spelling of a dimensioned number (`accept_field_or_bare`).
+pub(crate) fn required_field_or_bare(
+    data: &StructureInstanceData,
+    input: &'static str,
+    key: &'static str,
+    spec: &ArgSpec,
+) -> Result<f64, InputDecodeError> {
+    decoded_field(accept_field_or_bare(data, key, spec), input, key)
+}
+
+/// The decode of field `key` of `input` from its classification.
+fn decoded_field(
+    acceptance: FieldAcceptance,
+    input: &'static str,
+    key: &'static str,
+) -> Result<f64, InputDecodeError> {
+    match acceptance {
         FieldAcceptance::Accepted(si) => Ok(si),
         FieldAcceptance::Absent => Err(InputDecodeError::missing(input, key)),
         FieldAcceptance::Undefined => Err(InputDecodeError::new(
