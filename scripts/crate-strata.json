@@ -94,6 +94,7 @@
       ],
       "packages": [
         "reify-eval",
+        "reify-eval-instances",
         "reify-mesh-morph",
         "reify-runtime"
       ]

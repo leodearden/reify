@@ -1,0 +1,21 @@
+[package]
+name = "reify-eval-instances"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The instance node kinds of the new evaluation core, and the corpus they are built under (docs/prds/instances-on-the-core.md)"
+
+[dependencies]
+workspace-feature-union.workspace = true
+reify-eval-core.workspace = true
+reify-expr.workspace = true
+reify-ir.workspace = true
+reify-core.workspace = true
+reify-syntax.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tree-sitter.workspace = true
+tree-sitter-reify.workspace = true
+reify-test-support.workspace = true

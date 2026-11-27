@@ -4557,6 +4557,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-eval-instances"
+version = "0.1.0"
+dependencies = [
+ "reify-core",
+ "reify-eval-core",
+ "reify-expr",
+ "reify-ir",
+ "reify-syntax",
+ "reify-test-support",
+ "serde",
+ "toml 0.8.2",
+ "tree-sitter",
+ "tree-sitter-reify",
+ "workspace-feature-union",
+]
+
+[[package]]
 name = "reify-exec-lookup"
 version = "0.1.0"
 dependencies = [
