@@ -34,6 +34,11 @@
 //! file: the additive tests confirm the coercion fires before the Add/Sub dimension
 //! guard, so `dimensioned ± 0` compiles without error.
 //!
+//! The TypeParam-sibling pins (task 10398) EVALUATE the compiled constraint
+//! instead: a `Type::TypeParam` operand is never dimension-checked at compile
+//! time (the comparison guard's gradualism), so a clean compile would prove
+//! nothing there.
+//!
 //! Mechanism digest (what these tests are pinning):
 //! `docs/notes/dimensioned-zero-coercion.md`.
 
@@ -766,5 +771,95 @@ structure S {
          the mismatch but does not rewrite the value, unlike coerce_zero_operand. \
          Got {bare:?}; if this now fails, the `phase : Angle = 0deg` note in \
          modal_analysis.ri needs revisiting."
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// TypeParam siblings (task 10398): a generic purpose subject's member has a
+// dimension known only at run time, so the zero must take it at run time.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Compile `source`, take constraint `index` of purpose `purpose`, and evaluate
+/// it with every value cell it reads bound to `member_value`.
+fn eval_purpose_constraint(
+    source: &str,
+    purpose: &str,
+    index: usize,
+    member_value: reify_ir::Value,
+) -> reify_ir::Value {
+    let compiled = compile_source_with_stdlib(source);
+    assert_no_error_diagnostics(&compiled.diagnostics, purpose);
+    let compiled_purpose = compiled
+        .compiled_purposes
+        .iter()
+        .find(|p| p.name == purpose)
+        .unwrap_or_else(|| panic!("purpose {purpose} must compile"));
+    let expr = &compiled_purpose.constraints[index].expr;
+    let mut values = reify_ir::ValueMap::new();
+    for id in expr.collect_value_refs() {
+        values.insert(id, member_value.clone());
+    }
+    reify_expr::eval_expr(expr, &reify_expr::EvalContext::simple(&values))
+}
+
+fn length(si_value: f64) -> reify_ir::Value {
+    reify_ir::Value::Scalar {
+        si_value,
+        dimension: reify_core::DimensionVector::LENGTH,
+    }
+}
+
+#[test]
+fn type_param_member_compared_with_bare_zero_takes_the_members_dimension() {
+    let source = r#"
+purpose positive_width(subject : Structure) {
+    constraint subject.width > 0
+    constraint 0 < subject.width
+    constraint subject.width == 0
+}
+"#;
+    let cases = [
+        (0, length(0.005), true),
+        (1, length(0.005), true),
+        (0, length(-0.005), false),
+        (1, length(-0.005), false),
+        (2, length(0.0), true),
+        (2, length(0.005), false),
+    ];
+    for (index, member_value, expected) in cases {
+        let verdict =
+            eval_purpose_constraint(source, "positive_width", index, member_value.clone());
+        assert_eq!(
+            verdict,
+            reify_ir::Value::Bool(expected),
+            "constraint[{index}] with subject.width = {member_value:?}"
+        );
+    }
+}
+
+#[test]
+fn type_param_member_plus_bare_zero_keeps_the_members_dimension() {
+    let source = r#"
+purpose wide(subject : Structure) {
+    constraint subject.width + 0 > 1mm
+}
+"#;
+    assert_eq!(
+        eval_purpose_constraint(source, "wide", 0, length(0.005)),
+        reify_ir::Value::Bool(true),
+    );
+}
+
+/// GUARD: a sibling with no numeric zero gets no manufactured verdict.
+#[test]
+fn type_param_member_with_no_numeric_zero_still_has_no_verdict() {
+    let source = r#"
+purpose labelled(subject : Structure) {
+    constraint subject.label > 0
+}
+"#;
+    assert_eq!(
+        eval_purpose_constraint(source, "labelled", 0, reify_ir::Value::String("a".into())),
+        reify_ir::Value::Undef,
     );
 }

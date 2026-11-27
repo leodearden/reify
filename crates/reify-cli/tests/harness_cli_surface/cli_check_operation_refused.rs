@@ -2,8 +2,10 @@
 //! plain-data operands (task 10027).
 //!
 //! Such a constraint is Indeterminate on every run, so it is reported as an
-//! error naming the refusing operation, never as a definite VIOLATED. Drives
-//! the binary directly: this harness's seam rule forbids `tests/common` helpers.
+//! error naming the refusing operation, never as a definite VIOLATED. The
+//! counterpart (task 10398): an idiomatic bare `0` against a purpose subject's
+//! member is checked, not refused. Drives the binary directly: this harness's
+//! seam rule forbids `tests/common` helpers.
 
 use std::process::{Command, Output};
 
@@ -99,6 +101,79 @@ fn equality_refuses_dimension_incomparable_operands_like_ordering() {
     assert!(
         !output.status.success(),
         "a pure refusal must fail the check: {:?};{context}",
+        output.status
+    );
+}
+
+const POSITIVE_WIDTH: &str = "purpose positive_width(subject : Structure) {\n    \
+                              constraint subject.width > 0\n    \
+                              constraint subject.width > 0mm\n}";
+
+#[test]
+fn bare_zero_against_a_purpose_subject_member_is_checked_not_refused() {
+    let output = check_module(
+        "purpose_bare_zero",
+        &format!(
+            "{POSITIVE_WIDTH}\n\nstructure def Plate {{\n    param width : Length = 5mm\n    \
+             constraint width > 0\n}}"
+        ),
+        &["--purpose", "positive_width=Plate"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let context = format!("\nstdout:\n{stdout}\nstderr:\n{stderr}");
+
+    for line in [
+        "OK purpose:positive_width@Plate#constraint[0]",
+        "OK purpose:positive_width@Plate#constraint[1]",
+        "OK Plate#constraint[0]",
+    ] {
+        assert!(
+            stdout.contains(line),
+            "expected `{line}` on stdout;{context}"
+        );
+    }
+    assert!(
+        !stdout.contains("INDETERMINATE"),
+        "a bare zero against a member is decided, never refused;{context}"
+    );
+    assert!(
+        !stderr.contains("error:"),
+        "a bare zero against a member is no error;{context}"
+    );
+    assert!(
+        output.status.success(),
+        "the check must pass: {:?};{context}",
+        output.status
+    );
+}
+
+/// Non-vacuity guard for the test above: the bare-zero comparison is really
+/// decided, so a negative width VIOLATES it.
+#[test]
+fn bare_zero_against_a_purpose_subject_member_can_be_violated() {
+    let output = check_module(
+        "purpose_bare_zero_violated",
+        &format!(
+            "{POSITIVE_WIDTH}\n\nstructure def Narrow {{\n    param width : Length = -5mm\n}}"
+        ),
+        &["--purpose", "positive_width=Narrow"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let context = format!("\nstdout:\n{stdout}\nstderr:\n{stderr}");
+
+    assert!(
+        stdout.contains("VIOLATED purpose:positive_width@Narrow#constraint[0]"),
+        "expected the bare-zero constraint VIOLATED;{context}"
+    );
+    assert!(
+        !stdout.contains("INDETERMINATE"),
+        "a bare zero against a member is decided, never refused;{context}"
+    );
+    assert!(
+        !output.status.success(),
+        "a violated constraint must fail the check: {:?};{context}",
         output.status
     );
 }
