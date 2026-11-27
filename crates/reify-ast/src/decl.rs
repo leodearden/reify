@@ -468,6 +468,12 @@ pub struct SubDecl {
     /// resolution is deferred to task ε.  Empty for bare instantiation, the
     /// paren-arg form, or any sub with no param_assignment overrides.
     pub spec_param_overrides: Vec<(String, Expr)>,
+    /// The `where` guard of each entry of `spec_param_overrides`: one slot per
+    /// override, in the same order. `t = 6mm where thick` gives `Some`,
+    /// `t = 6mm` gives `None`. Read the pair through
+    /// [`SubDecl::guarded_spec_param_overrides`]. The old compile does not
+    /// read this field.
+    pub spec_param_override_guards: Vec<Option<WhereClause>>,
     /// Keyed sub-member entries when this `sub` uses a keyed block
     /// `{ "k" => { overrides } }` (task 3929, PRD §2.2).
     ///
@@ -555,7 +561,8 @@ pub struct SubDecl {
     ///
     /// When `derivation.is_some()`, every specialization-scope field is empty:
     /// `structure_name.is_empty()`, `body.is_none()`,
-    /// `spec_param_overrides.is_empty()`, `keyed_members.is_empty()`,
+    /// `spec_param_overrides.is_empty()`, `spec_param_override_guards.is_empty()`,
+    /// `keyed_members.is_empty()`,
     /// `args.is_empty()`, `type_args.is_empty()`, `is_collection == false`.
     ///
     /// This is enforced at the single producer (`ts_parser::lower_sub`) rather
@@ -587,6 +594,46 @@ pub struct SubDecl {
     pub derivation: Option<Box<SubDerivation>>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+impl SubDecl {
+    /// Each braces assignment as `(name, value, guard)`, in source order.
+    ///
+    /// Panics if `spec_param_overrides` and `spec_param_override_guards`
+    /// differ in length.
+    pub fn guarded_spec_param_overrides(
+        &self,
+    ) -> impl Iterator<Item = (&str, &Expr, Option<&WhereClause>)> {
+        zip_override_guards(
+            &format_args!("sub `{}`", self.name),
+            ("spec_param_overrides", &self.spec_param_overrides),
+            ("spec_param_override_guards", &self.spec_param_override_guards),
+        )
+    }
+}
+
+/// Pairs each `(name, value)` override with its guard slot.
+///
+/// The two lists are parallel by contract: one guard slot per override, in the
+/// same order. The parser keeps them aligned by pushing both in one step; this
+/// checks it again at every read, so a misaligned pair panics naming the owner
+/// and both lengths instead of handing a guard to the wrong override.
+fn zip_override_guards<'a>(
+    owner: &dyn std::fmt::Display,
+    (overrides_field, overrides): (&str, &'a [(String, Expr)]),
+    (guards_field, guards): (&str, &'a [Option<WhereClause>]),
+) -> impl Iterator<Item = (&'a str, &'a Expr, Option<&'a WhereClause>)> + use<'a> {
+    assert!(
+        overrides.len() == guards.len(),
+        "{owner} has {} {overrides_field} but {} {guards_field}: \
+         each override needs exactly one guard slot, in the same order",
+        overrides.len(),
+        guards.len(),
+    );
+    overrides
+        .iter()
+        .zip(guards)
+        .map(|((name, value), guard)| (name.as_str(), value, guard.as_ref()))
 }
 
 /// The derivation clause of a derived sub: which prototype, under which
@@ -2554,6 +2601,7 @@ mod member_test_fixtures {
             where_clause: None,
             body,
             spec_param_overrides: Vec::new(),
+            spec_param_override_guards: Vec::new(),
             keyed_members: Vec::new(),
             is_aux: false,
             is_priv: false,

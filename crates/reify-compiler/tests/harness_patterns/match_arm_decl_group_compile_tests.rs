@@ -78,6 +78,7 @@ fn sub_member_with_span(name: &str, structure_name: &str, span: SourceSpan) -> M
         where_clause: None,
         body: None,
         spec_param_overrides: vec![],
+        spec_param_override_guards: vec![],
         keyed_members: vec![],
         is_aux: false,
         pose_expr: None,

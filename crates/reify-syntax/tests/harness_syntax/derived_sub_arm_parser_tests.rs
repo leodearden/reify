@@ -354,8 +354,8 @@ fn existing_sub_arms_lower_with_no_derivation() {
 /// `optional(field('guard', $.where_clause))`) and §4.7 of the spec documents
 /// it, so an override the source made CONDITIONAL must not reach A-beta (#6616)
 /// indistinguishable from an unconditional one — A-beta would then apply it
-/// unconditionally. Pinned here because `SubDecl::spec_param_overrides` DOES
-/// drop its guard, and parity with that gap would be the easy wrong choice.
+/// unconditionally. The specialization arm keeps its assignment guards the
+/// same way, in `SubDecl::spec_param_override_guards`.
 #[test]
 fn guarded_override_keeps_its_where_guard() {
     let sub = parse_first_sub(

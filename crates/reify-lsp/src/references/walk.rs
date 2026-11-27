@@ -65,6 +65,9 @@ pub(super) fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         // `for_each_child_scope` (see doc comment above).
         body: _,
         spec_param_overrides,
+        // The old compile does not evaluate a braces assignment's guard, so no
+        // reference resolves through it.
+        spec_param_override_guards: _,
         // Nested member scope, not a direct expression — each entry's
         // `overrides` member list is reached through `for_each_child_scope`
         // and its `param_overrides` expressions through

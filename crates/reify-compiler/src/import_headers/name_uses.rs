@@ -640,6 +640,7 @@ impl Collector {
             where_clause,
             body,
             spec_param_overrides,
+            spec_param_override_guards,
             keyed_members,
             is_aux: _,
             is_priv: _,
@@ -661,6 +662,9 @@ impl Collector {
         }
         for (_, arg) in args.iter().chain(spec_param_overrides) {
             self.visit_expr(arg);
+        }
+        for guard in spec_param_override_guards {
+            self.where_clause(guard);
         }
         self.where_clause(where_clause);
         if let Some(body) = body {
