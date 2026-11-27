@@ -66,6 +66,7 @@ pub fn compile_entry(entry_path: &Path, entry_source: &str) -> Result<SourceOutp
     if !program.entry_has_no_prelude() {
         let stdlib = stdlib_modules::lowered().as_ref().map_err(Clone::clone)?;
         definitions.extend(stdlib.definitions.iter().cloned());
+        diagnostics.extend(stdlib.errors.iter().cloned());
     }
     Ok(SourceOutput {
         definitions: DefinitionList::new(definitions),

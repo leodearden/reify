@@ -238,7 +238,10 @@ fn the_standard_library_lowers_with_no_error() {
     );
 
     let written = stdlib_definitions_written();
-    assert!(!written.is_empty(), "the standard library writes definitions");
+    assert!(
+        !written.is_empty(),
+        "the standard library writes definitions"
+    );
     let listed: Vec<DefinitionName> = names(&output.definitions)
         .into_iter()
         .filter(|definition| {

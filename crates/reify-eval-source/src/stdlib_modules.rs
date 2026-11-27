@@ -6,15 +6,18 @@ use std::sync::OnceLock;
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::stdlib_loader::{load_stdlib, stdlib_sources};
-use reify_core::{Diagnostic, ModulePath};
+use reify_core::{Diagnostic, ModulePath, Severity};
 
 use crate::SourceRefusal;
 use crate::definition_list::{self, Definition};
 use crate::module_context::{ModuleContext, ModuleSet, module_name};
 
-/// The standard library's definitions, in registration order.
+/// The standard library's definitions, in registration order, and the
+/// errors their lowering raised. Its warnings are not kept: they would repeat
+/// on every entry and say nothing about it.
 pub(crate) struct StdlibPart {
     pub(crate) definitions: Vec<Definition>,
+    pub(crate) errors: Vec<Diagnostic>,
 }
 
 /// The modules every user module's compile binds against, unless it opts out.
@@ -60,7 +63,11 @@ fn lower() -> Result<StdlibPart, SourceRefusal> {
             &mut diagnostics,
         )?);
     }
-    Ok(StdlibPart { definitions })
+    diagnostics.retain(|diagnostic| diagnostic.severity == Severity::Error);
+    Ok(StdlibPart {
+        definitions,
+        errors: diagnostics,
+    })
 }
 
 type ParsedStdlib = Vec<(ParsedModule, &'static CompiledModule)>;
