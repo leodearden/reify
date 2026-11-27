@@ -162,5 +162,12 @@ DF_VERIFY_ROLE
 # --- orchestrator systemd unit Environment= (deploy/systemd/orchestrator-reify.service.d) ---
 # REIFY_LANE_LEAK_STATUS_CMD: the live warm-lane leak-status oracle, set by
 # warm-lane.conf for the orchestrator's own background loops. run_all.sh strips
-# it; a member that wants an oracle passes --status-cmd with a stub.
+# it; a member that wants an oracle passes --status-cmd with a stub. The strip
+# does not make a member's own clearing redundant: members also run outside
+# run_all.sh, standalone and through verify.sh's selective infra leaf
+# (scripts/verify-pipeline-infra-tests.txt), under the orchestrator's
+# environment. So a member that runs a leak-oracle script must still unset the
+# variable or pass --status-cmd itself (today: the top-level unset in
+# test_warm_lane_preflight.sh and test_warm_lane_audit.sh, --status-cmd in
+# test_warm_lane_sizing_lifecycle.sh).
 REIFY_LANE_LEAK_STATUS_CMD strip
