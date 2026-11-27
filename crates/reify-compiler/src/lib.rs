@@ -70,6 +70,9 @@ pub mod relation_signatures;
 mod scc;
 mod scope;
 pub mod si_units;
+mod source_unit;
+mod source_unit_paths;
+mod source_unit_tables;
 pub mod stdlib_loader;
 pub(crate) mod stdlib_topo;
 mod termination;
@@ -90,8 +93,19 @@ pub use annotations::materialize::{
 pub use compile_builder::pre_pass::check_module_path_decl;
 pub use compile_builder::units_phase::seed_prelude_units;
 pub use entity::satisfies_trait_bound;
+#[doc(hidden)]
+pub use expr::compile_expr;
 pub use port_path::{ElementIndex, PortPath, PortRoot};
 pub use prelude_context::PreludeContext;
+#[doc(hidden)]
+pub use scope::{ArmMemberMap, AssocFnDispatchCandidate, CompilationScope, SubClusterEntry};
+#[doc(hidden)]
+pub use source_unit::{SourceUnitNames, SourceUnitSpec, compile_source_unit};
+#[doc(hidden)]
+pub use source_unit_tables::{
+    CompiledSourceUnit, InstanceRequest, LOCAL_REFERENCE_ENTITY, LocalReference, ReferenceRead,
+    ReferenceRoot, RequestArgument, SourceStep, StructuralQuery,
+};
 pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
 
@@ -119,7 +133,6 @@ pub(crate) use joint_signatures::*;
 pub(crate) use list_helpers::*;
 pub(crate) use math_signatures::*;
 pub(crate) use orientation_signatures::*;
-pub(crate) use scope::*;
 #[allow(unused_imports)]
 pub(crate) use termination::*;
 pub(crate) use trait_requirements::*;
