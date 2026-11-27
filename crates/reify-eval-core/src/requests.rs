@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::budget::{Allowance, Budget};
 use crate::core_id::CoreId;
 use crate::event::RequestId;
 use crate::index::NodeKey;
@@ -28,6 +29,8 @@ pub(crate) struct Requests {
     live_on: BTreeMap<SnapshotId, usize>,
     wants: BTreeMap<RequestId, BTreeSet<NodeKey>>,
     wanted_by: BTreeMap<NodeKey, BTreeSet<RequestId>>,
+    /// What each live request has spent of its budget.
+    allowances: BTreeMap<RequestId, Allowance>,
     opened: u64,
 }
 
@@ -39,12 +42,13 @@ impl Requests {
             live_on: BTreeMap::new(),
             wants: BTreeMap::new(),
             wanted_by: BTreeMap::new(),
+            allowances: BTreeMap::new(),
             opened: 0,
         }
     }
 
-    /// Opens a request on `snapshot`.
-    pub fn open(&mut self, snapshot: SnapshotId) -> Request {
+    /// Opens a request on `snapshot` that may spend `budget`.
+    pub fn open(&mut self, snapshot: SnapshotId, budget: Budget) -> Request {
         self.opened += 1;
         let id = RequestId {
             core: self.core,
@@ -53,7 +57,35 @@ impl Requests {
         self.on.insert(id, snapshot);
         *self.live_on.entry(snapshot).or_default() += 1;
         self.wants.insert(id, BTreeSet::new());
+        self.allowances.insert(id, Allowance::new(budget));
         Request { id }
+    }
+
+    pub fn is_live(&self, id: RequestId) -> bool {
+        self.on.contains_key(&id)
+    }
+
+    /// Whether a live request on `snapshot` has a bounded budget.
+    pub fn any_bounded_on(&self, snapshot: SnapshotId) -> bool {
+        self.allowances
+            .iter()
+            .any(|(id, allowance)| allowance.is_bounded() && self.on[id] == snapshot)
+    }
+
+    /// Spends one path resolved from each live request in `needing`, and
+    /// gives, in request order, each whose budget allowed no more, with its
+    /// snapshot and budget; those are not charged.
+    pub fn charge(&mut self, needing: &BTreeSet<RequestId>) -> Vec<(RequestId, SnapshotId, u64)> {
+        let mut exhausted = Vec::new();
+        for id in needing {
+            let Some(allowance) = self.allowances.get_mut(id) else {
+                continue;
+            };
+            if let Err(budget) = allowance.spend_path() {
+                exhausted.push((*id, self.on[id], budget));
+            }
+        }
+        exhausted
     }
 
     pub fn want(&mut self, request: RequestId, key: NodeKey) {
@@ -120,6 +152,7 @@ impl Requests {
                 self.live_on.remove(&snapshot);
             }
         }
+        self.allowances.remove(&id);
         for key in self.wants.remove(&id).unwrap_or_default() {
             if let Some(wanting) = self.wanted_by.get_mut(&key) {
                 wanting.remove(&id);

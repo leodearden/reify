@@ -19,7 +19,7 @@ use crate::counters::Counters;
 use crate::cycle;
 use crate::declaration::Declaration;
 use crate::demand::Demand;
-use crate::event::{Event, RequestId};
+use crate::event::{Event, RequestError, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::finish;
 use crate::index::{self, Entry, Indexes, NodeKey};
@@ -118,11 +118,11 @@ impl Executor {
         Snapshot::new(self.core, &self.snapshots, inputs)
     }
 
-    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand, _budget: Budget) -> Request {
+    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand, budget: Budget) -> Request {
         self.core.refuse_foreign(snapshot.id().core, "a snapshot");
         self.prune();
         self.indexes.open(snapshot);
-        let request = self.requests.open(snapshot.id());
+        let request = self.requests.open(snapshot.id(), budget);
         for path in demand.into_paths() {
             self.demand(request.id(), snapshot.id(), &path);
         }
@@ -235,8 +235,12 @@ impl Executor {
     }
 
     /// Tells a path already answered in the snapshot at once; otherwise
-    /// the request wants it until it is answered.
+    /// the request wants it until it is answered. A request its budget has
+    /// ended is told nothing more.
     fn demand(&mut self, request: RequestId, snapshot: SnapshotId, path: &Path) {
+        if !self.requests.is_live(request) {
+            return;
+        }
         let key = NodeKey {
             snapshot,
             path: self.paths.intern(path),
@@ -342,7 +346,12 @@ impl Executor {
     /// from its parent's final answer. A declaration of a node too deep for
     /// the snapshot's depth setting answers that failure; any other
     /// declaration starts a lookup; any other outcome is the path's answer.
+    /// A path no live request needs once its resolution is charged is not
+    /// worked out.
     fn resolve(&mut self, key: NodeKey) -> Option<Work> {
+        if !self.charge_resolution(key) {
+            return None;
+        }
         self.counters.count_path_resolved();
         let index = self.indexes.of(key.snapshot);
         let declared = match self.paths.parent(key.path) {
@@ -386,6 +395,37 @@ impl Executor {
                 declaration: None,
             },
         ))
+    }
+
+    /// Charges the resolution of `key` to every live request that needs it:
+    /// each that wants a node waiting on `key`, directly or through other
+    /// waits. Each whose budget allows no more is ended instead, by the
+    /// route `end` takes; whether `key` is still needed. Nothing is charged
+    /// while no live request on the snapshot has a bounded budget.
+    fn charge_resolution(&mut self, key: NodeKey) -> bool {
+        if !self.requests.any_bounded_on(key.snapshot) {
+            return true;
+        }
+        let needing: BTreeSet<RequestId> = self
+            .waits
+            .reach_waiters(key)
+            .iter()
+            .flat_map(|node| self.requests.wanting(node))
+            .collect();
+        let exhausted = self.requests.charge(&needing);
+        if exhausted.is_empty() {
+            return true;
+        }
+        for (request, snapshot, budget) in exhausted {
+            self.events.push(Event::Ended {
+                request,
+                snapshot,
+                error: RequestError::PathsBudgetExhausted { budget },
+            });
+            self.requests.end_id(request);
+        }
+        self.drop_unwanted_work();
+        !self.unwanted(key)
     }
 
     /// Removes the lookup or body at `key`, with the read it waits on, if

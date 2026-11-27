@@ -25,7 +25,11 @@ impl Core {
     }
 
     /// Opens a request on `snapshot` for the answers at the paths `demand`
-    /// names.
+    /// names, which may spend `budget` (contract 7.6). Each path the core
+    /// resolves is charged to every live request whose demand needs it. A
+    /// request that needs more paths than its budget allows is ended, told
+    /// as one `Event::Ended` with `RequestError::PathsBudgetExhausted`, and
+    /// the work no other live request waits on is dropped.
     ///
     /// # Panics
     ///
