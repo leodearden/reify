@@ -7,9 +7,9 @@ use std::marker::PhantomData;
 use std::fmt::Debug;
 
 use reify_eval_core::{
-    Answer, Binding, Budget, Builder, Core, Cx, Declaration, Erased, Failure, Hash128, Input,
-    InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Snapshot, Step,
-    Substitution, Turn, Value,
+    Answer, Binding, Budget, Builder, Core, Cx, Declaration, Description, Erased, Failure, Hash128,
+    Input, InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Snapshot, Step,
+    Substitution, Turn, Value, View,
 };
 
 use crate::toy::{self, Cell, Contented, Members, Pair, Part, Shape, Solution, Solve, Watch};
@@ -18,6 +18,7 @@ use crate::toy::{self, Cell, Contented, Members, Pair, Part, Shape, Solution, So
 #[derive(Debug, Clone, PartialEq)]
 enum Seen {
     Int(i64),
+    Flag(bool),
     /// A value of a scope or guard: its members.
     Present,
     Absent,
@@ -35,6 +36,7 @@ struct Saw {
 /// A read a probe makes through a view, with the type it reads as.
 enum Read {
     Int(Ref),
+    Flag(Ref),
     Members(Ref),
 }
 
@@ -67,22 +69,9 @@ impl<P: Plan> Kind for Probe<P> {
             let view = cx.suppose(trial.substitution);
             for read in &trial.reads {
                 saw.push(match read {
-                    Read::Int(r) => {
-                        let viewed = view.read::<i64>(r).await;
-                        let seen = seen(viewed.outcome, |value| Seen::Int(*value));
-                        Saw {
-                            seen,
-                            depended: viewed.depended,
-                        }
-                    }
-                    Read::Members(r) => {
-                        let viewed = view.read::<Members>(r).await;
-                        let seen = seen(viewed.outcome, |_| Seen::Present);
-                        Saw {
-                            seen,
-                            depended: viewed.depended,
-                        }
-                    }
+                    Read::Int(r) => viewed(&view, r, |value: &i64| Seen::Int(*value)).await,
+                    Read::Flag(r) => viewed(&view, r, |value: &bool| Seen::Flag(*value)).await,
+                    Read::Members(r) => viewed(&view, r, |_: &Members| Seen::Present).await,
                 });
             }
         }
@@ -90,11 +79,18 @@ impl<P: Plan> Kind for Probe<P> {
     }
 }
 
-fn seen<T>(outcome: Outcome<T>, value: impl FnOnce(&T) -> Seen) -> Seen {
-    match outcome {
+/// What reading `r` as `T` through `view` gave, a value rendered by
+/// `value`.
+async fn viewed<T: Value>(view: &View<'_>, r: &Ref, value: impl FnOnce(&T) -> Seen) -> Saw {
+    let viewed = view.read::<T>(r).await;
+    let seen = match viewed.outcome {
         Outcome::Value(read) => value(&read),
         Outcome::Absent => Seen::Absent,
         Outcome::Failure(failure) => Seen::Failed(failure),
+    };
+    Saw {
+        seen,
+        depended: viewed.depended,
     }
 }
 
@@ -960,4 +956,219 @@ fn a_section_after_opening_a_view_is_not_a_read_outside_it() {
     core.run();
     let answer = toy::the_answer(&core.take_events(), &request, &at);
     assert_eq!(value_of::<i64>(answer), 4);
+}
+
+/// A solve S at root/solves/u over the unknown x, both members of the scope
+/// solves, whose one constraint is `constraint`.
+fn solve_in_solves(constraint: Declaration) -> Vec<(InputKey, Input)> {
+    let solve = toy::solve(
+        toy::input("problem"),
+        [toy::sibling(&["x"])],
+        [toy::sibling(&["c"])],
+    );
+    let solves = toy::members([
+        ("u", solve),
+        ("x", toy::solved_int(toy::sibling(&["u"]), 0)),
+        ("c", constraint),
+    ]);
+    let [members, root] = toy::root_scope("root", toy::members([("solves", toy::scope("solves"))]));
+    vec![
+        members,
+        root,
+        toy::named("solves", solves),
+        toy::named("problem", toy::problem([vec![Part::Int(1)]], 1)),
+    ]
+}
+
+#[test]
+fn solve_reached_again_under_its_own_view_is_a_cycle_and_terminates() {
+    let reads_the_solve = || solve_in_solves(toy::cell_over([toy::sibling(&["u"])]));
+    let (solve, constraint) = (
+        toy::below("root", &["solves", "u"]),
+        toy::below("root", &["solves", "c"]),
+    );
+
+    let mut first = toy::with_solve().build();
+    let snapshot = first.snapshot(reads_the_solve());
+    let request = first.evaluate(&snapshot, toy::demand([&solve]), Budget::unlimited());
+    first.run();
+    let answer = toy::the_answer(&first.take_events(), &request, &solve);
+    assert_eq!(toy::failed(answer), Failure::Cycle);
+    let answer = toy::answer_alone(&mut first, &snapshot, &constraint);
+    assert_eq!(
+        toy::failed(answer),
+        Failure::BlockedBy {
+            at: Ref::binding("0")
+        },
+        "in the snapshot the cell is another node, which reads the solve's cycle"
+    );
+
+    let mut second = toy::with_solve().on_store(first.into_store()).build();
+    let snapshot = second.snapshot(reads_the_solve());
+    let answer = toy::answer_alone(&mut second, &snapshot, &solve);
+    assert_eq!(toy::failed(answer), Failure::Cycle);
+    assert_eq!(
+        second.counters().body_runs(Solve::ID),
+        1,
+        "nothing is stored for it"
+    );
+
+    let snapshot = second.snapshot(solve_in_solves(toy::cell_over([toy::sibling(&["x"])])));
+    let answer = toy::answer_alone(&mut second, &snapshot, &solve);
+    assert_eq!(value_of::<Solution>(answer), Solution(vec![Part::Int(1)]));
+}
+
+/// Reads the bools at "p" and then "q", whatever the first is, and
+/// answers whether either holds; an operand that is a failure makes it
+/// blocked by that operand, the first such.
+struct Or;
+
+impl Kind for Or {
+    type Out = bool;
+    const ID: KindId = KindId("views.or");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<bool> {
+        let mut holds = false;
+        let mut blocked = None;
+        for operand in ["p", "q"] {
+            let r = Ref::binding(operand);
+            match cx.read::<bool>(&r).await {
+                Outcome::Value(value) => holds |= *value,
+                Outcome::Absent => {}
+                Outcome::Failure(_) => {
+                    blocked.get_or_insert(r);
+                }
+            }
+        }
+        Produced::Outcome(match blocked {
+            Some(at) => Outcome::Failure(Failure::BlockedBy { at }),
+            None => Outcome::of(holds),
+        })
+    }
+}
+
+/// The failure an unknown not yet assigned is supposed to be (contract 8).
+fn unassigned() -> Failure {
+    Failure::Described {
+        kind: Or::ID,
+        code: "unassigned",
+        description: Description::of(String::from("unassigned"), Hash128::of_bytes(b"unassigned")),
+    }
+}
+
+/// Assigns p and supposes q unassigned.
+struct AssignsP;
+
+impl Plan for AssignsP {
+    const ID: KindId = KindId("views.probe.assigns_p");
+
+    fn trials() -> Vec<Trial> {
+        let true_ = Outcome::of(toy::input_of(true));
+        vec![Trial {
+            substitution: Substitution::of([
+                (Ref::binding("p"), true_),
+                (Ref::binding("q"), Outcome::Failure(unassigned())),
+            ]),
+            reads: vec![Read::Flag(Ref::binding("c"))],
+        }]
+    }
+}
+
+/// Supposes p only, leaving q to be read as itself.
+struct ForgetsQ;
+
+impl Plan for ForgetsQ {
+    const ID: KindId = KindId("views.probe.forgets_q");
+
+    fn trials() -> Vec<Trial> {
+        let true_ = Outcome::of(toy::input_of(true));
+        vec![Trial {
+            substitution: Substitution::of([(Ref::binding("p"), true_)]),
+            reads: vec![Read::Flag(Ref::binding("c"))],
+        }]
+    }
+}
+
+/// The answer of the probe of plan `P`, which owns the flag unknowns p and
+/// q (solved nodes reading it) and reads c = p or q.
+fn owned_unknowns<P: Plan>() -> Answer<Erased> {
+    let builder = with_probe::<P>(toy::with_solve())
+        .kind::<Or>()
+        .expect("distinct kinds");
+    let mut core = builder.build();
+    let or = Declaration::new(Or::ID)
+        .bind("p", toy::sibling(&["p"]))
+        .bind("q", toy::sibling(&["q"]));
+    let [members, root] = toy::root_scope(
+        "root",
+        toy::members([
+            ("p", toy::solved_flag(toy::sibling(&["probe"]), 0)),
+            ("q", toy::solved_flag(toy::sibling(&["probe"]), 1)),
+            ("c", or),
+            ("probe", probe::<P>(&["p", "q", "c"])),
+        ]),
+    );
+    let snapshot = core.snapshot([members, root]);
+    let at = member("probe");
+    let request = core.evaluate(&snapshot, toy::demand([&at]), Budget::unlimited());
+    core.run();
+    toy::the_answer(&core.take_events(), &request, &at)
+}
+
+#[test]
+fn an_unassigned_unknown_inside_its_own_solve_never_reaches_the_solve() {
+    let assigned = value_of::<Vec<Saw>>(owned_unknowns::<AssignsP>());
+    let blocked_by_q = Failure::BlockedBy {
+        at: Ref::binding("q"),
+    };
+    assert_eq!(assigned, vec![saw(Seen::Failed(blocked_by_q), true)]);
+
+    let faulty = owned_unknowns::<ForgetsQ>();
+    assert_eq!(
+        toy::failed(faulty),
+        Failure::Cycle,
+        "c's read of q reached the probe that owns it"
+    );
+}
+
+struct ReadsRings;
+
+impl Plan for ReadsRings {
+    const ID: KindId = KindId("views.probe.reads_rings");
+
+    fn trials() -> Vec<Trial> {
+        vec![Trial {
+            substitution: Substitution::of([(Ref::binding("x"), supposed(3))]),
+            reads: vec![int("r1"), int("s1")],
+        }]
+    }
+}
+
+#[test]
+fn a_ring_under_a_view_answers_cycle_there_and_its_dependence_follows_its_reads() {
+    let mut core = with_probe::<ReadsRings>(toy::with_scope()).build();
+    let [members, root] = toy::root_scope(
+        "root",
+        toy::members([
+            ("x", toy::cell(&["x0"])),
+            ("r1", toy::cell_over([toy::sibling(&["r2"])])),
+            ("r2", toy::cell_over([toy::sibling(&["r1"])])),
+            (
+                "s1",
+                toy::cell_over([toy::sibling(&["x"]), toy::sibling(&["s2"])]),
+            ),
+            ("s2", toy::cell_over([toy::sibling(&["s1"])])),
+            ("probe", probe::<ReadsRings>(&["x", "r1", "s1"])),
+        ]),
+    );
+    let snapshot = core.snapshot([members, root, toy::named("x0", 1_i64)]);
+
+    assert_eq!(
+        probed(&mut core, &snapshot),
+        vec![
+            saw(Seen::Failed(Failure::Cycle), false),
+            saw(Seen::Failed(Failure::Cycle), true),
+        ]
+    );
 }
