@@ -51,6 +51,21 @@ pub fn expected_to_parse(needs: &[Need], built: &Built) -> bool {
     !needs.contains(&Need::GrammarPurpose) || built.contains(Need::GrammarPurpose)
 }
 
+/// `source` with each line that applies a purpose (`purpose name(...)`, a
+/// member with no body) blanked, so the lines keep their numbers. What the
+/// unbuilt purpose grammar rejects is those lines alone: the rest must parse.
+pub fn without_purpose_applications(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| if applies_a_purpose(line) { "" } else { line })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn applies_a_purpose(line: &str) -> bool {
+    line.trim_start().starts_with("purpose ") && !line.contains('{')
+}
+
 /// The 1-based numbers of the lines with a bare `Scalar`.
 pub fn bare_scalar_lines(source: &str) -> Vec<usize> {
     source
