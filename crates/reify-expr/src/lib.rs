@@ -436,7 +436,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         CompiledExprKind::UnOp { op, operand } => eval_unop(*op, operand, ctx),
 
         CompiledExprKind::FunctionCall { function, args } => {
+            let mark = ctx.pending_mark();
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+            // A built-in is not run with a pending argument, nor is the
+            // interpolation renderer, which would render the stand-in.
+            if ctx.pending_since(mark) {
+                return Value::Undef;
+            }
             // __interp_render intercept — MUST sit before the strict-Undef
             // short-circuit below. This placement is load-bearing: the
             // determinacy decision (PRD §6.3, task 3964) requires that an
@@ -894,13 +900,15 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // yet). Wrong-arity calls fall straight through to
                 // eval_user_function_call without paying arg-evaluation cost here
                 // and without triggering double-evaluation on the decline path.
+                let mark = ctx.pending_mark();
                 let evaluated_args: Vec<Value> =
                     args.iter().map(|a| eval_expr(a, ctx)).collect();
                 // Strict Undef propagation: return Undef directly (consistent with
                 // eval_user_function_call's own Undef check) so the decline path
                 // does not re-evaluate the args a second time inside
-                // eval_user_function_call.
-                if evaluated_args.iter().any(|v| v.is_undef()) {
+                // eval_user_function_call. The solve runs only on defined
+                // arguments, under either reader, and never on a pending one.
+                if evaluated_args.iter().any(|v| v.is_undef()) || ctx.pending_since(mark) {
                     return Value::Undef;
                 }
                 return eval_solve_load_cases(&evaluated_args, ctx);
@@ -1770,12 +1778,23 @@ fn eval_compiled_function_with_values(
 }
 
 /// Evaluate a user-defined function call.
+///
+/// A function is not entered with a pending argument. Under the old engine's
+/// reader it is not entered with an undefined one either; under a reader that
+/// may answer "not here yet" it is (decision D10(d)), though an `@optimized`
+/// function is dispatched only when every argument is defined.
 fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &EvalContext) -> Value {
     // Evaluate arguments
+    let mark = ctx.pending_mark();
     let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+    if ctx.pending_since(mark) {
+        return Value::Undef;
+    }
 
-    // Strict Undef propagation: if any arg is Undef, short-circuit
-    if evaluated_args.iter().any(|v| v.is_undef()) {
+    // Strict Undef propagation under the old engine's reader: if any arg is
+    // Undef, short-circuit.
+    let every_arg_defined = !evaluated_args.iter().any(|v| v.is_undef());
+    if !every_arg_defined && !ctx.reads_every_operand() {
         return Value::Undef;
     }
 
@@ -1795,8 +1814,11 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 
     // `@optimized` compute-dispatch hook (task #4880). See
     // `try_compute_dispatch_reporting_fallback`'s doc for why this is a separate
-    // `#[inline(never)]` call rather than inline `if let`s.
-    if let Some(v) = try_compute_dispatch_reporting_fallback(func, &evaluated_args, ctx) {
+    // `#[inline(never)]` call rather than inline `if let`s. A dispatcher takes
+    // determined arguments only (`ComputeDispatch::dispatch`'s contract).
+    if every_arg_defined
+        && let Some(v) = try_compute_dispatch_reporting_fallback(func, &evaluated_args, ctx)
+    {
         return v;
     }
 
