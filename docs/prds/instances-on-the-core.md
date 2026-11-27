@@ -163,6 +163,8 @@ The starting form of the text, to be settled by building (rule F):
 | A cell's value opened as an instance | `/open`, `/open[chain]` | `Asm.c/open.area` |
 | What an instance tells a solve; the solve design's nodes | `/problem`, `/solves` | `Asm.a/problem` |
 
+Its final form, settled by building, is rule F of docs/instance-kinds-design.md.
+
 A guard's cell, a count's cell and a placement's cell are children of the declaring instance, not of what they belong to: a collection must read its count before it has a result to declare anything with. A member's name is written after a dot and everything else after a slash, and no identifier contains a slash. So a sub named `summary` and an instance's summary cannot be confused. On the core, a step is a key in a space (core task 10621): members by name are in one space and the fixed children in another.
 
 `k` for a constraint is its position among the constraints of the instance's member table that give a verdict: those inherited from traits first, in the order the traits are listed, then the definition's own in source order. `k` for an applied purpose is its position among the applications in the member table, in source order, and a purpose applied under a guard keeps its position when it is absent. A count constraint (`xs.count == n`) is the source of the count's cell and gives no verdict. A chain is the call sites and iteration indices from the member's expression to the call, and the forms combine: an `auto` in a call inside a sub's argument is `/auto[member.argument#chain.argument]`. For a value opened in mid-expression it ends with the position of the member read among the unit's member reads, so that two reads in one expression open two instances.
@@ -1157,7 +1159,7 @@ The project's invariants (`docs/legibility/design-invariants.md`), walked agains
 3. **How a value is written in an expectation and compared** (α): as a Reify literal evaluated by the kept evaluator, or parsed by the runner. Decided by α (#10634): in the catalogue's answer notation (`8 mm`, `Plate{t: 3 mm}`, `undefined`), parsed by the runner when the entry loads into a type of its own; how it is compared with an answer is fixed by the first leaf that compares a value.
 4. **One test per entry, or one per theme** (α): the runner must name each failing entry either way. Decided by α (#10634): one test over the whole corpus, which collects every problem, each naming its entry, fails once at the end, and prints each entry's state.
 5. **The key of a unit of source as a snapshot input** (ε₂): one function builds it; nothing parses it back.
-6. **Where the module is written in a path's text, and how a quote inside a key is escaped** (β).
+6. **Where the module is written in a path's text, and how a quote inside a key is escaped** (β). Decided by β (#10635): a module other than the entry file's is written as its dotted path, then `::`, then the definition (`std.units::Plate`), and the entry file's module is not written; inside a key `\"` is a quote and `\\` a backslash, and there is no other escape. The full text is rule F of docs/instance-kinds-design.md.
 7. **Whether `relate` and `chain` are constraints or placements** (ο): the leaf reads how the existing lowering treats each; whatever places a part goes to task 10611. And whether an end of a `connect` written in a sub's braces may name a sibling of the sub.
 
 ## 16. What is not settled, and what would settle it
