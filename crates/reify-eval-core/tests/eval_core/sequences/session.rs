@@ -9,7 +9,6 @@
 //! counted, so a test can show it is not vacuous.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use reify_eval_core::{
     Answer, Budget, Core, Demand, Erased, Event, Failure, Kind, Link, Path, Ref, Request,
@@ -19,263 +18,11 @@ use reify_eval_core::{
 use super::case::{Case, HostEvent, Then};
 use super::design::{Inputs, Key, ModelPath, ModelRef, ToyKind, Val, to_core};
 use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
+use super::mismatch::Mismatch;
 use super::reach::{Reach, Shape};
-use super::reference::{Expect, Expected, Invalid, Out, Reference};
+use super::reference::{Expect, Expected, Out, Reference};
 use super::seen::Seen;
 use crate::toy;
-
-/// What a check found wrong. `event` is the index of the host event after
-/// which it was seen, `snapshot` the index of the snapshot concerned.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Mismatch {
-    /// The core's answer is not the reference interpreter's.
-    Reference {
-        event: usize,
-        snapshot: usize,
-        path: ModelPath,
-        core: Box<Seen>,
-        reference: Box<Seen>,
-    },
-    /// The core is idle and a live request holds no answer at a path it
-    /// demanded.
-    Unanswered {
-        event: usize,
-        snapshot: usize,
-        path: ModelPath,
-    },
-    /// An answer at a path its request did not demand.
-    Unasked {
-        event: usize,
-        snapshot: usize,
-        path: Path,
-    },
-    /// A second answer at one path of one request.
-    Twice {
-        event: usize,
-        snapshot: usize,
-        path: ModelPath,
-    },
-    /// The core ended a request otherwise than by the budget it was given.
-    Ended {
-        event: usize,
-        snapshot: usize,
-        error: RequestError,
-    },
-    /// An answer told to a request after the core ended it.
-    AnsweredAfterEnd {
-        event: usize,
-        snapshot: usize,
-        path: Path,
-    },
-    /// An Evaluate given a budget of `budget` paths, whose demand needs
-    /// `needed` resolved, was `ended` by the core, or answered, when the
-    /// budget does not allow it: ended within its budget, or, as the first
-    /// request on its snapshot, answered past it.
-    Budget {
-        event: usize,
-        snapshot: usize,
-        budget: u64,
-        needed: u64,
-        ended: bool,
-    },
-    /// A fresh core built on the session core's selection (check 2),
-    /// asked in the session's order, answered otherwise.
-    Fresh {
-        snapshot: usize,
-        path: ModelPath,
-        session: Box<Seen>,
-        fresh: Box<Seen>,
-    },
-    /// A fresh core built on the session core's selection told no answer
-    /// at a path the session answered: it ended the request with `ended`,
-    /// or left it with neither.
-    FreshUnanswered {
-        snapshot: usize,
-        path: ModelPath,
-        ended: Option<RequestError>,
-    },
-    /// A fresh core, asked in another order, answered otherwise.
-    Order {
-        snapshot: usize,
-        path: ModelPath,
-        session: Box<Seen>,
-        fresh: Box<Seen>,
-    },
-    /// A fresh core, asked in another order, told no answer at a path the
-    /// session answered: it ended the request with `ended`, or left it
-    /// with neither.
-    OrderUnanswered {
-        snapshot: usize,
-        path: ModelPath,
-        ended: Option<RequestError>,
-    },
-    /// The reference interpreter has no answer: the case is not one the
-    /// checks can judge.
-    Invalid {
-        event: usize,
-        snapshot: usize,
-        invalid: Invalid,
-    },
-}
-
-/// Which check a mismatch failed, for keeping a shrunk case on the same
-/// fault.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MismatchKind {
-    Reference,
-    Unanswered,
-    Unasked,
-    Twice,
-    Ended,
-    AnsweredAfterEnd,
-    Budget,
-    Fresh,
-    FreshUnanswered,
-    Order,
-    OrderUnanswered,
-    Invalid,
-}
-
-impl Mismatch {
-    pub fn kind(&self) -> MismatchKind {
-        match self {
-            Mismatch::Reference { .. } => MismatchKind::Reference,
-            Mismatch::Unanswered { .. } => MismatchKind::Unanswered,
-            Mismatch::Unasked { .. } => MismatchKind::Unasked,
-            Mismatch::Twice { .. } => MismatchKind::Twice,
-            Mismatch::Ended { .. } => MismatchKind::Ended,
-            Mismatch::AnsweredAfterEnd { .. } => MismatchKind::AnsweredAfterEnd,
-            Mismatch::Budget { .. } => MismatchKind::Budget,
-            Mismatch::Fresh { .. } => MismatchKind::Fresh,
-            Mismatch::FreshUnanswered { .. } => MismatchKind::FreshUnanswered,
-            Mismatch::Order { .. } => MismatchKind::Order,
-            Mismatch::OrderUnanswered { .. } => MismatchKind::OrderUnanswered,
-            Mismatch::Invalid { .. } => MismatchKind::Invalid,
-        }
-    }
-}
-
-impl fmt::Display for Mismatch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Mismatch::Reference {
-                event,
-                snapshot,
-                path,
-                core,
-                reference,
-            } => write!(
-                f,
-                "after event {event}, at {path:?} on snapshot {snapshot}: the core answered \
-                 {core:?}, the reference interpreter {reference:?}"
-            ),
-            Mismatch::Unanswered {
-                event,
-                snapshot,
-                path,
-            } => write!(
-                f,
-                "after event {event}, the core is idle with no answer at {path:?} on snapshot \
-                 {snapshot}"
-            ),
-            Mismatch::Unasked {
-                event,
-                snapshot,
-                path,
-            } => write!(
-                f,
-                "after event {event}, an answer at {path:?} on snapshot {snapshot}, which its \
-                 request did not demand"
-            ),
-            Mismatch::Twice {
-                event,
-                snapshot,
-                path,
-            } => write!(
-                f,
-                "after event {event}, a second answer at {path:?} on snapshot {snapshot} to one \
-                 request"
-            ),
-            Mismatch::Ended {
-                event,
-                snapshot,
-                error,
-            } => write!(
-                f,
-                "after event {event}, the core ended a request on snapshot {snapshot}: {error:?}"
-            ),
-            Mismatch::AnsweredAfterEnd {
-                event,
-                snapshot,
-                path,
-            } => write!(
-                f,
-                "after event {event}, an answer at {path:?} on snapshot {snapshot} to a request \
-                 the core had ended"
-            ),
-            Mismatch::Budget {
-                event,
-                snapshot,
-                budget,
-                needed,
-                ended,
-            } => {
-                let outcome = if *ended { "ended" } else { "answered" };
-                write!(
-                    f,
-                    "after event {event}, a request on snapshot {snapshot} given a budget of \
-                     {budget} paths, whose demand needs {needed} resolved, was {outcome}"
-                )
-            }
-            Mismatch::Fresh {
-                snapshot,
-                path,
-                session,
-                fresh,
-            } => write!(
-                f,
-                "at {path:?} on snapshot {snapshot}: the session answered {session:?}, a fresh \
-                 core built on the session's selection {fresh:?}"
-            ),
-            Mismatch::FreshUnanswered {
-                snapshot,
-                path,
-                ended,
-            } => write!(
-                f,
-                "at {path:?} on snapshot {snapshot}: a fresh core built on the session's \
-                 selection told no answer, the request ended with {ended:?}"
-            ),
-            Mismatch::Order {
-                snapshot,
-                path,
-                session,
-                fresh,
-            } => write!(
-                f,
-                "at {path:?} on snapshot {snapshot}: the session answered {session:?}, a fresh \
-                 core asked in reverse order {fresh:?}"
-            ),
-            Mismatch::OrderUnanswered {
-                snapshot,
-                path,
-                ended,
-            } => write!(
-                f,
-                "at {path:?} on snapshot {snapshot}: a fresh core asked in reverse order told no \
-                 answer, the request ended with {ended:?}"
-            ),
-            Mismatch::Invalid {
-                event,
-                snapshot,
-                invalid,
-            } => write!(
-                f,
-                "after event {event}, snapshot {snapshot} has no reference answer: {invalid:?}"
-            ),
-        }
-    }
-}
 
 /// What the cell at `cell` reads at `at`, the ref it is blocked by: one of
 /// its bindings, or the element "from"/[i] its "pick" reads i for.
@@ -293,6 +40,42 @@ fn blocking_read(reference: &mut Reference, cell: &ModelPath, at: &Ref) -> Optio
     }
     let read = reads.into_iter().find(|read| read.to_core() == *at)?;
     reference.read_at(cell, &read).ok()
+}
+
+/// Whether a call above `path`, or at it, declared by its run the path
+/// down to `path` and then another child: once that path is answered the
+/// call runs on for no request that waits on `path`.
+fn runs_on_after(reference: &Reference, path: &ModelPath) -> bool {
+    let mut at = path.clone();
+    while let Some((call, step)) = at.parent() {
+        let steps = reference.steps_declared_by(&call);
+        if let Some(position) = steps.iter().position(|declared| declared == step)
+            && position + 1 < steps.len()
+        {
+            return true;
+        }
+        at = call;
+    }
+    false
+}
+
+/// How many of `demanded` and the paths above them `reference` resolved:
+/// a request waits on each of them from its start.
+fn demanded_and_above<'a>(
+    reference: &Reference,
+    demanded: impl IntoIterator<Item = &'a ModelPath>,
+) -> usize {
+    let mut above = BTreeSet::new();
+    for path in demanded {
+        let mut at = Some(path.clone());
+        while let Some(path) = at {
+            at = path.parent().map(|(parent, _)| parent);
+            if reference.resolved(&path) {
+                above.insert(path);
+            }
+        }
+    }
+    above.len()
 }
 
 /// The ref to the binding `binding` itself.
@@ -669,7 +452,12 @@ impl Session {
     /// more paths resolved than its budget allows, and, for the first
     /// request on its snapshot, whose resolutions no other request shares,
     /// always then. What the demand needs is what a fresh reference
-    /// resolves answering it.
+    /// resolves answering it. A call whose run declares a child the demand
+    /// waits on and then declares more runs on for no request once that
+    /// child is answered, so what it resolves then may be charged to none:
+    /// such a demand needs at least its paths and their ancestors resolved,
+    /// and which of the rest are charged depends on the order of the core's
+    /// work.
     fn within_budget(&mut self, at: usize, request: RequestId) -> Result<(), Mismatch> {
         let opened = &self.requests[&request];
         let Some(budget) = opened.budget else {
@@ -684,12 +472,20 @@ impl Session {
                 invalid,
             })?;
         }
-        let needed = u64::try_from(fresh.paths_resolved()).expect("a count fits u64");
-        let past = budget < needed;
-        let allowed = if opened.first_on_snapshot {
-            ended == past
-        } else {
-            !ended || past
+        let count = |count: usize| u64::try_from(count).expect("a count fits u64");
+        let needed = count(fresh.paths_resolved());
+        let runs_on = opened
+            .demanded
+            .values()
+            .any(|path| runs_on_after(&fresh, path));
+        let least = match runs_on {
+            true => count(demanded_and_above(&fresh, opened.demanded.values())),
+            false => needed,
+        };
+        let allowed = match (opened.first_on_snapshot, ended) {
+            (_, true) => budget < needed,
+            (true, false) => budget >= least,
+            (false, false) => true,
         };
         if !allowed {
             return Err(Mismatch::Budget {
@@ -697,6 +493,7 @@ impl Session {
                 snapshot,
                 budget,
                 needed,
+                least,
                 ended,
             });
         }
@@ -898,10 +695,11 @@ mod tests {
 
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::*;
+    use super::super::mismatch::Mismatch;
     use super::super::reach::Shape;
     use super::super::reference::Invalid;
     use super::super::seen::Seen;
-    use super::{Mismatch, check, toy_core};
+    use super::{check, toy_core};
     use crate::toy;
 
     /// Root scope "r" with a cell "a" over "x" and a cell "b" adding "a"
@@ -1118,6 +916,50 @@ mod tests {
         }
     }
 
+    /// Root scope "r1" whose one member is a call over "i2" with two
+    /// looping sites, the second declaring a call: demanding the first
+    /// site's child, with `budget`, as G0 found at seed 1362.
+    fn child_demanded_before_its_call_runs_on(budget: u64) -> Case {
+        let sites = calls_value([
+            site(&[2, 7], true, -2, cell([constant(int(0)), input("i4")])),
+            site(&[1], true, 2, call([constant(int(0))], input("k9"))),
+        ]);
+        Case {
+            inputs: inputs([
+                (root("r1"), declaration(scope("s7"))),
+                (named("i2"), int(0)),
+                (named("k8"), sites),
+                (
+                    named("s7"),
+                    members([(step("m0"), call([input("i2")], input("k8")))]),
+                ),
+            ]),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![path("r1", [step("m0"), call_step(&[2, 7], Some(0))])],
+                budget: Some(budget),
+                then: Then::End,
+            }],
+        }
+    }
+
+    /// The child is answered once r1, its call and the child are resolved;
+    /// the call then declares its second child for no request, so a budget
+    /// of three is enough though answering the call needs four.
+    #[test]
+    fn a_child_answered_before_its_call_runs_on_is_answered_within_the_paths_before_it() {
+        let case = child_demanded_before_its_call_runs_on(3);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::AnsweredWithinBudget), 1, "{reach:?}");
+    }
+
+    #[test]
+    fn a_child_whose_own_paths_exceed_the_budget_ends_the_first_request() {
+        let case = child_demanded_before_its_call_runs_on(2);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::EndedByBudget), 1, "{reach:?}");
+    }
+
     /// Root cell "c" over two inputs, evaluated with `budgets` in turn.
     fn sum_of_two_within(budgets: &[Option<u64>]) -> Case {
         let evaluate = |budget| HostEvent::Evaluate {
@@ -1203,6 +1045,7 @@ mod tests {
             snapshot: 0,
             budget: 2,
             needed: 2,
+            least: 2,
             ended: true,
         };
         assert_eq!(

@@ -179,6 +179,15 @@ fn decl_text(decl: &Decl) -> String {
     if *decl == cell(terms.clone()) {
         return format!("cell([{}])", list(terms.iter().map(bind_text)));
     }
+    if let (ToyKind::Call, Some(condition)) = (decl.kind, bound("when")) {
+        let mut unconditional = decl.clone();
+        unconditional.bindings.remove("when");
+        return format!(
+            "when({}, {})",
+            decl_text(&unconditional),
+            bind_text(&condition)
+        );
+    }
     if let Some(calls) = bound("calls")
         && *decl == call(terms.clone(), calls.clone())
     {
@@ -362,7 +371,10 @@ mod tests {
                 ),
                 (
                     root("k"),
-                    declaration(call([input("i"), constant(int(2))], input("calls"))),
+                    declaration(when(
+                        call([input("i"), constant(int(2))], input("calls")),
+                        input("f"),
+                    )),
                 ),
                 (
                     named("calls"),
@@ -420,7 +432,7 @@ fn printed_case() {
     let case = Case {
         inputs: inputs([
             (root("g"), declaration(guard(input("f"), "s"))),
-            (root("k"), declaration(call([input("i"), constant(int(2))], input("calls")))),
+            (root("k"), declaration(when(call([input("i"), constant(int(2))], input("calls")), input("f")))),
             (root("odd"), declaration(decl(ToyKind::Collection, [("count", input("n"))]))),
             (root("r"), declaration(scope("s"))),
             (named("calls"), calls_value([site(&[1, 7], true, -1, cell([input("x")])), Site { sites: vec![2], each: false, offset: 0, argument: String::from("given"), callee: cell([]) }])),

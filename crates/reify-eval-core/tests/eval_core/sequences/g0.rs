@@ -14,10 +14,11 @@ use std::ops::RangeInclusive;
 
 use super::case::Case;
 use super::generator::{GATE_SEEDS, gate_case};
+use super::mismatch::Mismatch;
 use super::print::{Expectation, print_test};
 use super::reach::Reach;
 use super::reduce::{candidates, size};
-use super::session::{Mismatch, check, toy_core};
+use super::session::{check, toy_core};
 use super::shrink::shrink;
 
 /// Widens the run to seeds 1..=N outside the gate.

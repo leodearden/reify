@@ -8,6 +8,7 @@ mod faulty;
 mod fresh;
 mod g0;
 mod generator;
+mod mismatch;
 mod order;
 mod print;
 mod printed_faulty_cell;

@@ -7,9 +7,10 @@ use reify_eval_core::{Builder, Core, Cx, Hash128, Kind, KindId, Outcome, Produce
 
 use super::case::Case;
 use super::generator::{Features, GATE_EVENTS, GATE_SEEDS, generate};
+use super::mismatch::MismatchKind;
 use super::print::{Expectation, print_test};
 use super::reduce::{candidates, size};
-use super::session::{MismatchKind, check, toy_core};
+use super::session::{check, toy_core};
 use super::shrink::shrink;
 use crate::toy;
 

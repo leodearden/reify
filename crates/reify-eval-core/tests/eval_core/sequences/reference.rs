@@ -137,8 +137,9 @@ pub struct Reference {
     /// Each child taken over whose ring is still to be finished from its
     /// own frame, with the path the ring entered.
     deferred: BTreeMap<ModelPath, ModelPath>,
-    /// The distinct steps each call's run declared a child at.
-    run_children: BTreeMap<ModelPath, BTreeSet<Step>>,
+    /// The distinct steps each call's run declared a child at, in the
+    /// order it first declared them.
+    run_children: BTreeMap<ModelPath, Vec<Step>>,
     work_outs: usize,
 }
 
@@ -236,11 +237,20 @@ impl Reference {
     /// Whether a call's run declared a child at `path`, as answering it
     /// found.
     pub fn declared_by_run(&self, path: &ModelPath) -> bool {
-        path.parent().is_some_and(|(call, step)| {
-            self.run_children
-                .get(&call)
-                .is_some_and(|steps| steps.contains(step))
-        })
+        path.parent()
+            .is_some_and(|(call, step)| self.steps_declared_by(&call).contains(step))
+    }
+
+    /// The distinct steps the run of the call at `call` declared a child
+    /// at, in the order it first declared them; none if no run did.
+    pub fn steps_declared_by(&self, call: &ModelPath) -> &[Step] {
+        self.run_children.get(call).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether the reference has worked out the declaration of `path`,
+    /// resolving it.
+    pub fn resolved(&self, path: &ModelPath) -> bool {
+        self.declared.contains_key(path)
     }
 
     /// The declaration of the node at `path`, if one is declared there.
@@ -360,7 +370,7 @@ impl Reference {
         let children = match (kind, out) {
             (ToyKind::Scope | ToyKind::Guard, Out::Members(members)) => count(members.len()),
             (ToyKind::Collection, Out::Elements { count, .. }) => *count,
-            (ToyKind::Call, _) => count(self.run_children.get(path).map_or(0, BTreeSet::len)),
+            (ToyKind::Call, _) => count(self.steps_declared_by(path).len()),
             _ => 0,
         };
         if children > limit {
@@ -602,36 +612,36 @@ impl Reference {
             Typed::Absent => return Ok(Expect::Value(Out::Int(sum))),
             Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
         };
-        let mut run = BTreeMap::new();
+        let mut run = Vec::new();
         let called = self.call_children(at, &sites, &terms, sum, &mut run);
-        self.run_children
-            .insert(at.clone(), run.into_keys().collect());
+        let steps = run.into_iter().map(|(step, _)| step).collect();
+        self.run_children.insert(at.clone(), steps);
         called
     }
 
     /// The call at `at`'s sum plus what the children of `sites` add, each
     /// declared and read in turn; `run` holds the children its run has
-    /// declared, by step.
+    /// declared, with their steps, in order.
     fn call_children(
         &mut self,
         at: &ModelPath,
         sites: &[Site],
         terms: &[i64],
         sum: i64,
-        run: &mut BTreeMap<Step, Decl>,
+        run: &mut Vec<(Step, Decl)>,
     ) -> Result<Expect, Halt> {
         let mut total = sum;
         for site in sites {
             for (step, argument) in site_children(site, terms, sum, at)? {
                 let child = at.child(step.clone());
                 let callee = given(site, argument);
-                match run.get(&step) {
-                    Some(earlier) if *earlier != callee => {
+                match run.iter().find(|(declared, _)| *declared == step) {
+                    Some((_, earlier)) if *earlier != callee => {
                         return Ok(Expect::Failure(Failure::ConflictingChild { step }));
                     }
                     Some(_) => {}
                     None => {
-                        run.insert(step.clone(), callee.clone());
+                        run.push((step.clone(), callee.clone()));
                         self.declare_child(&child, callee);
                     }
                 }
