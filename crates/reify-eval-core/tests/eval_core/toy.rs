@@ -12,8 +12,8 @@ use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
     Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event,
-    Failure, Hash128, Held, Input, InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced,
-    Ref, Release, Request, RequestId, Root, Section, Snapshot, Step, Turn, Value,
+    Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Outcome, OutsideFailure, Path,
+    Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot, Step, Turn, Value,
 };
 
 /// The content a test gives the core for one of its values: a hash of
@@ -32,6 +32,12 @@ impl Contented for i64 {
 impl Contented for bool {
     fn content(&self) -> Hash128 {
         Hash128::of_bytes(&[u8::from(*self)])
+    }
+}
+
+impl Contented for u64 {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(&self.to_le_bytes())
     }
 }
 
@@ -743,6 +749,11 @@ pub fn root<T: Value + Contented>(name: &str, declaration: T) -> (InputKey, Inpu
 /// The host-named input `name`.
 pub fn named<T: Value + Contented>(name: &str, value: T) -> (InputKey, Input) {
     (InputKey::named(name), input_of(value))
+}
+
+/// The snapshot's setting of `limit` (contract 7.6).
+pub fn limit(limit: Limit, value: u64) -> (InputKey, Input) {
+    (InputKey::Limit(limit), input_of(value))
 }
 
 /// The path of root `name`.
