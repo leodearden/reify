@@ -366,7 +366,28 @@ mod tests {
                             Step::new(OTHER, StepKey::Name("m6".into())),
                             shape(input("i")),
                         ),
+                        (
+                            step("m7"),
+                            solve(
+                                input("problem"),
+                                [declarer([step("m8")]), declarer([step("m9")])],
+                                [declarer([step("m0")])],
+                            ),
+                        ),
+                        (step("m8"), solved_int(declarer([step("m7")]), 0)),
+                        (step("m9"), solved_flag(declarer([step("m7")]), 1)),
                     ]),
+                ),
+                (
+                    named("problem"),
+                    problem([vec![Part::Int(-1), Part::Flag(true)], vec![]], 2),
+                ),
+                (
+                    root("solved"),
+                    declaration(decl(
+                        ToyKind::Solved(PartType::Flag),
+                        [("solve", input("f"))],
+                    )),
                 ),
                 (named("f"), flag(true)),
                 (named("i"), int(-3)),
@@ -442,11 +463,13 @@ fn printed_case() {
             (root("k"), declaration(when(call([input("i"), constant(int(2))], input("calls")), input("f")))),
             (root("odd"), declaration(decl(ToyKind::Collection, [("count", input("n"))]))),
             (root("r"), declaration(scope("s"))),
+            (root("solved"), declaration(decl(ToyKind::Solved(PartType::Flag), [("solve", input("f"))]))),
             (named("calls"), calls_value([site(&[1, 7], true, -1, cell([input("x")])), Site { sites: vec![2], each: false, offset: 0, argument: String::from("given"), callee: cell([]) }])),
             (named("e"), declaration(cell([input("x")]))),
             (named("f"), flag(true)),
             (named("i"), int(-3)),
-            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e"))), (step("m2"), picker(input("i"), declarer([step("m1")]))), (step("m3"), divided(cell([input("i")]), declarer([step("m0")]))), (step("m4"), shape(input("i"))), (step("m5"), measure(declarer([step("m4")]))), (reify_eval_core::Step::new(reify_eval_core::Space::Named("toy.other"), reify_eval_core::StepKey::Name("m6".into())), shape(input("i")))])),
+            (named("problem"), problem([vec![Part::Int(-1), Part::Flag(true)], vec![]], 2)),
+            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e"))), (step("m2"), picker(input("i"), declarer([step("m1")]))), (step("m3"), divided(cell([input("i")]), declarer([step("m0")]))), (step("m4"), shape(input("i"))), (step("m5"), measure(declarer([step("m4")]))), (step("m7"), solve(input("problem"), [declarer([step("m8")]), declarer([step("m9")])], [declarer([step("m0")])])), (step("m8"), solved_int(declarer([step("m7")]), 0)), (step("m9"), solved_flag(declarer([step("m7")]), 1)), (reify_eval_core::Step::new(reify_eval_core::Space::Named("toy.other"), reify_eval_core::StepKey::Name("m6".into())), shape(input("i")))])),
         ]),
         events: vec![
             HostEvent::Edit { from: 0, changes: vec![(named("i"), Some(int(4))), (named("f"), None)] },

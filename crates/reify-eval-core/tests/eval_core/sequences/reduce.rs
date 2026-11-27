@@ -376,7 +376,9 @@ fn smaller_decls(of: &Decl) -> Vec<Decl> {
 
 mod tests {
     use super::super::case::{Case, HostEvent, Then};
-    use super::super::design::{Inputs, ModelPath, ToyKind, int, named, path};
+    use super::super::design::{
+        Inputs, ModelPath, Part, ToyKind, inputs, int, named, path, problem,
+    };
     use super::super::generator::gate_cases;
     use super::super::reference::{Reference, first_invalid};
     use super::super::shrink::shrink;
@@ -411,6 +413,24 @@ mod tests {
         };
         assert!(candidates(&case).contains(&without_second_edit));
         assert!(without_second_edit.names_made_snapshots());
+    }
+
+    #[test]
+    fn a_problem_shrinks_by_a_candidate_or_a_constraint() {
+        let with = |problem| Case {
+            inputs: inputs([(named("problem"), problem)]),
+            events: Vec::new(),
+        };
+        let part = |n| vec![Part::Int(n)];
+        let smaller = candidates(&with(problem([part(1), part(2)], 2)));
+        let fewer = [
+            problem([part(2)], 2),
+            problem([part(1)], 2),
+            problem([part(1), part(2)], 1),
+        ];
+        for problem in fewer {
+            assert!(smaller.contains(&with(problem.clone())), "{problem:?}");
+        }
     }
 
     #[test]

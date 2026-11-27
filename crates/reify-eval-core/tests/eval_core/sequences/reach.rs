@@ -88,6 +88,24 @@ shapes! {
     AnsweredWithinBudget,
     /// An answer the order check compared.
     OrderComparison,
+    /// A solve's value: the first candidate whose constraints all held.
+    SolveValue,
+    /// A solve none of whose candidates held.
+    SolveFoundNoCandidate,
+    /// A solved node's value: its part of a solution.
+    SolvedPart,
+    /// A cell a trial of a solve answered.
+    TrialReachedCell,
+    /// A guard a trial of a solve answered.
+    TrialReachedGuard,
+    /// A collection a trial of a solve answered.
+    TrialReachedCollection,
+    /// A call a trial of a solve answered.
+    TrialReachedCall,
+    /// A guard path present in one trial of a solve and absent in another.
+    TrialChangedGuard,
+    /// A collection path whose count differs between two trials of a solve.
+    TrialChangedCount,
 }
 
 /// What a run reached.
