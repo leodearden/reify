@@ -8,40 +8,51 @@ use reify_core::Type;
 
 use crate::module_context::ModuleContext;
 
-/// The templates the expressions of the definition `own`, declared in
-/// `module`, can name: the module's constructor view, with the target each of
-/// `own`'s subs and match arms binds to in place of its name's entry. A read
-/// through a sub walks this registry, so it holds the sub's own target, of any
-/// kind; a call is lowered as a constructor only for a structure entry.
-pub(crate) fn definition_registry<'m>(
-    own: &TopologyTemplate,
-    module: &ModuleContext<'m>,
-) -> HashMap<String, &'m TopologyTemplate> {
-    let arms = own
-        .match_arm_groups
-        .iter()
-        .flat_map(|group| &group.arms)
-        .filter_map(|arm| match &arm.arm_type {
-            Type::StructureRef(arm_def) => Some(arm_def.as_str()),
-            _ => None,
-        });
-    let mut registry = module.templates().clone();
-    for written in own
-        .sub_components
-        .iter()
-        .map(|sub| sub.element_structure_name())
-        .chain(arms)
-    {
-        if let Some(target) = module.sub_target(written) {
-            registry.insert(written.to_string(), target.template);
-        }
-    }
-    registry
+/// What one definition's expressions resolve names against: the existing
+/// compile's template of the definition and the registry built for it, held
+/// together so that a scope is never built over another registry.
+pub(crate) struct DefinitionNames<'t, 'm> {
+    own: &'t TopologyTemplate,
+    /// The module's constructor view, with the target each of `own`'s subs
+    /// and match arms binds to in place of its name's entry. A read through a
+    /// sub walks this registry, so it holds the sub's own target, of any
+    /// kind; a call is lowered as a constructor only for a structure entry.
+    registry: HashMap<String, &'m TopologyTemplate>,
 }
 
-/// The scope the expressions of the definition `own` compile in, over the
-/// `registry` [`definition_registry`] builds for it.
-pub(crate) fn definition_scope<'u>(
+impl<'t, 'm> DefinitionNames<'t, 'm> {
+    /// The names of the definition `own`, declared in `module`.
+    pub(crate) fn new(own: &'t TopologyTemplate, module: &ModuleContext<'m>) -> Self {
+        let arms = own
+            .match_arm_groups
+            .iter()
+            .flat_map(|group| &group.arms)
+            .filter_map(|arm| match &arm.arm_type {
+                Type::StructureRef(arm_def) => Some(arm_def.as_str()),
+                _ => None,
+            });
+        let mut registry = module.templates().clone();
+        for written in own
+            .sub_components
+            .iter()
+            .map(|sub| sub.element_structure_name())
+            .chain(arms)
+        {
+            if let Some(target) = module.sub_target(written) {
+                registry.insert(written.to_string(), target.template);
+            }
+        }
+        Self { own, registry }
+    }
+
+    /// The scope the definition's expressions compile in.
+    pub(crate) fn scope(&self) -> CompilationScope<'_> {
+        scope_over(self.own, &self.registry)
+    }
+}
+
+/// The scope the expressions of `own` compile in, over `registry`.
+fn scope_over<'u>(
     own: &'u TopologyTemplate,
     registry: &'u HashMap<String, &'u TopologyTemplate>,
 ) -> CompilationScope<'u> {
