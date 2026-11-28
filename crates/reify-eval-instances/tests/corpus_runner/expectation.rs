@@ -10,8 +10,7 @@ use crate::needs::Owner;
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "RawExpectation")]
 pub struct Expectation {
-    #[expect(dead_code, reason = "read once entries run")]
-    pub path: Option<InstancePath>, // debt: ticket tkt_0RXF3RZ3T23TSSXGWCWN0S20BF
+    pub path: Option<InstancePath>,
     pub after_edit: Option<u32>,
     pub form: Form,
 }

@@ -5,9 +5,9 @@
 use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_eval_source::compile_entry;
 
-use crate::bookkeeping::{Built, Disputed, EntryState};
 use crate::corpus_tree::{self, LoadedEntry, Problem, SourceFile};
 use crate::expectation::Form;
+use crate::ready::ready_entries;
 use crate::seeded::seeded;
 
 /// Every way `entry`'s compile outcome differs from what its compile rows
@@ -260,47 +260,18 @@ fn scenario_c5() {
 
 #[test]
 fn every_ready_entry_compiles_as_it_expects() {
-    let root = corpus_tree::corpus_root();
-    let mut problems = Vec::new();
-    let (built, found) = Built::parse(&corpus_tree::bookkeeping_text(
-        &root,
-        corpus_tree::BUILT,
-        &mut problems,
-    ));
-    problems.extend(found);
-    let (disputed, found) = Disputed::parse(&corpus_tree::bookkeeping_text(
-        &root,
-        corpus_tree::DISPUTED,
-        &mut problems,
-    ));
-    problems.extend(found);
-    let (entries, found) = corpus_tree::load_corpus(&root);
-    problems.extend(found);
-
-    let ready: Vec<&LoadedEntry> = entries
-        .iter()
-        .filter(|entry| {
-            matches!(
-                EntryState::of(&entry.record.needs, &built, disputed.lists(&entry.id)),
-                EntryState::Ready
-            )
-        })
-        .collect();
+    let (ready, mut problems) = ready_entries();
     for entry in &ready {
         problems.extend(compile_problems(entry));
     }
-    println!(
-        "compiled {} ready entries of {} in the corpus",
-        ready.len(),
-        entries.len()
-    );
+    println!("compiled {} ready entries of the corpus", ready.len());
 
     let listed: Vec<String> = problems.iter().map(ToString::to_string).collect();
     assert!(
         problems.is_empty(),
         "{} compile problems in the corpus at {}:\n{}",
         problems.len(),
-        root.display(),
+        corpus_tree::corpus_root().display(),
         listed.join("\n")
     );
 }
