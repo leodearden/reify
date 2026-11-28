@@ -119,9 +119,10 @@ fn dirty_buffer_on_an_anchored_session_compiles_as_a_program() {
 
 // ─── D-10: a buffer with no file anchor warns about its imports ─────────────
 
-/// Two imports a file-backed compile would follow (`helper`, `util`), one it
-/// would not because the stdlib is ambient (`std.units`), and one it would not
-/// because its cfg is unsatisfied (`ghost`).
+/// Two user imports a file-backed compile would follow (`helper`, `util`), a
+/// std import the buffer's own compile follows from the embedded stdlib
+/// (`std.units`), and one nobody follows because its cfg is unsatisfied
+/// (`ghost`).
 const BUF: &str = "import helper\nimport util\nimport std.units\n#cfg(target = \"wasm\")\nimport ghost\nstructure Solo { param w: Length = 7mm }\n";
 
 fn d10_warnings(session: &EngineSession) -> Vec<&Diagnostic> {
@@ -335,4 +336,71 @@ fn anchored_session_never_gets_the_d10_warning() {
         .expect("the anchored entry and its healthy import load");
 
     assert!(d10_warnings(&session).is_empty());
+}
+
+// ─── strict stdlib visibility (stdlib-namespace κ #5503) ───────────────────
+
+const GPA_BODY: &str = "structure def Plate {\n    param e : Pressure = 200GPa\n}\n";
+
+/// An anchored buffer that writes a std unit without importing its module is
+/// rejected, and the rejection carries the NS-V2 fix-it.
+#[test]
+fn an_anchored_import_free_buffer_writing_a_std_unit_is_rejected_with_the_fixit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let plate = write(dir.path(), "plate.ri", &format!("module plate\n{GPA_BODY}"));
+    let mut session = session();
+
+    session
+        .load_file(&plate)
+        .expect_err("GPa is not visible without its import");
+
+    let diags = &session
+        .compile_failure_for_test()
+        .expect("the rejection must be recorded")
+        .diags;
+    assert!(
+        diags.iter().any(|diag| diag.severity == "Error"
+            && diag.message.contains("GPa")
+            && diag.message.contains("std.si_units")
+            && diag.message.contains("std.prelude")),
+        "the rejection carries the fix-it, got {diags:?}"
+    );
+}
+
+/// A buffer with no file anchor follows its std imports, so `import
+/// std.prelude` brings `GPa` in and needs no file-backed buffer.
+#[test]
+fn an_unanchored_buffer_importing_the_prelude_is_accepted_without_the_d10_warning() {
+    let mut session = session();
+
+    session
+        .load_from_source(&format!("import std.prelude\n{GPA_BODY}"), "plate")
+        .expect("std.prelude is followed without a file anchor");
+
+    assert!(d10_warnings(&session).is_empty());
+}
+
+/// The D-10 Warning still names a user import an unanchored buffer cannot
+/// follow, and only that import.
+#[test]
+fn an_unanchored_buffer_with_a_user_import_still_warns_naming_only_it() {
+    let mut session = session();
+
+    session
+        .load_from_source(
+            &format!("import std.prelude\nimport parts\n{GPA_BODY}"),
+            "plate",
+        )
+        .expect("an unanchored buffer with a user import still compiles");
+
+    let warnings = d10_warnings(&session);
+    let [warning] = warnings.as_slice() else {
+        panic!("exactly one D-10 warning, got {warnings:?}");
+    };
+    assert!(warning.message.contains("parts"), "{}", warning.message);
+    assert!(
+        !warning.message.contains("std."),
+        "a std import needs no file-backed buffer: {}",
+        warning.message
+    );
 }

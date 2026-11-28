@@ -154,6 +154,8 @@ mod cli_orientation_rotvec_dimension;
 mod cli_pub_import_reexport;
 #[path = "harness_cli/cli_std_prelude_facade.rs"]
 mod cli_std_prelude_facade;
+#[path = "harness_cli/cli_strict_visibility.rs"]
+mod cli_strict_visibility;
 #[path = "harness_cli/cli_purpose.rs"]
 mod cli_purpose;
 #[path = "harness_cli/cli_purpose_stdlib.rs"]

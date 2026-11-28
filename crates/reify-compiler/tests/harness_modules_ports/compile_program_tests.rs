@@ -15,7 +15,7 @@ use reify_compiler::program::{
 };
 use reify_compiler::program_scope::bind_program;
 use reify_compiler::{
-    CompiledModule, TopologyTemplate, check_module_path_decl, compile_with_stdlib_checked,
+    CompiledModule, TopologyTemplate, check_module_path_decl,
 };
 use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value};
@@ -82,13 +82,14 @@ fn diag_shapes(module: &CompiledModule) -> Vec<DiagShape> {
         .collect()
 }
 
-/// What the CLI's single-file `parse_and_compile` produced before
-/// `compile_program` existed: the stdlib-aware parse, the stdlib compile, and
-/// the module-path declaration diagnostic pushed afterwards.
-fn legacy_single_file(stem: &str, source: &str) -> CompiledModule {
+/// The single-file reference an import-free program entry must match (I1):
+/// the stdlib-aware parse, `program::compile_single_file`, and the
+/// module-path declaration diagnostic a driver pushes afterwards.
+fn single_file_reference(stem: &str, source: &str) -> CompiledModule {
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(stem));
-    let mut compiled = compile_with_stdlib_checked(
+    let mut compiled = reify_compiler::program::compile_single_file(
         &parsed,
+        &CfgSet::default(),
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     );
     if let Some(diag) = check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path) {
@@ -175,9 +176,10 @@ fn has_import_decl(source: &str) -> bool {
 // ─── (1) I1: single-file equivalence ───────────────────────────────────────
 
 /// For an import-free entry, `compile_program` is observationally identical
-/// to the legacy single-file compile (PRD boundary #1, invariant I1).
+/// to the strict single-file compile `program::compile_single_file` (PRD
+/// boundary #1, invariant I1).
 #[test]
-fn compile_program_single_file_matches_legacy_compile() {
+fn compile_program_single_file_matches_compile_single_file() {
     let mut inputs: Vec<(String, String)> = vec![
         (
             "main".to_string(),
@@ -204,20 +206,20 @@ fn compile_program_single_file_matches_legacy_compile() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cfg = CfgSet::default();
     for (stem, source) in &inputs {
-        let legacy = legacy_single_file(stem, source);
+        let single_file = single_file_reference(stem, source);
         let program = compile_entry(dir.path(), stem, source, &cfg);
         let entry = program.entry();
 
         assert_eq!(
             diag_shapes(entry),
-            diag_shapes(&legacy),
-            "{stem}: diagnostics must match the legacy single-file compile"
+            diag_shapes(&single_file),
+            "{stem}: diagnostics must match the single-file compile"
         );
         assert_eq!(
-            entry.content_hash, legacy.content_hash,
-            "{stem}: content_hash must match the legacy single-file compile"
+            entry.content_hash, single_file.content_hash,
+            "{stem}: content_hash must match the single-file compile"
         );
-        assert_kind_names_equal(entry, &legacy, stem);
+        assert_kind_names_equal(entry, &single_file, stem);
         assert!(
             program.imports.is_empty(),
             "{stem}: import-free entry must have no import units"
@@ -1429,8 +1431,9 @@ fn imported_enum_access_resolves_inside_a_transitive_import_unit() {
 
 // ─── task 5520: the routing predicate a driver asks before a program compile ─
 
-/// `entry_follows_imports` answers through the one import gate: only a
-/// cfg-satisfied, non-`std` import counts, whether or not it resolves.
+/// `entry_follows_imports` answers through the one import gate: every
+/// cfg-satisfied import counts, `std.*` included (κ #5503), whether or not it
+/// resolves.
 #[test]
 fn entry_follows_imports_only_for_a_followed_user_import() {
     let cfg = CfgSet {
@@ -1440,7 +1443,7 @@ fn entry_follows_imports_only_for_a_followed_user_import() {
     let body = "structure def Rod {\n    param r : Length = 2mm\n}\n";
     let cases = [
         ("import-free", format!("module main\n{body}"), false),
-        ("std-only", format!("module main\nimport std.units\n{body}"), false),
+        ("std-only", format!("module main\nimport std.units\n{body}"), true),
         (
             "cfg-gated-out user import",
             format!("module main\n#cfg(target = \"wasm\")\nimport ghost\n{body}"),
@@ -1464,7 +1467,8 @@ fn entry_follows_imports_only_for_a_followed_user_import() {
 }
 
 /// `followed_imports` names exactly the imports `compile_program` compiles:
-/// cfg-satisfied (I3), non-`std` (I4), in declaration order, one per path.
+/// cfg-satisfied (I3), `std.*` included (κ #5503), in declaration order, one
+/// per path.
 #[test]
 fn followed_imports_lists_exactly_what_compile_program_follows() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1496,8 +1500,8 @@ fn followed_imports_lists_exactly_what_compile_program_follows() {
 
     assert_eq!(
         followed_paths,
-        vec!["parts", "util"],
-        "declaration order, std.* and the cfg-gated import excluded, the duplicate listed once"
+        vec!["std.units", "parts", "util"],
+        "declaration order, the cfg-gated import excluded, the duplicate listed once"
     );
     assert_eq!(
         followed_paths,

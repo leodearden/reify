@@ -1,0 +1,7 @@
+// Boundary #12 negative control (stdlib-namespace κ #5503): `Length` and
+// `mm` are builtins, so no import is needed and no fix-it is drawn.
+module strict_length_negative_control
+
+structure def Plate {
+    param w : Length = 10mm
+}

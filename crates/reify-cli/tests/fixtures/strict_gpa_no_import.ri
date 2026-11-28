@@ -1,0 +1,8 @@
+// Boundary #12 (stdlib-namespace κ #5503): a std unit written with no import.
+// `GPa` is defined only in std.si_units, so `reify check` fails with the
+// NS-V2 fix-it naming std.si_units and std.prelude.
+module strict_gpa_no_import
+
+structure def Plate {
+    param e : Pressure = 200GPa
+}

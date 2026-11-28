@@ -1,0 +1,8 @@
+// Boundary #12 (stdlib-namespace κ #5503): the same std unit, imported.
+module strict_gpa_with_si_units
+
+import std.si_units
+
+structure def Plate {
+    param e : Pressure = 200GPa
+}
