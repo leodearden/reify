@@ -351,3 +351,90 @@ fn a_healthy_prelude_program_carries_nothing_re_homed_from_a_std_module() {
         );
     }
 }
+
+// ─── bare `import std` is refused (§10 Q3) ─────────────────────────────────
+
+fn bare_std_refusals(module: &CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::BareStdImport))
+        .collect()
+}
+
+#[track_caller]
+fn only_bare_std_refusal(program: &CompiledProgram) -> &Diagnostic {
+    let refusals = bare_std_refusals(program.entry());
+    assert_eq!(
+        refusals.len(),
+        1,
+        "exactly one bare-std refusal on the entry: {:#?}",
+        program.entry().diagnostics
+    );
+    let refusal = refusals[0];
+    assert_eq!(refusal.severity, Severity::Error, "{refusal:#?}");
+    assert!(
+        refusal.message.contains("import std.prelude"),
+        "the refusal points at the prelude facade: {}",
+        refusal.message
+    );
+    assert_eq!(refusal.candidates, vec!["std.prelude"]);
+    refusal
+}
+
+#[test]
+fn an_entry_importing_bare_std_is_refused_and_still_compiles_its_own_declarations() {
+    let program = compile_main(
+        "module main\n\nimport std\n\nstructure def S {\n    param w : Length = 10mm\n}\n",
+        &linux(),
+    );
+    only_bare_std_refusal(&program);
+    assert!(
+        program.entry().templates.iter().any(|t| t.name == "S"),
+        "nothing short-circuits: the entry's own `S` still compiles (I2)"
+    );
+}
+
+#[test]
+fn an_import_unit_importing_bare_std_is_refused_on_the_entry_naming_the_units_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parts = dir.path().join("parts.ri");
+    std::fs::write(
+        &parts,
+        "module parts\n\nimport std\n\npub structure def Part {\n    param q : Real = 1\n}\n",
+    )
+    .expect("write parts.ri");
+    let program = compile_program(
+        &dir.path().join("main.ri"),
+        "module main\n\nimport parts\n\nstructure def Rig {\n    sub p = Part()\n}\n",
+        &ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
+        &linux(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    );
+    let refusal = only_bare_std_refusal(&program);
+    let parts_file = parts.display().to_string();
+    assert!(
+        refusal.message.contains(&parts_file),
+        "the refusal names the importing unit's file {parts_file}: {}",
+        refusal.message
+    );
+}
+
+#[test]
+fn a_cfg_gated_bare_std_import_is_inert() {
+    let program = compile_main(
+        "module main\n\n#cfg(target = \"wasm\")\nimport std\n\n\
+         structure def S {\n    param w : Length = 10mm\n}\n",
+        &linux(),
+    );
+    assert!(
+        bare_std_refusals(program.entry()).is_empty(),
+        "a gated-out `import std` never reaches the gate (I3): {:#?}",
+        program.entry().diagnostics
+    );
+    assert!(
+        error_diagnostics(program.entry()).is_empty(),
+        "{:#?}",
+        program.entry().diagnostics
+    );
+}
