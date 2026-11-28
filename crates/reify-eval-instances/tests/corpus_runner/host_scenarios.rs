@@ -39,7 +39,8 @@ fn scenario_h2() {
     assert_eq!(host.answer(&loaded, &path("A")), Ok(HostAnswer::Present));
 }
 
-const PLATE: &str = "structure def Plate { param t : Length = 2mm }\n";
+const PLATE: &str = "structure def C { param x : Length = 1mm }\n\
+                     structure def Plate { param t : Length = 2mm  sub c : C }\n";
 
 const BLOCK: &str = "structure def Block { param w : Length = 10mm  let body = box(w, w, w)  \
                      sub p : Plate  constraint w > 5mm }\n";
@@ -54,8 +55,9 @@ fn no_kind_supplied(member: MemberKind, under_guard: bool) -> HostAnswer {
 
 /// Scenario C6, second half: a member whose kind no row of the table of
 /// member kinds evaluates answers no-kind-supplied, and the instance's
-/// other members are still declared. The table is an input, so emptying
-/// it changes what a sub answers.
+/// other members are still declared, a sub's sub included, which reads its
+/// table through the definition table the root declares. The table is an
+/// input, so emptying it changes what a sub answers.
 #[test]
 fn scenario_c6_no_kind_supplied() {
     let definitions = compiled(&format!("{PLATE}{BLOCK}"));
@@ -74,6 +76,8 @@ fn scenario_c6_no_kind_supplied() {
     assert_eq!(answer("Block.p"), HostAnswer::Present);
     assert_ne!(answer("Block.w"), HostAnswer::Absent);
     assert_ne!(answer("Block.p.t"), HostAnswer::Absent);
+    assert_eq!(answer("Block.p.c"), HostAnswer::Present);
+    assert_ne!(answer("Block.p.c.x"), HostAnswer::Absent);
     assert_eq!(answer("Block.nothing"), HostAnswer::Absent);
 
     let emptied = host.load(&definitions, &MemberKinds::empty(), &roots);
