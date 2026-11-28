@@ -128,10 +128,13 @@ impl ProgramModules {
         Ok(Self { modules })
     }
 
-    /// Whether the entry opts out of every prelude, the standard library's
-    /// definitions included.
-    pub(crate) fn entry_has_no_prelude(&self) -> bool {
-        has_no_prelude(&self.modules[0].parsed)
+    /// Whether some user module binds names against the standard library:
+    /// one that does not opt out with `#no_prelude`. An entry that opts out
+    /// still reaches the stdlib definitions its imports bind to.
+    pub(crate) fn binds_against_stdlib(&self) -> bool {
+        self.modules
+            .iter()
+            .any(|module| !has_no_prelude(&module.parsed))
     }
 
     /// The definitions of every user module, the entry's first, each module

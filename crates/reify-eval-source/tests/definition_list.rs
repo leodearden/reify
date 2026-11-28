@@ -7,7 +7,7 @@ use reify_ast::Declaration;
 use reify_compiler::parse_with_stdlib;
 use reify_compiler::stdlib_loader::stdlib_sources;
 use reify_core::{DefinitionName, ModuleName, ModulePath, PathName, Severity};
-use reify_eval_source::{DefinitionList, SourceOutput, SourceRefusal, compile_entry};
+use reify_eval_source::{DeclaredType, DefinitionList, SourceOutput, SourceRefusal, compile_entry};
 
 fn name(text: &str) -> PathName {
     PathName::new(text).unwrap_or_else(|e| panic!("`{text}` is not a name: {e:?}"))
@@ -284,5 +284,54 @@ structure def Holder { sub p : Plate   let doubled = p.t * 2 }
     assert_eq!(
         first.definitions, second.definitions,
         "two lowerings of one source give equal lists"
+    );
+}
+
+#[test]
+fn an_import_that_binds_against_the_standard_library_lists_it() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let main_source = "module main\n#no_prelude\nimport lib\n\
+                       structure def Main { param x : Real = 1.0 }\n";
+    std::fs::write(dir.path().join("main.ri"), main_source).expect("main.ri written");
+    std::fs::write(
+        dir.path().join("lib.ri"),
+        "module lib\npub structure def L { sub d : DimensionalTolerance }\n",
+    )
+    .expect("lib.ri written");
+
+    let output = accepted(&dir.path().join("main.ri"), main_source);
+    let lib = output
+        .definitions
+        .get(&module_definition("lib", "L"))
+        .expect("the import's definition is listed");
+    let d = lib
+        .members
+        .iter()
+        .find(|member| member.name == Some(name("d")))
+        .expect("`d` is in L's table");
+    let tolerance = module_definition("std.tolerancing", "DimensionalTolerance");
+    assert_eq!(
+        d.declared_type,
+        DeclaredType::Definition(tolerance.clone()),
+        "lib does not opt out of the prelude, so its sub binds into the standard library"
+    );
+    assert!(
+        output.definitions.get(&tolerance).is_some(),
+        "a definition a listed sub names is listed too, though the entry opts out of the \
+         prelude: {:?}",
+        names(&output.definitions)
+    );
+}
+
+#[test]
+fn a_program_whose_every_module_opts_out_lists_no_stdlib_definition() {
+    let output = accepted(
+        Path::new("alone.ri"),
+        "#no_prelude\nstructure def Alone { param x : Real = 1.0 }\n",
+    );
+    assert_eq!(
+        names(&output.definitions),
+        vec![entry_definition("Alone")],
+        "no module binds against the standard library, so none of it is listed"
     );
 }
