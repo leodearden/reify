@@ -65,8 +65,8 @@
 //! Such a literal needs no import: `resolve_unit_expr` (reify-compiler
 //! `units.rs`) resolves each compound atom registry-first, then the built-in
 //! table (`lookup_unit_atom`, task #5503). Unlike a bare one, though, it has a
-//! precondition on WHERE it is spliced, because reify-compiler's `expr.rs`
-//! takes the compound path only when the compile scope carries a
+//! *position precondition*, on WHERE it is spliced, because reify-compiler's
+//! `expr.rs` takes the compound path only when the compile scope carries a
 //! `UnitRegistry` at all. So the guarantee for a compound literal reads in
 //! full:
 //!
@@ -280,9 +280,8 @@ fn format_f64_shortest(x: f64, force_decimal_point: bool) -> String {
 /// reading), the bit-exactness holds unless the target module's
 /// `UnitRegistry` shadows an emitted symbol with a different factor, a
 /// dimension whose spelling needs an import is refused, a compound literal
-/// re-parses only at a position whose compile scope carries a unit registry
-/// (not a fn body or fn param default), and a `Value::Direction` round-trips
-/// only while no user `fn dir` is in scope.
+/// carries a position precondition, and a `Value::Direction` round-trips only
+/// while no user `fn dir` is in scope.
 pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
     value_to_ri_literal_with_unit(value, None)
 }
@@ -309,9 +308,8 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
 /// A dimension with NO bare built-in symbol is written as a compound unit
 /// expression built from factor-1.0 built-in symbols (`2.5m^2`, `7850kg/m^3`),
 /// or refused when its spelling needs an import (`Pa`, `sr`, `USD`) — the
-/// module doc's qualification 3, which also states where such a literal may be
-/// spliced: only at a position whose compile scope carries a unit registry.
-/// `reify_core::units::ri_compound_unit_expr`
+/// module doc's qualification 3, which also states such a literal's
+/// position precondition. `reify_core::units::ri_compound_unit_expr`
 /// explains why bit-exactness on that path is structural rather than measured.
 /// The compound attempt is made in exactly one place — inside the
 /// empty-bare-ladder branch — so a dimension that HAS a bare ladder can never
@@ -1001,9 +999,9 @@ mod tests {
     // `UnitExpr` when every atom of its spelling is a factor-1.0 built-in
     // (`m`/`kg`/`s`/`A`/`K`/`mol`/`cd`/`rad`). The compiler resolves each
     // compound atom registry-first, then the built-in table (task #5503), so
-    // such a literal needs no import, and compiles wherever the compile scope
-    // carries a unit registry (module doc, qualification 3). A spelling that
-    // needs an imported symbol is refused instead (see
+    // such a literal needs no import (for its position precondition, see the
+    // module doc's qualification 3). A spelling that needs an imported symbol
+    // is refused instead (see
     // `dimensions_whose_spelling_needs_an_import_are_rejected`).
 
     fn compound(si_value: f64, dimension: DimensionVector) -> Value {

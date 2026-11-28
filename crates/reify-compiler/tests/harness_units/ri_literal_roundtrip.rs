@@ -28,10 +28,8 @@
 //! (`7850kg/m^3`), and the compiler falls back to the built-in table for both
 //! (for a compound atom via `lookup_unit_atom`, task #5503), so a rewritten
 //! literal must parse in a module that imports nothing. Every case is spliced
-//! as a structure param, a position whose compile scope always carries a
-//! (here empty) `UnitRegistry`. A compound literal needs one, and
-//! `compound_literals_do_not_compile_in_a_fn_body_or_fn_param_default` pins
-//! the fn positions that have none.
+//! as a structure param, which meets a compound literal's
+//! position precondition (`reify_ir::ri_literal` qualification 3).
 //!
 //! That is the *unshadowed* case, and it is the weaker half of what a real
 //! caller needs. γ's edit path splices into user modules, which usually DO
@@ -976,11 +974,10 @@ fn compound_cases() -> Vec<Case> {
 /// The serializer's compound literals compile with NO unit registry seeded and
 /// no import, and re-parse BIT-EXACTLY: every atom is a factor-1.0 built-in,
 /// and the compiler resolves a compound atom registry-first, then the built-in
-/// table (task #5503). "No registry seeded" means none SEEDED: the structure
-/// scope still carries an empty `UnitRegistry`, which the compound path needs.
-/// This is the "round-trips in a module that imports nothing" claim, at a
-/// structure-param position; the fn positions, which carry no registry, are
-/// pinned by `compound_literals_do_not_compile_in_a_fn_body_or_fn_param_default`.
+/// table (task #5503). "No registry seeded" means none SEEDED; a structure
+/// param meets the position precondition (`reify_ir::ri_literal`
+/// qualification 3). This is the "round-trips in a module that imports
+/// nothing" claim.
 ///
 /// This tier is the only one that can prove it, because it is the only one that
 /// runs the real parser and `resolve_unit_expr`. `reify-core` can pin the
@@ -1388,10 +1385,9 @@ fn compound_literals_do_not_compile_in_a_fn_body_or_fn_param_default() {
                 errors.iter().any(|m| m.contains(NEEDS_A_REGISTRY)),
                 "Prelude::{prelude:?}, {position}: the compound literal {compound:?} no longer \
                  fails for want of a unit registry, so fn scopes now carry one. Drop the \
-                 position precondition from ri_literal.rs qualification 3 and \
-                 `value_to_ri_literal`'s doc, and from reify-core units.rs's \
-                 `ri_compound_unit_expr` / `ri_builtin_compound_unit_expr` docs, then \
-                 retire this pin. Errors: {errors:?}\nSource:\n{source}"
+                 position precondition from reify-ir ri_literal.rs qualification 3, \
+                 update every doc that points at it (grep `position precondition`), \
+                 then retire this pin. Errors: {errors:?}\nSource:\n{source}"
             );
 
             let control = source_at("Length", &bare);
