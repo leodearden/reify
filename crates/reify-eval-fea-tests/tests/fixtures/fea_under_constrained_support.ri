@@ -14,6 +14,11 @@
 // Modelled after examples/fea_cantilever_smoke.ri (same geometry, same
 // material) but the support's `target` is "tip" instead of "root".
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaUnderConstrainedSupport {
     param length : Length = 1000mm
     param width  : Length = 100mm

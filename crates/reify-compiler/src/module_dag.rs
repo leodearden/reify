@@ -6,13 +6,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 
-use reify_core::{Diagnostic, DiagnosticCode, ModulePathParseError};
+use reify_core::{Diagnostic, DiagnosticCode, ModulePath, ModulePathParseError};
 
 use crate::CompiledModule;
-use crate::cfg::{CfgSet, cfg_satisfied};
+use crate::cfg::{CfgSet, import_cfg_satisfied};
 use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
+use crate::re_exports::ReExports;
 
 /// Resolves import dot-paths to filesystem paths.
 ///
@@ -93,41 +94,33 @@ enum StdlibMode {
     Embedded,
 }
 
-/// How the standard library becomes visible to the units a [`ModuleDag`]
-/// compiles.
+/// Where the units a [`ModuleDag`] compiles get their `std.*` modules from.
 ///
-/// One axis with two regimes. Each variant decides three things together —
-/// whether a `std.*` import is followed, how a unit is parsed, and what it is
-/// compiled against — so no incoherent combination can be built (a unit seeded
-/// with the full stdlib that ALSO walked `std.*` would see embedded modules
-/// twice; one parsed without the stdlib enum names would mis-lower
-/// `Type.Variant` references to them).
+/// In both regimes every cfg-satisfied import is followed and a unit sees
+/// builtins plus its import tier, nothing else (stdlib-namespace NS-V1). Each
+/// variant decides together where a `std.*` path resolves, how a unit is
+/// parsed, and whether its NS-V2 fix-its are attached.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum StdlibVisibility {
-    /// `std.*` imports resolve through the DAG (filesystem first, embedded
-    /// fallback, [`StdlibMode`] all-or-nothing) and each unit sees only what it
-    /// imports. Used by `compile_project*`.
+    /// `std.*` resolves filesystem first with an embedded fallback,
+    /// [`StdlibMode`] all-or-nothing, and units parse bare. An embedded
+    /// module is copied into [`ModuleDag::modules`], which its callers read.
+    /// Used by `compile_project*` until stdlib-namespace η #5500 deletes the
+    /// filesystem route.
     Imported,
-    /// The full stdlib is ambient: a `std`/`std.*` import is never followed at
-    /// any depth (PRD resolution-unification I4, an interim superseded by
-    /// stdlib-namespace N2/N3, #5500), and every unit is parsed and compiled
-    /// against the cached stdlib (#19). Used by
+    /// `std.*` resolves from the embedded stdlib only, never the resolver's
+    /// `stdlib_root`, and an embedded module is borrowed, never copied;
+    /// units parse with the stdlib enum names seeded, and each file-backed
+    /// unit carries its NS-V2 fix-its. Used by
     /// [`crate::program::compile_program`].
-    Ambient,
+    EmbeddedStd,
 }
 
 impl StdlibVisibility {
-    fn follows(self, import: &reify_ast::ImportDecl) -> bool {
-        match self {
-            Self::Imported => true,
-            Self::Ambient => !is_std_import_path(&import.path),
-        }
-    }
-
     fn parse(self, source: &str, module_path: reify_core::ModulePath) -> reify_ast::ParsedModule {
         match self {
             Self::Imported => reify_syntax::parse(source, module_path),
-            Self::Ambient => crate::parse_with_stdlib(source, module_path),
+            Self::EmbeddedStd => crate::parse_with_stdlib(source, module_path),
         }
     }
 
@@ -137,15 +130,14 @@ impl StdlibVisibility {
         self,
         parsed: &reify_ast::ParsedModule,
         imports: &[&CompiledModule],
+        cfg: &CfgSet,
     ) -> CompiledModule {
-        match self {
-            Self::Imported => crate::compile_with_prelude_refs(parsed, imports),
-            Self::Ambient => crate::compile_with_stdlib_and_imports_checked(
-                parsed,
-                imports,
-                &crate::compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
-            ),
+        let mut compiled = crate::compile_with_prelude_refs(parsed, imports);
+        if self == Self::EmbeddedStd {
+            let fixits = crate::import_headers::std_import_fixits(parsed, &compiled, imports, cfg);
+            compiled.diagnostics.extend(fixits);
         }
+        compiled
     }
 }
 
@@ -166,14 +158,20 @@ pub struct ModuleSource {
 ///
 /// Tracks compiled modules, detects cycles, and provides topological ordering.
 pub struct ModuleDag {
-    /// Compiled modules keyed by canonical path.
+    /// Compiled modules keyed by canonical path: every module compiled from
+    /// a file, and every embedded stdlib module a DAG built by
+    /// [`ModuleDag::new`] or [`ModuleDag::with_cfg`] followed.
     pub modules: HashMap<String, CompiledModule>,
+    /// The embedded stdlib modules a [`StdlibVisibility::EmbeddedStd`] DAG
+    /// has followed, borrowed, keyed like `modules`.
+    embedded_std: HashMap<String, &'static CompiledModule>,
     /// Post-order traversal (leaves first) — topological sort.
     pub topo_order: Vec<String>,
-    /// Modules currently being compiled (for cycle detection).
-    /// IndexSet preserves insertion order (= DFS traversal order), enabling
-    /// the cycle error to show the actual import chain.
-    in_progress: IndexSet<String>,
+    /// Modules currently being compiled, each with the file it is compiled
+    /// from. Insertion order is DFS traversal order, so the cycle error shows
+    /// the actual import chain, and the last entry is the module whose import
+    /// is being followed.
+    in_progress: IndexMap<String, PathBuf>,
     /// Source committed on the first `std.*` resolution (all-or-nothing invariant).
     stdlib_mode: Option<StdlibMode>,
     /// Active compile-time configuration for evaluating `#cfg(...)` predicates.
@@ -185,24 +183,10 @@ pub struct ModuleDag {
     /// How the stdlib becomes visible to the units this DAG compiles.
     stdlib: StdlibVisibility,
     /// Each module's re-export edges (resolution-unification D-7), keyed like
-    /// `modules`: its `pub import` targets in declaration order, one per path.
-    /// For a file-compiled module, the targets its walk followed (a
-    /// cfg-gated-out import, or a `std.*` one this DAG does not walk, is never
-    /// an edge); for a module the embedded-stdlib fallback inserts, every
-    /// `pub import` it was built with. Both go through [`re_export_edges`].
-    re_exports: HashMap<String, Vec<String>>,
-}
-
-/// A module's re-export edges from its `pub import` target paths in
-/// declaration order: one edge per path, at its first occurrence.
-fn re_export_edges<'a>(pub_targets: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let mut edges: Vec<String> = Vec::new();
-    for target in pub_targets {
-        if !edges.iter().any(|edge| edge == target) {
-            edges.push(target.to_string());
-        }
-    }
-    edges
+    /// `modules`. For a file-compiled module, the `pub import` targets its
+    /// walk followed (a cfg-gated-out import is never an edge); for an
+    /// embedded stdlib module, every `pub import` it was built with.
+    re_exports: ReExports,
 }
 
 /// Build an "invalid module path" [`Diagnostic`] vec.
@@ -332,13 +316,14 @@ impl ModuleDag {
     pub fn new() -> Self {
         Self {
             modules: HashMap::new(),
+            embedded_std: HashMap::new(),
             topo_order: Vec::new(),
-            in_progress: IndexSet::new(),
+            in_progress: IndexMap::new(),
             stdlib_mode: None,
             cfg: CfgSet::default(),
             sources: HashMap::new(),
             stdlib: StdlibVisibility::Imported,
-            re_exports: HashMap::new(),
+            re_exports: ReExports::default(),
         }
     }
 
@@ -346,6 +331,26 @@ impl ModuleDag {
     /// from. `None` for embedded-stdlib modules and for unknown keys.
     pub fn source(&self, module_key: &str) -> Option<&ModuleSource> {
         self.sources.get(module_key)
+    }
+
+    /// The module `module_key` this DAG holds, compiled from a file or
+    /// embedded.
+    pub(crate) fn module(&self, module_key: &str) -> Option<&CompiledModule> {
+        self.modules
+            .get(module_key)
+            .or_else(|| self.embedded_std.get(module_key).copied())
+    }
+
+    /// Remove the module `module_key` from this DAG, copying it out if it is
+    /// a borrowed embedded one.
+    pub(crate) fn remove_module(&mut self, module_key: &str) -> Option<CompiledModule> {
+        self.modules
+            .remove(module_key)
+            .or_else(|| self.embedded_std.remove(module_key).cloned())
+    }
+
+    fn holds(&self, module_key: &str) -> bool {
+        self.modules.contains_key(module_key) || self.embedded_std.contains_key(module_key)
     }
 
     /// Construct a `ModuleDag` with an active `CfgSet` for `#cfg(...)` gating.
@@ -357,46 +362,96 @@ impl ModuleDag {
         Self { cfg, ..Self::new() }
     }
 
-    /// Construct a `ModuleDag` under `cfg` whose units see the full stdlib
-    /// ambiently and never walk a `std.*` import (see
-    /// [`StdlibVisibility::Ambient`]).
-    pub(crate) fn with_ambient_stdlib(cfg: CfgSet) -> Self {
+    /// Construct a `ModuleDag` under `cfg` that resolves every `std.*` import
+    /// from the embedded stdlib only (see [`StdlibVisibility::EmbeddedStd`]).
+    pub(crate) fn with_embedded_std(cfg: CfgSet) -> Self {
         Self {
             cfg,
-            stdlib: StdlibVisibility::Ambient,
+            stdlib: StdlibVisibility::EmbeddedStd,
             ..Self::new()
         }
     }
 
-    /// `true` iff this DAG follows `import`: its `#cfg(...)` predicates hold
-    /// and the stdlib-visibility policy walks it. The one import gate, shared
-    /// by the in-walk loop and by a program entry's direct imports.
+    /// `true` iff this DAG follows `import`: its `#cfg(...)` predicates hold.
+    /// The one import gate, shared by the in-walk loop and by a program
+    /// entry's direct imports.
     pub(crate) fn follows_import(&self, import: &reify_ast::ImportDecl) -> bool {
-        import_cfg_satisfied(import, &self.cfg) && self.stdlib.follows(import)
+        import_cfg_satisfied(import, &self.cfg)
+    }
+
+    /// Follow the stdlib import `module_path` without the filesystem: a bare
+    /// `std` is refused with a coded [`DiagnosticCode::BareStdImport`] Error,
+    /// and a `std.*` path is inserted from the embedded stdlib, or refused
+    /// with a coded [`DiagnosticCode::UnknownStdModule`] Error when it has no
+    /// such module. Needs no resolver, so a compile with no file can call it.
+    pub(crate) fn follow_std(&mut self, module_path: &str) -> Result<(), Vec<Diagnostic>> {
+        if module_path == "std" {
+            return Err(vec![bare_std_import_diag(self.in_progress.last())]);
+        }
+        if self.insert_embedded_std(module_path)? {
+            Ok(())
+        } else {
+            Err(vec![unknown_std_module_diag(module_path)])
+        }
+    }
+
+    /// Insert the embedded stdlib module `module_path`, with every module
+    /// before it in the stdlib's topological order (its import closure among
+    /// them) and their re-export edges, unless already present. `false` when
+    /// the embedded stdlib has no such module.
+    fn insert_embedded_std(&mut self, module_path: &str) -> Result<bool, Vec<Diagnostic>> {
+        let target =
+            ModulePath::from_dotted(module_path).map_err(|e| diag_invalid_path(module_path, e))?;
+        let stdlib = crate::stdlib_loader::load_stdlib();
+        let Some(idx) = stdlib.iter().position(|m| m.path == target) else {
+            return Ok(false);
+        };
+        // Insert-prefix invariant: if stdlib[k] is held, then stdlib[0..=k]
+        // are all held (any earlier call that reached index k inserted the
+        // full prefix 0..=k). So scan down from idx for the largest held
+        // index j and insert stdlib[j+1..=idx].
+        //
+        // Each inserted module records its re-export edges as it was built:
+        // every `pub import`, with no `#cfg` filter, because the stdlib build
+        // compiles a module against all its declared imports. Topological
+        // order means every edge target is inserted before the module that
+        // re-exports it.
+        let start = (0..=idx)
+            .rev()
+            .find(|&j| self.holds(&stdlib[j].path.to_dotted()))
+            .map(|j| j + 1)
+            .unwrap_or(0);
+        for embedded in &stdlib[start..=idx] {
+            let dotted = embedded.path.to_dotted();
+            self.re_exports.record_compiled(embedded);
+            self.topo_order.push(dotted.clone());
+            match self.stdlib {
+                StdlibVisibility::Imported => {
+                    self.modules.insert(dotted, embedded.clone());
+                }
+                StdlibVisibility::EmbeddedStd => {
+                    self.embedded_std.insert(dotted, embedded);
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// The import tier of a unit whose followed direct imports are `direct`,
     /// in precedence order (resolution-unification D-6, D-7): each direct
     /// import, followed depth-first by every module it re-exports along
     /// followed `pub import` edges, each module once, at its first position.
-    /// A direct import that failed to compile is still listed, with no edges.
+    /// A direct import that failed to compile is still listed, with no
+    /// edges, unless its path is not a module path, which names no module.
     pub(crate) fn visible_imports(&self, direct: &[&str]) -> Vec<String> {
         let mut tier = IndexSet::new();
-        for path in direct {
-            self.extend_with_re_exports(path, &mut tier);
+        for path in direct
+            .iter()
+            .filter_map(|path| ModulePath::from_dotted(path).ok())
+        {
+            self.re_exports.extend_closure(&path, &mut tier);
         }
-        tier.into_iter().collect()
-    }
-
-    /// Append `path` and then, depth-first, its re-export closure to `tier`,
-    /// skipping every module `tier` already holds.
-    fn extend_with_re_exports(&self, path: &str, tier: &mut IndexSet<String>) {
-        if !tier.insert(path.to_string()) {
-            return;
-        }
-        for target in self.re_exports.get(path).into_iter().flatten() {
-            self.extend_with_re_exports(target, tier);
-        }
+        tier.iter().map(ModulePath::to_dotted).collect()
     }
 
     /// Compile a module and all its transitive dependencies.
@@ -405,8 +460,12 @@ impl ModuleDag {
     ///
     /// Imports with `#cfg(...)` predicates that are not satisfied by `self.cfg`
     /// are skipped entirely (not recursed into, not included in the prelude).
-    /// Under [`StdlibVisibility::Ambient`] `std.*` imports are skipped the same
-    /// way, so the precedence rules below apply to the `Imported` regime only.
+    /// A bare `std` path is refused before any resolution, in both regimes,
+    /// with a coded [`DiagnosticCode::BareStdImport`] Error.
+    /// Under [`StdlibVisibility::EmbeddedStd`] a `std.*` path resolves from the
+    /// embedded stdlib only, and an unknown one is a coded
+    /// [`DiagnosticCode::UnknownStdModule`] Error; the precedence rules below
+    /// apply to the `Imported` regime only.
     ///
     /// **Stdlib resolution precedence for `std.*` paths:**
     ///
@@ -442,7 +501,7 @@ impl ModuleDag {
         resolver: &ModuleResolver,
     ) -> Result<(), Vec<Diagnostic>> {
         // Already compiled — skip
-        if self.modules.contains_key(module_path) {
+        if self.holds(module_path) {
             return Ok(());
         }
 
@@ -452,8 +511,8 @@ impl ModuleDag {
             // gives only the cycle members, excluding any non-cycle ancestors.
             // Appending module_path at the end closes the cycle visually.
             let chain: Vec<&str> = self.in_progress[cycle_start..]
-                .iter()
-                .map(|s| s.as_str())
+                .keys()
+                .map(String::as_str)
                 .collect();
             let mut arrow_chain = chain.join(" -> ");
             arrow_chain.push_str(" -> ");
@@ -464,17 +523,18 @@ impl ModuleDag {
             ))]);
         }
 
-        // Detect std.* / bare std paths for embedded-stdlib fallback.
-        // Filesystem lookup is always tried first; the embedded stdlib is only
-        // consulted when the filesystem cannot resolve the module (e.g., no
-        // stdlib_root directory on disk). This preserves the behaviour of
-        // compile_project_stdlib_unit_collision_mentions_stdlib, which places a
-        // real units.ri under stdlib_root and expects the filesystem version to win.
+        // A bare `std` is refused in both regimes, by `follow_std`'s gate.
         let is_std_path = is_std_import_path(module_path);
-        debug_assert!(
-            self.stdlib == StdlibVisibility::Imported || !is_std_path,
-            "a DAG with ambient stdlib visibility must never be asked to compile '{module_path}'"
-        );
+        if module_path == "std" || (is_std_path && self.stdlib == StdlibVisibility::EmbeddedStd) {
+            return self.follow_std(module_path);
+        }
+
+        // Imported regime: the filesystem lookup is tried first and the
+        // embedded stdlib only when the filesystem cannot resolve the module
+        // (e.g., no stdlib_root directory on disk). This preserves the
+        // behaviour of compile_project_stdlib_unit_collision_mentions_stdlib,
+        // which places a real units.ri under stdlib_root and expects the
+        // filesystem version to win.
 
         // `commit_fs_mode` is set to true in the Ok-and-std branch when we are
         // about to commit filesystem mode for the first time. We defer the actual
@@ -517,60 +577,17 @@ impl ModuleDag {
                         &resolver.stdlib_root,
                     )]);
                 }
-                // Consult the embedded stdlib. We commit to Embedded mode only after
-                // confirming the module exists there — an unknown std.* path (e.g. a
-                // typo like "std.unknonwn") must not taint the mode for subsequent
-                // valid imports.
-                let target = reify_core::ModulePath::from_dotted(module_path)
-                    .map_err(|e| diag_invalid_path(module_path, e))?;
-                let stdlib = crate::stdlib_loader::load_stdlib();
-                if let Some(idx) = stdlib.iter().position(|m| m.path == target) {
-                    // Commit embedded mode now that we know the module is present.
-                    if self.stdlib_mode.is_none() {
-                        self.stdlib_mode = Some(StdlibMode::Embedded);
-                    }
-                    // Found in embedded stdlib. Insert all modules up to and including
-                    // the target in topological order. The stdlib slice is
-                    // topologically ordered over declared imports, so the prefix
-                    // 0..=idx holds the target's whole import closure (plus
-                    // unrelated modules).
-                    //
-                    // Insert-prefix invariant: if stdlib[k] is present in self.modules,
-                    // then stdlib[0..=k] are all present (because any prior fallback call
-                    // that reached index k must have inserted the full prefix 0..=k).
-                    // We exploit this invariant via a backward walk: scan from idx
-                    // downward to find the largest already-present index j, then insert
-                    // stdlib[j+1..=idx] unconditionally (no per-entry contains_key).
-                    // This is faster on repeat calls with overlapping prefixes and makes
-                    // the invariant explicit in code.
-                    //
-                    // Each inserted module records its re-export edges as it was
-                    // built: every `pub import`, with no `#cfg` filter, because the
-                    // stdlib build compiles a module against all its declared
-                    // imports. Topological order means every edge target is
-                    // inserted before the module that re-exports it.
-                    let start = (0..=idx)
-                        .rev()
-                        .find(|&j| self.modules.contains_key(&stdlib[j].path.0.join(".")))
-                        .map(|j| j + 1)
-                        .unwrap_or(0);
-                    for embedded in &stdlib[start..=idx] {
-                        let dotted = embedded.path.0.join(".");
-                        let pub_targets = embedded
-                            .imports
-                            .iter()
-                            .filter(|import| import.is_pub)
-                            .map(|import| import.path.as_str());
-                        self.re_exports
-                            .insert(dotted.clone(), re_export_edges(pub_targets));
-                        self.topo_order.push(dotted.clone());
-                        self.modules.insert(dotted, embedded.clone());
-                    }
-                    return Ok(());
+                // Consult the embedded stdlib. Embedded mode is committed only
+                // once the module is found there, so an unknown std.* path (e.g.
+                // a typo like "std.unknonwn") does not taint the mode for
+                // subsequent valid imports; it surfaces the original fs error.
+                if !self.insert_embedded_std(module_path)? {
+                    return Err(vec![fs_err]);
                 }
-                // Unknown std.* submodule — surface the original fs error so callers
-                // get a clear diagnostic rather than a silent no-op.
-                return Err(vec![fs_err]);
+                if self.stdlib_mode.is_none() {
+                    self.stdlib_mode = Some(StdlibMode::Embedded);
+                }
+                return Ok(());
             }
             Err(fs_err) => return Err(vec![fs_err]),
         };
@@ -585,11 +602,9 @@ impl ModuleDag {
             ))]
         })?;
 
-        let parsed = self.stdlib.parse(
-            &source,
-            reify_core::ModulePath::from_dotted(module_path)
-                .map_err(|e| diag_invalid_path(module_path, e))?,
-        );
+        let module =
+            ModulePath::from_dotted(module_path).map_err(|e| diag_invalid_path(module_path, e))?;
+        let parsed = self.stdlib.parse(&source, module.clone());
 
         // One coded, file-attributed Error per parse error: the failure surfaces
         // on the importing entry, so it must name the file it came from.
@@ -610,15 +625,16 @@ impl ModuleDag {
         }
 
         // Mark in-progress for cycle detection
-        self.in_progress.insert(module_path.to_string());
+        self.in_progress
+            .insert(module_path.to_string(), fs_path.clone());
 
         // Use inner closure to guarantee in_progress cleanup on all exit paths
-        let result = (|| -> Result<(CompiledModule, Vec<String>), Vec<Diagnostic>> {
+        let result = (|| -> Result<(CompiledModule, Vec<ModulePath>), Vec<Diagnostic>> {
             // Single pass: compile each import dependency and collect its path,
             // and the path of each `pub import` as a re-export edge.
             // Imports with unsatisfied `#cfg(...)` predicates are skipped entirely.
             let mut import_paths: Vec<String> = Vec::new();
-            let mut pub_targets: Vec<&str> = Vec::new();
+            let mut pub_targets: Vec<ModulePath> = Vec::new();
             for decl in &parsed.declarations {
                 if let reify_ast::Declaration::Import(import) = decl {
                     if !self.follows_import(import) {
@@ -627,11 +643,13 @@ impl ModuleDag {
                     self.compile_module(&import.path, resolver)?;
                     import_paths.push(import.path.clone());
                     if import.is_pub {
-                        pub_targets.push(&import.path);
+                        pub_targets.push(
+                            ModulePath::from_dotted(&import.path)
+                                .map_err(|e| diag_invalid_path(&import.path, e))?,
+                        );
                     }
                 }
             }
-            let re_export_paths = re_export_edges(pub_targets);
 
             // Block-scope the shared borrows of self.modules so they are
             // dropped before the later self.modules.insert call.
@@ -644,14 +662,13 @@ impl ModuleDag {
                     .visible_imports(&direct)
                     .iter()
                     .map(|p| {
-                        self.modules
-                            .get(p.as_str())
+                        self.module(p)
                             .expect("invariant: import compiled before prelude collection")
                     })
                     .collect();
-                self.stdlib.compile_unit(&parsed, &preludes)
+                self.stdlib.compile_unit(&parsed, &preludes, &self.cfg)
             };
-            Ok((compiled, re_export_paths))
+            Ok((compiled, pub_targets))
         })();
 
         // Always remove from in-progress, whether the inner block succeeded or failed.
@@ -660,7 +677,7 @@ impl ModuleDag {
         self.in_progress.shift_remove(module_path);
 
         // Propagate error after cleanup
-        let (mut compiled, re_export_paths) = result?;
+        let (mut compiled, pub_targets) = result?;
 
         // Commit filesystem mode now that the module has compiled successfully.
         // Deferred from the Ok-and-std match arm above so that a parse/compile
@@ -702,8 +719,7 @@ impl ModuleDag {
                 source,
             },
         );
-        self.re_exports
-            .insert(module_path.to_string(), re_export_paths);
+        self.re_exports.record(module, pub_targets);
 
         Ok(())
     }
@@ -795,16 +811,6 @@ mod tests {
             "invalid module path while resolving import 'some.path': module path must not be empty",
         );
     }
-}
-
-/// Returns `true` iff all `#cfg(...)` predicates on `import` are satisfied by `cfg`.
-///
-/// An import with no `cfg_predicates` is vacuously satisfied (always followed).
-/// Stacked `#cfg` pragmas are ANDed: all must be satisfied (PRD D-1).
-///
-/// This is the canonical import-gating predicate.
-pub(crate) fn import_cfg_satisfied(import: &reify_ast::ImportDecl, cfg: &CfgSet) -> bool {
-    import.cfg_predicates.iter().all(|p| cfg_satisfied(p, cfg))
 }
 
 /// Compile a project starting from an entry file.
@@ -948,11 +954,31 @@ pub(crate) fn entry_module_name(entry_path: &Path) -> &str {
         .unwrap_or("main")
 }
 
-/// `true` iff `path` addresses the standard library (`std` or `std.*`).
-///
-/// Such imports are never followed under [`StdlibVisibility::Ambient`] (the
-/// regime [`crate::program::compile_program`] uses): the full stdlib is already
-/// seeded into every unit's prelude via `stdlib_loader::load_stdlib_context()`.
-fn is_std_import_path(path: &str) -> bool {
-    path == "std" || path.starts_with("std.")
+/// `true` iff `path` addresses the standard library (`std` or `std.*`), which
+/// resolves through the stdlib rather than the resolver's project root.
+pub(crate) fn is_std_import_path(path: &str) -> bool {
+    path.split('.').next() == Some(crate::name_env::STDLIB_ROOT_SEGMENT)
+}
+
+/// The Error for a bare `import std` (stdlib-namespace §10 Q3), naming the
+/// importing unit when one declares it; `None` when the program entry does.
+fn bare_std_import_diag(importer: Option<(&String, &PathBuf)>) -> Diagnostic {
+    let refusal = "bare `import std` is not allowed; write `import std.prelude` for the \
+                   curated core, or import the `std.*` module that defines a name";
+    let message = match importer {
+        None => refusal.to_string(),
+        Some((key, path)) => format!("in imported module '{key}' ({}): {refusal}", path.display()),
+    };
+    Diagnostic::error(message)
+        .with_code(DiagnosticCode::BareStdImport)
+        .with_candidates(["std.prelude"])
+}
+
+/// The Error for a `std.*` path the embedded stdlib has no module for. An
+/// embedded-only resolution reads no file, so it names only the dotted path.
+fn unknown_std_module_diag(module_path: &str) -> Diagnostic {
+    Diagnostic::error(format!(
+        "unknown std module '{module_path}': the standard library has no module at that path"
+    ))
+    .with_code(DiagnosticCode::UnknownStdModule)
 }

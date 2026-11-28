@@ -12,6 +12,11 @@
 //
 // PRD reference: docs/prds/v0_5/buckling-eigensolver.md §7 + §13 task η.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.buckling
+
 structure BucklingMultiCaseSmoke {
     // Geometry: 800 mm column, 20×20 mm cross-section (matches buckling_column_smoke.ri).
     param length : Length = 800mm

@@ -1,5 +1,9 @@
 module adv_beta_v7_pm_is_real_zero
 
+import std.materials.fea
+import std.modal.analysis
+import std.modal.mechanism.fns
+
 // Fixture (β ADVERSARY, docs/prds/v0_6/result-field-vacuity-closure.md leaf β).
 //
 // DISCRIMINATING probe for V7.  β declares `Mode.participation_mass` DEGRADED

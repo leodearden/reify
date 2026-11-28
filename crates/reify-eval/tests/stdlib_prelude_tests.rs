@@ -166,7 +166,6 @@ structure S {
     let v : Length = symmetric_tolerance(5mm, 2mm)
 }
 "#;
-    let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
@@ -174,7 +173,9 @@ structure S {
         parsed.errors
     );
 
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    // The ambient whole-stdlib compile: no std module is a declared import,
+    // so the shadowing is a Warning (D-2), not an Error.
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
     let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
@@ -453,7 +454,6 @@ structure S {
     let v : Length = symmetric_tolerance(5mm, 2mm)
 }
 "#;
-    let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
@@ -461,7 +461,9 @@ structure S {
         parsed.errors
     );
 
-    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+    // The ambient whole-stdlib compile: no std module is a declared import,
+    // so the shadowing is a Warning (D-2), not an Error.
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
     let errors = collect_errors(&compiled.diagnostics);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 

@@ -1,3 +1,8 @@
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 // End-to-end example for task 4168 (geom-transform ε): `arbitrary_pattern`'s
 // LIST form — a `List<Transform<3>>` carrying a full per-instance rigid
 // transform (rotation + translation) — additively alongside the existing

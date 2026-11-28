@@ -16,6 +16,8 @@
 //   crates/reify-eval/tests/kernel_queries_moment_of_inertia_smoke.rs::
 //     moment_of_inertia_box_evals_to_analytic_tensor
 
+import std.units
+
 structure def MomentOfInertiaBox {
     let b = box(50mm, 30mm, 10mm)
     let steel_density = 7850kg/m^3

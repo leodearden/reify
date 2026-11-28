@@ -1,3 +1,5 @@
+import std.trajectory
+
 // G-code import smoke example  (task ο — gcode_import)
 //
 // Demonstrates the `gcode_import(source, dialect) -> List<GcodeMotionSegment>`

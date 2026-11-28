@@ -32,6 +32,8 @@
 
 #precision(50mm)
 
+import std.si_units
+
 // CurvedBall: a 1 m-radius sphere — the curved subject for deviation measurement.
 //
 // At #precision(50mm) (5e-2 m deflection) the sampled facet-chord error on a

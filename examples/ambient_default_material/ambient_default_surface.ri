@@ -22,6 +22,11 @@
 //   row 4    (B coexist):  file-level steel + purpose-nested aluminum coexist — no cross-scope dup
 //   e2e pos  (D gate):     each Bracket/Plate mass == 7850·V (OCCT-gated in eval gate)
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 // ── File-level ambient default ────────────────────────────────────────────────
 //
 // `steel` is NOT a stdlib top-level binding — the full Material(...) constructor

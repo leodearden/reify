@@ -1,3 +1,5 @@
+import std.io
+
 // output_driver_multi.ri — multiple Output occurrences drive multiple exports.
 //
 // Backs the io-export δ CLI integration test (B6 multi-output). Run with NO

@@ -16,6 +16,7 @@
 // same two E_DFM_* errors appear under all three drivers.
 module driver_contract_dfm_measurement_arm
 import std.process
+import std.units
 
 structure def Milling : Subtracting {
     param duration          : Time   = 30min

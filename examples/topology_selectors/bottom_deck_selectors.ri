@@ -1,5 +1,10 @@
 module bottom_deck_selectors
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 // Compact selector-driven design exercising curated 3-arg fillet through the
 // production .ri pipeline (task 5208). Trimmed from the repro
 // designs/litter_tray/bottom_deck_v2_selectors.ri to the three shapes that the

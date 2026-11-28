@@ -1,3 +1,5 @@
+import std.materials.fea
+
 // Yielding-cantilever PRB flexure worked example (W_FlexureYielding fixture)
 //
 // Demonstrates the §5.3 stress-check at PRB construction: a cantilever-beam

@@ -9,6 +9,8 @@
 // Post-fix: leaf ε gives the runner a BRep kernel so the verdict is real, and leaf
 // λ makes an Indeterminate verdict exit non-zero absent @allow_indeterminate.
 module driver_contract_geometry_test_indeterminate
+
+import std.si_units
 @test structure TestBlockVolume {
     param w : Length = 10mm
     let body = cube(w)

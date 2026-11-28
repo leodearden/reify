@@ -1,5 +1,7 @@
 module getar_wildcard_placeholder_binder_silent
 
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf β RED
 // before-image (S-4, binder form). MEASURED 2026-09-29, both binaries:
 //   check EXIT 0, eval EXIT 0, `W.v = false` (the Ok arm is taken).

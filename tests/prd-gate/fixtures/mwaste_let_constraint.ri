@@ -1,6 +1,8 @@
 // M-WASTE PRD baseline (§2.3, §5 B3): a let-indirected geometry constraint over an auto.
 module mwaste_let_constraint
 
+import std.si_units
+
 structure def LetConstraint {
     param w : Length = auto
     constraint w >= 10mm

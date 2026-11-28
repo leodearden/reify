@@ -34,6 +34,9 @@
 //   10. center_of_mass(solid, density)            → Point3<Length>
 //   11. moment_of_inertia(solid, density)         → Tensor<2, 3, MomentOfInertia>
 
+import std.si_units
+import std.units
+
 structure def AllTopologySelectorsWiring {
     let body = box(50mm, 30mm, 10mm)
 

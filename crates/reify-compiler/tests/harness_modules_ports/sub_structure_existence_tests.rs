@@ -173,8 +173,9 @@ fn stdlib_occurrence_sub_errors_with_empty_prelude() {
 }
 
 /// A sub sees what eval's definition environment sees: the entry's own
-/// structures, a direct import's `pub` ones and the stdlib's. An import's
-/// non-pub structure is unknown at check time, so check agrees with eval.
+/// structures, a direct import's `pub` ones and an imported std module's
+/// (strict stdlib visibility, stdlib-namespace κ #5503). An import's non-pub
+/// structure is unknown at check time, so check agrees with eval.
 #[test]
 fn a_sub_naming_an_imports_non_pub_structure_is_unknown_at_check() {
     let dir = tempfile::tempdir().unwrap();
@@ -183,7 +184,7 @@ fn a_sub_naming_an_imports_non_pub_structure_is_unknown_at_check() {
         "module parts\nstructure def InternalJig { }\npub structure def Pulley { }\n",
     )
     .unwrap();
-    let main_source = "module main\nimport parts\nstructure def Rig {\n    sub j = InternalJig()\n    sub p = Pulley()\n    sub z = ZeroForce()\n}\n";
+    let main_source = "module main\nimport parts\nimport std.dynamics\nstructure def Rig {\n    sub j = InternalJig()\n    sub p = Pulley()\n    sub z = ZeroForce()\n}\n";
     let entry_path = dir.path().join("main.ri");
     fs::write(&entry_path, main_source).unwrap();
     let program = compile_program(

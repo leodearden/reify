@@ -25,6 +25,11 @@
 // Opt-out of the warning: use `ElasticOptions(shell_force: ShellForce.Off)`
 // (@solid) — the `@solid` route is silent regardless of body thickness.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaShellTooThickAuto {
     // Geometry: 50 mm × 20 mm × 20 mm chunky block.
     // height/min(length,width) = 20/20 = 1.0 ≥ shell_threshold 0.2 → too thick.

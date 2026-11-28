@@ -1,3 +1,8 @@
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // mu (R21): fixed-parameter body solve on an implicit body, 5-arg body overload, AABB-face BCs; no minimize, no mass objective.
 structure def FeaImplicitBracket {
     param web : Length = 6mm

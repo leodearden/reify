@@ -32,6 +32,9 @@
 // The g/cm^3 value is why Invariant R's scale comparison carries a 1e-12 relative
 // tolerance rather than exact equality.
 
+import std.si_units
+import std.units
+
 structure def UnitCuratedLabelsAscii {
     let area_mm    = 1mm^2
     let area_cm    = 1cm^2

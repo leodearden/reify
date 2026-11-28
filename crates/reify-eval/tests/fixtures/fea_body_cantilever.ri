@@ -19,6 +19,11 @@
 // AABB-heuristic §7a grid whose ny follows the 100 mm width (ny=6, so the
 // per-axis node count differs and the total ≠ 854).
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaBodyCantilever {
     // Material: AISI 1045 hot-rolled medium-carbon steel — same material the
     // scalar-dims smoke fixture uses, so any grid-count difference is attributable

@@ -25,6 +25,9 @@
 
 // ── Line item: Bracket (conforms to BOTH Costed and Massive) ────────────────
 
+import std.io
+import std.units
+
 structure def Bracket : Costed + Massive {
     param supplier          : String = "Acme Metals"
     param part_number       : String = "BR-100"

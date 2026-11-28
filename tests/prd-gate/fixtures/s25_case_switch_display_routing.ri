@@ -1,5 +1,12 @@
 module s25_case_switch_display_routing
 
+import std.fea.multi_case
+import std.io
+import std.materials.appearance
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // S25 (docs/prds/v0_6/gui-backend-engine-modules-events-tool-contract.md) — the
 // GuiState-builder leaf's case-switch fixture. One design carries all three
 // things a case switch must keep: a multi-case FEA result (three named cases),

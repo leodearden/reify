@@ -9,6 +9,10 @@
 // `TypeName { field: value, ... }` shape — rather than opaque `undef`,
 // which is the SIR-α user-observable signal (PRD §7, design-decision-4).
 
+import std.fea.multi_case
+import std.fea.types
+import std.materials.fea
+
 // ── Flat construction ───────────────────────────────────────────────────────
 //
 // Concrete stdlib structures, every optional field defaulted. Each

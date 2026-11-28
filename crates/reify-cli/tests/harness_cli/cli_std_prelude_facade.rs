@@ -51,3 +51,17 @@ fn eval_recovers_through_unwrap_or_on_a_std_prelude_only_file() {
     );
     assert_std_prelude_resolved(&stdout, &stderr);
 }
+
+#[test]
+fn fix_imports_check_finds_nothing_missing_on_a_std_prelude_only_file() {
+    let (status, stdout, stderr) =
+        common::run_with_args(&["fix", "--imports", "--check", &facade_fixture()]);
+    assert!(
+        !stdout.contains("missing import") && !stderr.contains("missing import"),
+        "std.prelude re-exports every std module the fixture uses.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        status.success(),
+        "fix --imports --check should pass.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}

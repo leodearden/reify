@@ -103,7 +103,12 @@ pub(crate) const NAMED_DECL_SNIPPETS: &[(&str, &str)] = &[
 ///
 /// [`FEA_WITH_AUTO_PARAM_SRC`] does not read it but carries a verbatim copy of
 /// its FEA body.
-pub(crate) const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
+pub(crate) const FEA_BEARING_SRC: &str = r#"import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
+structure FeaBearing {
     param length : Length = 1000mm
     param width  : Length = 100mm
     param height : Length = 100mm
@@ -135,7 +140,12 @@ pub(crate) const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
 /// Consumers:
 /// - `diagnostics::tests::fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`
 /// - `diagnostics::fea_hint::tests::fea_hint_skips_non_fea_indeterminate_and_dedups_per_constraint`
-pub(crate) const FEA_WITH_AUTO_PARAM_SRC: &str = r#"structure FeaBearingMixed {
+pub(crate) const FEA_WITH_AUTO_PARAM_SRC: &str = r#"import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
+structure FeaBearingMixed {
     param length : Length = 1000mm
     param width  : Length = 100mm
     param height : Length = 100mm

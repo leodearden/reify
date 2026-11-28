@@ -2,6 +2,8 @@
 // Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
 module s6_idyn_open_after_closing
 
+import std.dynamics
+
 // Probe: open body appended AFTER the closing body in a closed chain.
 structure def OpenAfterClosing {
     let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]])

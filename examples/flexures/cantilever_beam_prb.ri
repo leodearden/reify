@@ -1,3 +1,5 @@
+import std.materials.fea
+
 // Cantilever-beam PRB flexure worked example
 //
 // Demonstrates the Howell pseudo-rigid-body (PRB) cantilever-beam flexure

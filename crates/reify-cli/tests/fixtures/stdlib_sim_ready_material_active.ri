@@ -9,6 +9,9 @@
 //
 // This locks the guard-active branch described in the determinacy_purposes.ri doc
 // comment ("can only fire Violated").
+
+import std.determinacy.purposes
+
 structure Material {
     param density : Real = 7850.0
 }

@@ -44,7 +44,6 @@ module std.materials.electrical
 
 import std.materials.mechanical
 import std.si_units
-import std.units
 
 // ── ElectricallyCharacterized ────────────────────────────────────────────────
 

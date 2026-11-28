@@ -8,6 +8,8 @@
 //   - Complex / Complex division
 //   - abs/arg on dimensionless Complex
 
+import std.si_units
+
 structure def ComplexNumbersDemo {
     // ── A: RLC series impedance ─────────────────────────────────────────
     // Dimensioned complex is built via complex(re, im); literal sugar 4j

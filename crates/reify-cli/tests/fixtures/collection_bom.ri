@@ -12,6 +12,9 @@
 // Warnings section reaches stdout. Exits 0 (a collection-only design is not an
 // error).
 
+import std.io
+import std.units
+
 structure def Bolt : Costed {
     param supplier          : String = "Fastenal"
     param part_number       : String = "BOLT-M6-20"

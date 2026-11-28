@@ -53,6 +53,12 @@
 //     `List<FixedSupport>` value for its `List<Support>` param without a
 //     call-site type check, same as `LoadCase.supports`.)
 
+import std.fea.multi_case
+import std.materials.fea
+import std.modal.analysis
+import std.si_units
+import std.solver.elastic
+
 structure CantileverBeamModes {
     // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
     param length : Length = 200mm

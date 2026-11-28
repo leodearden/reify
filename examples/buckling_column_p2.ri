@@ -36,6 +36,12 @@
 // Mirrors the `let opts = ModalOptions(...)` pattern in
 // examples/modal/cantilever_beam_modes.ri.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.buckling
+import std.solver.elastic
+
 structure BucklingColumnP2 {
     // Geometry: 800 mm tall column, 20×20 mm cross-section.
     param length : Length = 800mm

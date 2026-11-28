@@ -14,6 +14,12 @@
 //
 // PRD reference: docs/prds/v0_6/typed-fea-authoring-surface.md §8 η.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+import std.units
+
 structure FeaMultiCaseSmoke {
     // Geometry: 1000 mm × 100 mm × 100 mm bar (matches gravity_self_weight_e2e.rs).
     param length : Length = 1000mm

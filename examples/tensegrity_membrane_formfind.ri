@@ -61,6 +61,8 @@
 //   second eval. Surface CONNECTIVITY is read from `net.surfaces` (not a call
 //   argument); only the per-triangle σ is supplied positionally.
 
+import std.tensegrity
+
 structure MembraneFormFind {
     // ── Membrane topology ────────────────────────────────────────────────────
     //

@@ -26,6 +26,11 @@
 // shim was retired in task δ/4442 once `trait ElasticMaterial : ConstitutiveLaw`
 // + transitive conformance landed. See fea_cantilever_smoke.ri for the rationale.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaMultiCaseBracket {
     // ── Geometry ─────────────────────────────────────────────────────────────
     param length    : Length = 1000mm

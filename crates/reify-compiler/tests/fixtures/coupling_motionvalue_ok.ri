@@ -8,6 +8,8 @@
 // variable (Length) to a Length param — both operands are Length, so no
 // dimensional mismatch occurs.
 
+import std.kinematic
+
 structure def CouplingProbe {
     param p : Coupling<Prismatic>::MotionValue
     param r : Coupling<Revolute>::MotionValue

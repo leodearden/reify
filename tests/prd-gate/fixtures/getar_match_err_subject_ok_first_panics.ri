@@ -1,5 +1,7 @@
 module getar_match_err_subject_ok_first_panics
 
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε RED
 // before-image (R5 case, mirror: Err subject, Ok arm first). MEASURED
 // 2026-09-29:

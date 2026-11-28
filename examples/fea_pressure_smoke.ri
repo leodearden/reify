@@ -22,6 +22,11 @@
 // `solve_elastic_static` now declares `loads: List<Load>` /
 // `supports: List<Support>` (task 4093), so direct list literals type-check.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaPressureSmoke {
     // Geometry: 1 m long beam with 100 mm × 100 mm square cross-section.
     param length : Length = 1000mm

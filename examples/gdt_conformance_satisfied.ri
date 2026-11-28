@@ -17,6 +17,8 @@
 //            (without OCCT — no kernel → deviation cannot be measured → C1
 //             graceful degradation, never a false Violated)
 
+import std.tolerancing
+
 // Local GeometricTolerance callout type (see gdt_conformance_violated.ri).
 // MaterialCondition is consumed from the stdlib prelude
 // (crates/reify-compiler/stdlib/tolerancing.ri).

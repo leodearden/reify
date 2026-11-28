@@ -9,6 +9,8 @@
 //
 // Compiles CLEAN (legality is a check-time lint, not a compile error).
 
+import std.tolerancing
+
 structure FlatnessMmcPurpose {
     param width : Length = 80mm
 

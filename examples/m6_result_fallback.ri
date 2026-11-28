@@ -19,13 +19,16 @@
 // Option-subject sibling), retargeted from `parse_length`/`unwrap_or`
 // (Option) to `parse_length_r`/`fallback` (Result).
 //
-// `fallback` / `or_else` are prelude-callable (std.result is in the
-// prelude) — no explicit import is needed. No new grammar.
+// `fallback` / `or_else` come from std.result, imported below. No new
+// grammar.
 //
 // Covered by crates/reify-eval/tests/result_fallback_e2e.rs (numeric eval
 // signal), crates/reify-cli/tests/cli_eval_result_fallback.rs (rendered CLI
 // stdout signal), and the examples compile-clean smoke sweep
 // (crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs).
+
+import std.option_recovery
+import std.result
 
 structure def Valid {
     // A fallible stdlib op that yields Result<Length, String> today (a

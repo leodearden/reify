@@ -8,6 +8,11 @@
 // differ. The 1e-6 target is unreachable, so `refined` always remeshes at
 // least once.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaBodyCantileverAdaptiveRefinedVsSeed {
     let material = Steel_AISI_1045()
 

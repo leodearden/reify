@@ -24,6 +24,15 @@
 
 // ── (1) Composed-bound integration: DriveBelt ────────────────────────────────
 
+import std.materials.chemical
+import std.materials.electrical
+import std.materials.mechanical
+import std.materials.optical
+import std.materials.thermal
+import std.si_units
+import std.structural.physical
+import std.units
+
 // DriveBelt is a representative elastomeric power-transmission belt.
 // It satisfies three stdlib structural traits simultaneously:
 //   ElasticallyDeformable : Flexible — lumped recoverable deformation contract

@@ -1,5 +1,7 @@
 module dcr_fn_force_param_already_rejects
 
+import std.si_units
+
 // D3 decompose-phase VACUITY GUARD for PRD
 // `docs/prds/v0_6/dimension-checked-readers.md` leaf ι.
 //

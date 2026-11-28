@@ -1,18 +1,20 @@
 //! What a module's `import` declarations make visible, per imported module.
 //! A namespace import (`import std.x`, `import std.x as m`) covers the
 //! module's whole pub surface; an entity import covers exactly the names it
-//! binds (`docs/prds/v0_6/resolution-unification.md` D-8). An import whose
-//! `#cfg(...)` predicates the active cfg does not satisfy makes nothing
-//! visible (`docs/prds/v0_6/conditional-compilation.md` D-3;
-//! `docs/prds/v0_6/stdlib-namespace.md` boundary #14).
+//! binds (`docs/prds/v0_6/resolution-unification.md` D-8). Either covers the
+//! same on every module the imported one re-exports through `pub import`,
+//! transitively (D-7), so `import std.prelude` covers what the facade
+//! re-exports. An import whose `#cfg(...)` predicates the active cfg does not
+//! satisfy makes nothing visible (`docs/prds/v0_6/conditional-compilation.md`
+//! D-3; `docs/prds/v0_6/stdlib-namespace.md` boundary #14).
 
 use std::collections::{HashMap, HashSet};
 
 use reify_ast::{Declaration, EntityBinding, ImportBinding, ImportDecl, ImportKind, ParsedModule};
 use reify_core::ModulePath;
 
-use crate::cfg::CfgSet;
-use crate::module_dag::import_cfg_satisfied;
+use crate::cfg::{CfgSet, import_cfg_satisfied};
+use crate::re_exports::ReExports;
 
 /// Every `import` `parsed` declares that is in effect under `cfg` (its `#cfg`
 /// predicates are satisfied), in declaration order, with the module it names.
@@ -62,8 +64,9 @@ fn declared(parsed: &ParsedModule) -> impl Iterator<Item = (ModulePath, &ImportD
 }
 
 /// Which names of each imported module a set of a module's imports, together,
-/// bind: [`ImportCoverage::of`] gives those in effect under the active cfg,
-/// [`ImportCoverage::of_gated_off`] those the active cfg leaves out.
+/// bind, along the re-export edges of `re_exports`: [`ImportCoverage::of`]
+/// gives those in effect under the active cfg, [`ImportCoverage::of_gated_off`]
+/// those the active cfg leaves out.
 pub(crate) struct ImportCoverage<'p> {
     by_module: HashMap<ModulePath, Coverage<'p>>,
 }
@@ -74,29 +77,39 @@ enum Coverage<'p> {
 }
 
 impl<'p> ImportCoverage<'p> {
-    pub(crate) fn of(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
-        Self::folding(in_effect(parsed, cfg))
+    pub(crate) fn of(parsed: &'p ParsedModule, cfg: &CfgSet, re_exports: &ReExports) -> Self {
+        Self::folding(in_effect(parsed, cfg), re_exports)
     }
 
     /// What the imports `parsed` declares that `cfg` leaves out would bind,
     /// were their `#cfg` predicates satisfied.
-    pub(crate) fn of_gated_off(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
-        Self::folding(gated_off(parsed, cfg))
+    pub(crate) fn of_gated_off(
+        parsed: &'p ParsedModule,
+        cfg: &CfgSet,
+        re_exports: &ReExports,
+    ) -> Self {
+        Self::folding(gated_off(parsed, cfg), re_exports)
     }
 
-    fn folding(imports: impl Iterator<Item = (ModulePath, &'p ImportKind)>) -> Self {
+    fn folding(
+        imports: impl Iterator<Item = (ModulePath, &'p ImportKind)>,
+        re_exports: &ReExports,
+    ) -> Self {
         let mut by_module = HashMap::new();
         for (module, kind) in imports {
-            match kind.binding() {
-                ImportBinding::Namespace { .. } => {
-                    by_module.insert(module, Coverage::WholeSurface);
-                }
-                ImportBinding::Entities(entities) => {
-                    if let Coverage::Names(covered) = by_module
-                        .entry(module)
-                        .or_insert_with(|| Coverage::Names(HashSet::new()))
-                    {
-                        covered.extend(entities.iter().map(EntityBinding::local_name));
+            let binding = kind.binding();
+            for reached in re_exports.closure(&module) {
+                match &binding {
+                    ImportBinding::Namespace { .. } => {
+                        by_module.insert(reached, Coverage::WholeSurface);
+                    }
+                    ImportBinding::Entities(entities) => {
+                        if let Coverage::Names(covered) = by_module
+                            .entry(reached)
+                            .or_insert_with(|| Coverage::Names(HashSet::new()))
+                        {
+                            covered.extend(entities.iter().map(EntityBinding::local_name));
+                        }
                     }
                 }
             }

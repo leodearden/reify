@@ -1,5 +1,10 @@
 module support_policy_body_tip_target
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // support-realization-policy (docs/prds/v0_6/support-realization-policy.md) evidence fixture, leaf β.
 // Body overload of solve_elastic_static with a support whose target names no face the realized
 // path can realize ("tip"). Today the support is ignored: on the gmsh path the solve clamps the AABB

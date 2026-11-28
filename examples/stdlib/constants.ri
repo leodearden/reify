@@ -24,6 +24,8 @@
 //   (c) two physics-identity cross-checks (r_check, em_check) evaluate within
 //       tolerance of their exact identities (R = N_A·k_B; ε₀μ₀ = 1/c²).
 
+import std.units
+
 structure def PhysicalConstants {
     // ── Built-in dimensionless math constants ─────────────────────────────────
 

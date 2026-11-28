@@ -11,6 +11,11 @@
 //
 // Assembly: 7 sub-components = 3 BoxParts + 2 TubePins + 2 BasePlates
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 structure def BoxPart : Physical {
     param geometry : Solid = box(80mm, 60mm, 40mm)
     param material : Material = Material(

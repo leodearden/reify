@@ -1,5 +1,12 @@
 module surface_finish_3mf
 
+import std.materials.appearance
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.surface_finish
+import std.units
+
 // Task δ (#4891) — B8 integration gate: 3MF egress reflects coating colour.
 //
 // Proves the third-producer subsumption on the 3MF EXPORT surface: a body

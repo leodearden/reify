@@ -1,5 +1,9 @@
 module damped_material_mixin_conformance
 
+import std.materials.fea
+import std.si_units
+import std.units
+
 // PRD substrate fixture: damped-modal-bonded-heterogeneous leaf α.
 // Pins the grammar/semantic substrate the Damped-mixin design assumes:
 // user trait declaration with a Real param, multi-parent trait refinement

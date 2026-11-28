@@ -1,3 +1,5 @@
+import std.units
+
 // Fixture for task 4789 (cost-min α): robustness floor signal.
 //
 // CostMinFloor has one `Length = auto` param `thickness` and a fixed

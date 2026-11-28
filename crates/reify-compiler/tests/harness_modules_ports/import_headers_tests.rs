@@ -4,7 +4,9 @@
 //! Every universe module is compiled with no prelude, so a `std.fake.*` path
 //! lands in name_env's Stdlib tier and a non-std path (`parts`) in its Import
 //! tier. Each fixture is asserted parse-clean first, so a syntax slip in a
-//! fixture cannot read as a tool failure.
+//! fixture cannot read as a tool failure. The closing section derives over the
+//! REAL stdlib instead, because what it pins is the real `std.prelude`
+//! facade's `pub import` re-exports.
 
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
@@ -12,6 +14,7 @@ use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{
     GatedOffImports, ImportPlan, NameRole, NameUse, PlacementDefect, RequiredImport,
     cfg_satisfied_imports, cfg_unsatisfied_imports, derive_std_imports, insert_imports,
+    stdlib_universe_excluding,
 };
 use reify_core::{DiagnosticCode, ModulePath, Severity, panic_payload_str};
 
@@ -451,14 +454,21 @@ fn a_bare_builtin_table_unit_needs_no_import() {
 }
 
 #[test]
-fn a_compound_unit_factor_resolves_through_the_registry_only() {
+fn a_builtin_table_compound_unit_factor_needs_no_import() {
     let universe = compile_universe(&[UNITS]);
-    let source = "structure def S { let v = 1mm/s }\n";
+    let plan = derive("structure def S { let v = 1mm/s }\n", &universe);
+    assert!(plan.modules().is_empty(), "{:?}", dotted_modules(&plan));
+}
+
+#[test]
+fn a_non_builtin_compound_unit_factor_needs_the_unit_module() {
+    let universe = compile_universe(&[UNITS]);
+    let source = "structure def S { let v = 1furlong/s }\n";
     let plan = derive(source, &universe);
     assert_needs(
         &plan,
         "std.fake.units",
-        &[name_use("mm", NameRole::UnitFactor)],
+        &[name_use("furlong", NameRole::UnitFactor)],
         source,
     );
 }
@@ -1256,7 +1266,7 @@ fn a_gated_off_import_would_cover_only_the_names_it_binds_were_its_cfg_satisfied
         ("std.fake.e", &["T"]),
     ];
     let covered_under = |cfg: &CfgSet| -> Vec<String> {
-        let gated_off = GatedOffImports::of(&parsed, cfg);
+        let gated_off = GatedOffImports::of(&parsed, cfg, &[]);
         probes
             .iter()
             .filter(|(module, names)| {
@@ -1300,7 +1310,7 @@ fn a_gated_off_import_would_cover_only_the_names_it_binds_were_its_cfg_satisfied
 fn gated_off_imports_name_the_module_of_each_import_the_cfg_leaves_out() {
     let parsed = parse_clean(GATED_OFF_FIXTURE, SUBJECT_PATH);
     let modules_under = |cfg: &CfgSet| -> Vec<String> {
-        let mut modules: Vec<String> = GatedOffImports::of(&parsed, cfg)
+        let mut modules: Vec<String> = GatedOffImports::of(&parsed, cfg, &[])
             .modules()
             .map(ModulePath::to_dotted)
             .collect();
@@ -1319,5 +1329,100 @@ fn gated_off_imports_name_the_module_of_each_import_the_cfg_leaves_out() {
     assert_eq!(
         modules_under(&flags(&["wide", "tall"])),
         Vec::<String>::new()
+    );
+}
+
+// --- Coverage through `pub import` re-exports, over the real stdlib ---------
+
+/// `200GPa` needs std.si_units; `unwrap_or` binds in std.option_recovery and
+/// std.result. std.prelude re-exports all three.
+const GPA_AND_UNWRAP_OR_BODY: &str = "structure def S {\n\
+         param e : Pressure = 200GPa\n\
+         let w : Length = unwrap_or(parse_length(\"2mm\"), 6mm)\n\
+     }\n";
+
+fn linux() -> CfgSet {
+    CfgSet {
+        target: Some("linux".to_string()),
+        ..CfgSet::default()
+    }
+}
+
+fn parse_with_stdlib_clean(source: &str) -> ParsedModule {
+    let module_path = ModulePath::from_dotted(SUBJECT_PATH).expect("valid dotted fixture path");
+    assert_parsed_clean(
+        reify_compiler::parse_with_stdlib(source, module_path),
+        source,
+    )
+}
+
+fn real_stdlib_universe() -> Vec<&'static CompiledModule> {
+    stdlib_universe_excluding(&ModulePath::from_dotted(SUBJECT_PATH).expect("valid path"))
+}
+
+fn missing_over_real_stdlib(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<RequiredImport> {
+    derive_std_imports(parsed, &real_stdlib_universe()).missing_from(parsed, cfg)
+}
+
+fn missing_modules(missing: &[RequiredImport]) -> Vec<String> {
+    missing
+        .iter()
+        .map(|required| required.module.to_dotted())
+        .collect()
+}
+
+#[test]
+fn a_std_prelude_import_covers_the_names_its_pub_imports_re_export() {
+    let parsed =
+        parse_with_stdlib_clean(&format!("import std.prelude\n\n{GPA_AND_UNWRAP_OR_BODY}"));
+    assert_eq!(
+        missing_modules(&missing_over_real_stdlib(&parsed, &linux())),
+        Vec::<String>::new(),
+        "std.prelude re-exports std.si_units, std.option_recovery and std.result"
+    );
+}
+
+#[test]
+fn an_import_that_re_exports_nothing_needed_leaves_the_name_missing() {
+    let parsed = parse_with_stdlib_clean(&format!("import std.units\n\n{GPA_AND_UNWRAP_OR_BODY}"));
+    let missing = missing_over_real_stdlib(&parsed, &linux());
+    let si_units = missing
+        .iter()
+        .find(|required| required.module.to_dotted() == "std.si_units")
+        .unwrap_or_else(|| {
+            panic!(
+                "std.units does not re-export std.si_units, so GPa stays missing: {:?}",
+                missing_modules(&missing)
+            )
+        });
+    assert_eq!(
+        si_units
+            .names
+            .iter()
+            .map(|name_use| name_use.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["GPa"]
+    );
+}
+
+#[test]
+fn a_gated_off_std_prelude_import_covers_nothing_but_would_cover_its_re_exports() {
+    let parsed = parse_with_stdlib_clean(&format!(
+        "#cfg(target = \"wasm\")\nimport std.prelude\n\n{GPA_AND_UNWRAP_OR_BODY}"
+    ));
+    let universe = real_stdlib_universe();
+    let missing = derive_std_imports(&parsed, &universe).missing_from(&parsed, &linux());
+    let si_units = missing
+        .iter()
+        .find(|required| required.module.to_dotted() == "std.si_units")
+        .unwrap_or_else(|| {
+            panic!(
+                "an import the cfg gates off covers nothing: {:?}",
+                missing_modules(&missing)
+            )
+        });
+    assert!(
+        GatedOffImports::of(&parsed, &linux(), &universe).would_cover_any(si_units),
+        "the gated-off std.prelude would cover GPa through its std.si_units re-export"
     );
 }

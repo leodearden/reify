@@ -1,5 +1,10 @@
 module dwr_cantilever_energy
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // PRD docs/prds/v0_6/goal-oriented-error-estimation.md leaf γ (BT5), the
 // ENERGY-NORM twin of dwr_cantilever_qoi.ri. The two files are byte-identical
 // except for the `target_quantity_of_interest` lines: this one leaves it at

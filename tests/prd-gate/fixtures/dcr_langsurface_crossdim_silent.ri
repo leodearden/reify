@@ -1,5 +1,7 @@
 module dcr_langsurface_crossdim_silent
 
+import std.si_units
+
 // D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
 // leaves κ (min/max cross-dimension + inverse-trig discipline) and θ
 // (`safety_factor` at both entry points).

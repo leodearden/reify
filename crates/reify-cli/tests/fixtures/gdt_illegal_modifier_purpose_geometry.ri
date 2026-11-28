@@ -1,5 +1,7 @@
 module gdt_illegal_modifier_purpose_geometry
 
+import std.tolerancing
+
 // gdt_illegal_modifier_purpose_geometry.ri — task 5748 / esc-5748-7.
 //
 // The GEOMETRY-BEARING twin of `gdt_illegal_modifier_purpose.ri`: same illegal

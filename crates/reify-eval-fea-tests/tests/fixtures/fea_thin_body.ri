@@ -9,6 +9,11 @@
 // Triggers the FeaThinBody warning diagnostic via the elastic-static trampoline.
 // Modelled after examples/fea_cantilever_smoke.ri.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaThinBody {
     // Thin plate: 1000mm × 1000mm in-plane, 10mm thick → ratio 100 >> threshold ~10.
     param length : Length = 1000mm

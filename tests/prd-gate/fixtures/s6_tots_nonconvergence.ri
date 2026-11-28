@@ -2,6 +2,10 @@
 // Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
 module s6_tots_nonconvergence
 
+import std.si_units
+import std.trajectory
+import std.units
+
 // Probe: a feasible TOTS move capped at one SQP iteration (NonConvergence).
 structure def TotsNonConv {
     let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)

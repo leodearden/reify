@@ -16,12 +16,15 @@
 // separate structures sharing identical recovery logic, so both signals are
 // observable — and CI-testable — from one file without editing.
 //
-// `unwrap_or` / `or_else` / `is_some` are prelude-callable (std.option_recovery
-// is in the prelude) — no explicit import is needed. No new grammar.
+// `unwrap_or` / `or_else` / `is_some` come from std.option_recovery, imported
+// below. No new grammar.
 //
 // Covered by crates/reify-eval/tests/fallback_recovery_e2e.rs (numeric eval
 // signal), crates/reify-cli/tests/cli_eval_fallback_recovery.rs (rendered CLI
 // stdout signal), and the examples compile-clean smoke sweep.
+
+import std.option_recovery
+import std.result
 
 structure def MountValid {
     // A fallible stdlib op already yields Option today (an optional lookup,

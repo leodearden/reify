@@ -19,6 +19,7 @@
 // See docs/reify-stdlib-reference.md §8 for the full DFM surface reference.
 
 import std.process
+import std.units
 
 // ── Adding process conformer A: 45° max overhang (strict) ────────────────────
 // Used by the three overhang rules (Info / Warning / Error).

@@ -13,6 +13,8 @@
 // tests/infra/test_prd_gate_struct_ctor_conformance.sh.
 module struct_ctor_conformance_string_at_selector_field
 
+import std.fea.multi_case
+
 structure def StringAtSelectorField {
     let pl = PressureLoad(face: "x_max")
 }

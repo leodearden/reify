@@ -45,6 +45,11 @@
 //     `solve_elastic_static` now declares `loads: List<Load>` /
 //     `supports: List<Support>` (task 4093; no LoadCase bundle required).
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaShellFlexure {
     // Geometry: 50 mm long flexure with a 10 mm × 1 mm cross-section.
     // thickness/extent = 1/50 = 0.02 < shell_threshold 0.2 → shell-classified.

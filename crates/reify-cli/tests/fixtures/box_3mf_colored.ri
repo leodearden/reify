@@ -8,6 +8,12 @@
 // map so resolve_export_body_color can match the exported geometry handle to the
 // body's material color.
 
+import std.materials.appearance
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 structure def ColoredBox : Physical {
     param geometry : Solid = box(10mm, 20mm, 5mm)
     param material : Material = Material(

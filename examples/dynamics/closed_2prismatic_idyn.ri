@@ -1,3 +1,5 @@
+import std.dynamics
+
 // Closed-chain inverse-dynamics worked example — vertical 2-prismatic loop
 // (RBD closed-chain bridge, task 4146; descoped from 3836 / RBD-η).
 //

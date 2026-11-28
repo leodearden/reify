@@ -29,6 +29,9 @@
 // Expected after θ: `5Nm` evaluates identically to `5N*m/rad`, and `5nm` still
 // evaluates to 5e-9 m.
 
+import std.si_units
+import std.units
+
 structure def UnitNmTorqueImmediate {
     let torque_compact  = 5Nm
     let torque_explicit = 5N*m/rad

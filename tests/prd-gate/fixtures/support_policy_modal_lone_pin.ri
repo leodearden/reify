@@ -1,5 +1,10 @@
 module support_policy_modal_lone_pin
 
+import std.fea.multi_case
+import std.materials.fea
+import std.modal.analysis
+import std.solver.elastic
+
 // support-realization-policy (docs/prds/v0_6/support-realization-policy.md) evidence fixture, leaf α.
 // A lone PinnedSupport on a beam end is a hinge (ruling R3): the beam can swing about it, so the
 // model has free rigid-body modes. Today modal silently realizes it as a full clamp (cantilever

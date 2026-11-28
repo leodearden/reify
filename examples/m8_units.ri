@@ -20,6 +20,9 @@
 //   energy_imperial = 2lbf * 3mm         → Energy ≈ 0.026689 J
 //   pressure_ratio = (1psi) / (1Pa)      → Dimensionless ≈ 6894.757
 
+import std.si_units
+import std.units
+
 structure def UnitShowcase {
     // ── SI-prefix length ────────────────────────────────────────────────────────
     let len_nm = 1nm

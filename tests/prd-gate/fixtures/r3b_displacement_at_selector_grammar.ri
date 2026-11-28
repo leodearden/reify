@@ -53,6 +53,12 @@
 // examples/modal/transient_step_response.ri so `response` carries the
 // DisplacementTimeHistory type the displacement_at overload-set keys on.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.modal.analysis
+import std.si_units
+import std.solver.elastic
+
 structure CantileverSelectorQuery {
     param length : Length = 200mm
     param width  : Length = 10mm

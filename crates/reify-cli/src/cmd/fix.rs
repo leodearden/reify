@@ -86,7 +86,7 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     let mut imports_after_fix = import_headers::cfg_satisfied_imports(&parsed, cfg);
     imports_after_fix.extend(plan.modules());
     let residual = plan.residual_diagnostics(&parsed, &imports_after_fix);
-    let gated_off = GatedOffImports::of(&parsed, cfg);
+    let gated_off = GatedOffImports::of(&parsed, cfg, &universe);
     if !residual.is_empty() {
         let still_gated_off = gated_off
             .modules()

@@ -1,5 +1,7 @@
 module gdt_two_illegal_modifiers_purpose_geometry
 
+import std.tolerancing
+
 // gdt_two_illegal_modifiers_purpose_geometry.ri — task 5748 amendment
 // (reviewer_comprehensive `correctness` suggestion on the sub-path (c) dedup).
 //

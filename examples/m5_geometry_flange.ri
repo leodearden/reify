@@ -1,3 +1,8 @@
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 // Post-GHR-α (task 3603) spec-shape: `Rigid : Physical` composes geometry +
 // material via struct slots; moment_of_inertia is auto-derived from geometry
 // as Tensor<2,3,MomentOfInertia> (task 4229 Option A).

@@ -48,6 +48,11 @@
 // linear:    g(x) = 3x+2 → data = [2, 5, 8, 11, 14]
 //   gradient(g) = 3 at every node (exact — proven by gradient_1d_affine_exact).
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 field def quadratic : Length -> Real {
     source = sampled {
         grid          = "RegularGrid1"

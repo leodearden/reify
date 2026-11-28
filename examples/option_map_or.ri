@@ -9,8 +9,7 @@
 //   map_or(some(5mm), 0mm, |x: Length| x * 2.0)  =  f(5mm)  =  10mm   (some → f applied)
 //   map_or(empty,     7mm, |x: Length| x * 2.0)  =  7mm              (none → default)
 //
-// `map_or` is prelude-callable (std.option_recovery is in the prelude) — no
-// explicit import is needed.
+// `map_or` comes from std.option_recovery, imported below.
 //
 // The lambda param is explicitly typed `|x: Length|` so its inferred type is
 // `(Length) -> Length`, matching map_or's `(T) -> U` parameter with T = U =
@@ -19,6 +18,8 @@
 //
 // Covered by crates/reify-eval/tests/option_recovery_map_or_e2e.rs (eval
 // signal) and the examples compile-clean smoke sweep.
+
+import std.option_recovery
 
 structure MapOrDemo {
     // A None subject, explicitly typed so T = Length is pinned by the subject.

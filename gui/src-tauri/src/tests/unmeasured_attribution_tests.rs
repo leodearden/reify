@@ -10,6 +10,7 @@ use crate::engine::{EngineSession, satisfaction_token};
 use crate::types::{ConstraintData, GuiState};
 
 const GDT_SOURCE: &str = r#"
+import std.tolerancing
 structure def Probe {
     param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
     param act : Geometry = box(1mm, 1mm, 1mm)
@@ -18,6 +19,7 @@ structure def Probe {
 "#;
 
 const DFM_SOURCE: &str = r#"
+import std.units
 import std.process
 
 structure def FDM : Adding {

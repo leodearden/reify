@@ -1,5 +1,7 @@
 module coordinate_target_fea_kinds
 
+import std.si_units
+
 trait ProbeLoad {}
 trait ProbeSupport {}
 

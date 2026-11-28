@@ -1,5 +1,9 @@
 module adv_beta_undef_arith_control
 
+import std.materials.fea
+import std.modal.analysis
+import std.modal.mechanism.fns
+
 // CONTROL fixture (β ADVERSARY): does `reify eval` raise on arithmetic over a
 // genuinely-Undef ModalResult field?  `ModalResult.topology` is
 // unconditionally `Value::Undef` on the mechanism-modal path

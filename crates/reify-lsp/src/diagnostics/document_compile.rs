@@ -1,5 +1,8 @@
-//! Compile one LSP document: as a program when it is a file-backed entry that
-//! follows an import, otherwise exactly as the single-file stdlib compile.
+//! Compile one LSP document under strict stdlib visibility (stdlib-namespace
+//! NS-V1, κ #5503), as the CLI and the GUI compile it: a file-backed entry
+//! that follows an import as a program, a file-backed one that follows none
+//! single-file, and a document with no file as a detached entry, which
+//! follows its `std.*` imports and no user import.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -35,6 +38,16 @@ impl CompiledDocument {
             declared_templates: module.templates.len(),
             module: Arc::new(module),
             program: None,
+        }
+    }
+
+    fn program(parsed: &ParsedModule, program: CompiledProgram) -> Self {
+        let loaded = LoadedProgram::new(program);
+        Self {
+            eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), loaded.program()),
+            declared_templates: loaded.program().entry().templates.len(),
+            module: Arc::clone(loaded.evaluated()),
+            program: Some(loaded),
         }
     }
 
@@ -86,26 +99,26 @@ pub(super) fn compile_document(
     cfg: &CfgSet,
 ) -> CompiledDocument {
     match uri.to_file_path() {
-        Ok(entry_path) if program::entry_follows_imports(parsed, cfg) => {
-            let loaded = LoadedProgram::new(program::compile_program_with_parsed_entry(
+        Ok(entry_path) if program::entry_follows_imports(parsed, cfg) => CompiledDocument::program(
+            parsed,
+            program::compile_program_with_parsed_entry(
                 &entry_path,
                 source,
                 parsed,
                 &entry_dir_resolver(&entry_path),
                 cfg,
                 &SimpleConstraintChecker,
-            ));
-            CompiledDocument {
-                eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), loaded.program()),
-                declared_templates: loaded.program().entry().templates.len(),
-                module: Arc::clone(loaded.evaluated()),
-                program: Some(loaded),
-            }
-        }
-        _ => CompiledDocument::single_file(reify_compiler::compile_with_stdlib_checked(
+            ),
+        ),
+        Ok(_) => CompiledDocument::single_file(program::compile_single_file(
             parsed,
+            cfg,
             &SimpleConstraintChecker,
         )),
+        Err(()) => CompiledDocument::program(
+            parsed,
+            program::compile_detached_entry(parsed, cfg, &SimpleConstraintChecker),
+        ),
     }
 }
 
@@ -158,40 +171,27 @@ mod tests {
         reify_compiler::parse_with_stdlib(source, ModulePath::single(stem))
     }
 
-    /// A document that follows no import compiles exactly as the single-file
-    /// compile does: no module-header diagnostic, the same content hash.
+    /// A file-backed document that follows no import compiles exactly as the
+    /// strict single-file compile does: no module-header diagnostic, the same
+    /// content hash.
     #[test]
     fn a_document_that_follows_no_import_compiles_single_file() {
         let body = "structure def Plate {\n    param w : Length = 10mm\n}\n";
         let cases = [
-            (
-                "headerless",
-                "file:///reify-lsp-routing/solo.ri",
-                body.to_string(),
-            ),
-            (
-                "std-only import",
-                "file:///reify-lsp-routing/solo.ri",
-                format!("import std.units\n{body}"),
-            ),
+            ("headerless", body.to_string()),
             (
                 "cfg-gated-out user import",
-                "file:///reify-lsp-routing/solo.ri",
                 format!("#cfg(target = \"wasm\")\nimport ghost\n{body}"),
             ),
-            (
-                "not file-backed",
-                "untitled:Untitled-1",
-                format!("import parts\n{body}"),
-            ),
         ];
-        for (label, uri, source) in cases {
-            let uri = Url::parse(uri).expect("uri");
+        let uri = Url::parse("file:///reify-lsp-routing/solo.ri").expect("uri");
+        let cfg = CfgSet::host_default();
+        for (label, source) in cases {
             let parsed = parse("solo", &source);
 
-            let document = compile_document(&parsed, &source, &uri, &CfgSet::host_default());
+            let document = compile_document(&parsed, &source, &uri, &cfg);
             let single_file =
-                reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+                program::compile_single_file(&parsed, &cfg, &SimpleConstraintChecker);
 
             assert_eq!(
                 diag_shapes(document.module()),
@@ -204,6 +204,75 @@ mod tests {
                 "{label}: content hash"
             );
         }
+    }
+
+    const GPA_BODY: &str = "structure def Plate {\n    param e : Pressure = 200GPa\n}\n";
+
+    fn errors(document: &CompiledDocument) -> Vec<&reify_core::Diagnostic> {
+        document
+            .module()
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect()
+    }
+
+    /// Strict visibility (stdlib-namespace κ #5503): an import-free file
+    /// writing a std unit draws the NS-V2 fix-it Error.
+    #[test]
+    fn an_import_free_document_writing_a_std_unit_gets_the_fixit() {
+        let uri = Url::parse("file:///reify-lsp-routing/plate.ri").expect("uri");
+        let parsed = parse("plate", GPA_BODY);
+
+        let document = compile_document(&parsed, GPA_BODY, &uri, &CfgSet::host_default());
+
+        assert!(
+            errors(&document)
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::StdNameNotImported)),
+            "{:#?}",
+            document.module().diagnostics
+        );
+    }
+
+    /// A file-backed document whose only import is a std module follows it
+    /// as a program and is clean.
+    #[test]
+    fn a_document_importing_its_std_unit_module_compiles_as_a_clean_program() {
+        let guard = reify_test_support::prefixed_tempdir("reify-lsp-doc-compile-");
+        let source = format!("module plate\nimport std.si_units\n{GPA_BODY}");
+        let uri = Url::from_file_path(guard.path().join("plate.ri")).expect("uri");
+        let parsed = parse("plate", &source);
+
+        let document = compile_document(&parsed, &source, &uri, &CfgSet::host_default());
+
+        assert!(
+            document.program.is_some(),
+            "a std import is followed, so the document is a program"
+        );
+        assert!(
+            errors(&document).is_empty(),
+            "{:#?}",
+            document.module().diagnostics
+        );
+    }
+
+    /// A document with no file follows its std imports and never a user
+    /// import: `import std.prelude` brings `GPa` in, and `import parts` is
+    /// not resolved, so neither draws an Error.
+    #[test]
+    fn an_untitled_document_follows_only_its_std_imports() {
+        let uri = Url::parse("untitled:Untitled-1").expect("uri");
+        let source = format!("import std.prelude\nimport parts\n{GPA_BODY}");
+        let parsed = parse("untitled", &source);
+
+        let document = compile_document(&parsed, &source, &uri, &CfgSet::host_default());
+
+        assert!(
+            errors(&document).is_empty(),
+            "{:#?}",
+            document.module().diagnostics
+        );
     }
 
     /// The evaluation module holds an imported template the entry does not;

@@ -638,10 +638,67 @@ pub enum DiagnosticCode {
     /// Two labels: the local declaration (primary) and the prelude sentinel
     /// span (`"defined in std module '<std module>'"`).
     ///
-    /// Severity is `Warning` in the N0 interim; stdlib-namespace κ #5503
-    /// escalates it to `Error` (PRD `docs/prds/v0_6/stdlib-namespace.md` D-2).
+    /// Severity is `Error` when the shadowed std module is one the module
+    /// chose (a declared import, or one such an import re-exports) and the
+    /// module is a user module: D-2 stage 2, landed by stdlib-namespace κ
+    /// #5503 (PRD `docs/prds/v0_6/stdlib-namespace.md` D-2). It is `Warning`
+    /// under the ambient whole-stdlib compile, where no std name was chosen.
     /// The PRD-prose mnemonic for this code is `W_STDLIB_NAME_SHADOWED`.
     StdlibNameShadowed,
+    /// Origin: `crates/reify-compiler/src/import_headers/fixit.rs`
+    /// (`std_import_fixits`), attached to every user module a strict program
+    /// compile compiles (stdlib-namespace NS-V2, PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` §3.2).
+    /// Emitted once per written name that only std modules define when none of
+    /// those modules is visible: the module neither imports one of them nor
+    /// imports a module that re-exports one through `pub import`.
+    ///
+    /// Canonical message form, for one defining module:
+    /// `"'<name>' is defined in <module>, which this module does not import; add `import <module>`[ or `import std.prelude`]"`;
+    /// for several: `"'<name>' is defined in <m1>, … and <mN>, none of which this module imports; add `import <m1>`, … or `import <mN>`"`.
+    /// Either ends with `"; a #cfg-gated import that would make it visible is not in effect under the active cfg"`
+    /// when the module declares such an import.
+    ///
+    /// One label: the name's first written occurrence (primary).
+    ///
+    /// `candidates` lists the import paths as independent pick-one
+    /// alternatives, each of which makes the name visible: the defining std
+    /// module(s) first, in path order, then `std.prelude` last, present only
+    /// when the facade's re-export closure holds one of them. This is the
+    /// payload an LSP auto-import action reads (PRD §9).
+    ///
+    /// Severity is `Error`. The PRD-prose mnemonic for this code is
+    /// `E_STD_NAME_NOT_IMPORTED`.
+    StdNameNotImported,
+    /// Origin: `crates/reify-compiler/src/module_dag.rs`
+    /// (`unknown_std_module_diag`), raised when a strict program compile
+    /// follows a `std.*` import the embedded stdlib has no module for
+    /// (stdlib-namespace κ #5503). It surfaces on the program entry like any
+    /// other failed import.
+    ///
+    /// Canonical message form:
+    /// `"unknown std module '<path>': the standard library has no module at that path"`.
+    /// Embedded-only resolution reads no file, so the message names no
+    /// filesystem path.
+    ///
+    /// No labels. Severity is `Error`. The PRD-prose mnemonic for this code is
+    /// `E_UNKNOWN_STD_MODULE`.
+    UnknownStdModule,
+    /// Origin: `crates/reify-compiler/src/module_dag.rs`
+    /// (`bare_std_import_diag`), raised when a module compile follows a bare
+    /// `import std` (stdlib-namespace §10 Q3, decided in κ #5503: explicit is
+    /// the point, and an alias of `std` to the facade would be a second
+    /// spelling of `std.prelude`). It surfaces on the program entry like any
+    /// other failed import; a cfg-gated-out `import std` never reaches it.
+    ///
+    /// Canonical message form:
+    /// `"bare `import std` is not allowed; write `import std.prelude` for the curated core, or import the `std.*` module that defines a name"`,
+    /// prefixed `"in imported module '<key>' (<path>): "` when an import unit
+    /// declares it.
+    ///
+    /// No labels. `candidates` is `["std.prelude"]`. Severity is `Error`. The
+    /// PRD-prose mnemonic for this code is `E_BARE_STD_IMPORT`.
+    BareStdImport,
     /// Origin: `crates/reify-compiler/src/name_env.rs` (`collision_warning`),
     /// raised by the compiler's prelude seeds of units
     /// (`compile_builder/units_phase.rs`) and pub type aliases

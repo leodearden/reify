@@ -5,6 +5,9 @@
 // AllAuto — all params are auto → all constrained → design_review PASSES.
 // HasDet  — one param has a concrete default (Determined) → constrained()=false
 //           → forall fails → design_review VIOLATES.
+
+import std.determinacy.purposes
+
 structure AllAuto {
     param x : Length = auto
     param y : Length = auto

@@ -64,6 +64,7 @@ mod port_path;
 pub mod prelude_context;
 pub mod program;
 pub mod program_scope;
+mod re_exports;
 pub(crate) mod recursion_guard;
 mod rejected_param_defaults;
 pub mod relation_signatures;
@@ -353,23 +354,31 @@ pub fn __registry_owns_for_test(name: &str) -> bool {
 ///
 /// For all other use cases prefer:
 ///
-/// * [`compile_with_stdlib`] — full standard library prelude (recommended
-///   default for user modules)
+/// * [`program::compile_program`], [`program::compile_single_file`] or
+///   [`program::compile_detached_entry`] — user code, compiled under strict
+///   visibility (NS-V1): each module sees the language builtins plus the pub
+///   surfaces of its declared imports, with NS-V2 fix-its for unimported std
+///   names
+/// * [`compile_with_stdlib`] — the ambient whole-stdlib compile, for tests and
+///   bulk smoke runs only
 /// * [`compile_with_prelude`] — caller-supplied prelude modules
 pub fn compile(parsed: &reify_ast::ParsedModule) -> CompiledModule {
     compile_with_prelude(parsed, &[])
 }
 
-/// Compile a parsed module with the full standard library prelude.
+/// Compile a parsed module ambiently, against the whole standard library.
 ///
-/// This is the recommended entry point for compiling user modules with full
-/// stdlib support. Delegates to [`compile_with_stdlib_checked`] with the
-/// default [`compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker`]
+/// Every stdlib module is in scope with no import declared, so this skips
+/// strict visibility (NS-V1) and the NS-V2 fix-its, and a user declaration
+/// shadowing a stdlib name stays a Warning rather than the D-2 Error. It is
+/// kept for tests, the examples bulk smoke run and assistive surfaces. User
+/// code compiles strictly through [`program::compile_program`],
+/// [`program::compile_single_file`] or [`program::compile_detached_entry`].
+///
+/// Delegates to [`compile_with_stdlib_checked`] with the default
+/// [`compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker`]
 /// stub, which returns `Satisfaction::Indeterminate` for every constraint.
-///
-/// For callers that need to inject a real `ConstraintChecker` (e.g. CLI/GUI
-/// entry points that hold a `SimpleConstraintChecker`), use
-/// [`compile_with_stdlib_checked`] instead.
+/// Use [`compile_with_stdlib_checked`] to inject a real `ConstraintChecker`.
 pub fn compile_with_stdlib(parsed: &reify_ast::ParsedModule) -> CompiledModule {
     compile_with_stdlib_checked(
         parsed,
@@ -379,7 +388,9 @@ pub fn compile_with_stdlib(parsed: &reify_ast::ParsedModule) -> CompiledModule {
 
 /// Like [`compile_with_stdlib`] but allows injecting a custom
 /// [`ConstraintChecker`] for compile-time `auto:` candidate feasibility
-/// filtering.
+/// filtering. The same ambient regime applies: no strict visibility, and
+/// stdlib shadowing stays a Warning, so it is not an entry point for user
+/// code.
 ///
 /// The standard library prelude is loaded once (via
 /// [`stdlib_loader::load_stdlib_context`]) and reused across calls.
@@ -388,27 +399,6 @@ pub fn compile_with_stdlib_checked(
     checker: &dyn ConstraintChecker,
 ) -> CompiledModule {
     compile_with_prelude_context_checked(parsed, stdlib_loader::load_stdlib_context(), checker)
-}
-
-/// Compile a user module against the full stdlib plus its direct user imports.
-///
-/// The single home of "user module against stdlib + direct imports", shared by
-/// the program entry and its import units. An import-free module compiles
-/// against the cached stdlib context itself, exactly the call
-/// [`compile_with_stdlib_checked`] makes; a module with imports compiles
-/// against a context [`PreludeContext::extended`] from it, so the stdlib is
-/// never re-loaded per unit.
-pub(crate) fn compile_with_stdlib_and_imports_checked(
-    parsed: &reify_ast::ParsedModule,
-    user_imports: &[&CompiledModule],
-    checker: &dyn ConstraintChecker,
-) -> CompiledModule {
-    let stdlib: &PreludeContext<'_> = stdlib_loader::load_stdlib_context();
-    if user_imports.is_empty() {
-        compile_with_prelude_context_checked(parsed, stdlib, checker)
-    } else {
-        compile_with_prelude_context_checked(parsed, &stdlib.extended(user_imports), checker)
-    }
 }
 
 /// Parse a source string with the stdlib's prelude enum names pre-seeded
@@ -450,6 +440,12 @@ pub fn parse_with_stdlib(
 /// the default [`compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker`]
 /// stub. External callers that need to inject a real checker use
 /// [`compile_with_prelude_checked`].
+///
+/// `prelude` counts as the module's declared imports, whatever it holds, the
+/// whole [`stdlib_loader::load_stdlib`] included: a user module shadowing one
+/// of its std modules' names gets the D-2 Error
+/// ([`DiagnosticCode::StdlibNameShadowed`]). The ambient whole-stdlib compile,
+/// where that is a Warning, is [`compile_with_stdlib`].
 ///
 /// **Performance note:** this wrapper allocates a `Vec<&CompiledModule>` on
 /// every call. For the typical call site with a small prelude this is
@@ -863,13 +859,14 @@ pub fn compile_with_prelude_context_checked_with_config(
     // D-2: report every local definition that shadows a same-kind stdlib one.
     // Runs once, after every kind is compiled and before the prelude's
     // purposes are merged in; diagnostics only, so the hash is unaffected.
-    let stdlib_shadow_warnings = compile_builder::stdlib_shadow_lint::lint(
+    let stdlib_shadowings = compile_builder::stdlib_shadow_lint::lint(
         parsed,
         &compile_ctx,
         &compiled_purposes,
         prelude_refs,
+        ctx.stdlib_scope(),
     );
-    compile_ctx.diagnostics.extend(stdlib_shadow_warnings);
+    compile_ctx.diagnostics.extend(stdlib_shadowings);
     // Merge is_pub prelude purposes (e.g. simulation_ready/design_review from
     // std.determinacy.purposes) into the user module's compiled_purposes.
     // Empty-safe: when #no_prelude is active, prelude_refs is &[] and the

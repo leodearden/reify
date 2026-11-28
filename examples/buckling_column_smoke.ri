@@ -27,6 +27,12 @@
 //
 // See fea_cantilever_smoke.ri for the full rationale on each coercion.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.buckling
+import std.solver.elastic
+
 structure BucklingColumnSmoke {
     // Geometry: 800 mm tall column, 20×20 mm cross-section.
     param length : Length = 800mm

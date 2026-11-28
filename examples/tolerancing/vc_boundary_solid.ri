@@ -27,6 +27,8 @@
 // OCCT-independent: vc/rc are pure Length arithmetic; zone_cylinder produces a
 // Geometry cell that `reify eval` prints by cell name.
 
+import std.tolerancing
+
 structure def VcBoundaryExample {
     // ── Dimensional tolerance for the pin/bolt (external FOS) ───────────────
     // symmetric_tolerance(10mm, 0.05mm): upper=10.05mm, lower=9.95mm

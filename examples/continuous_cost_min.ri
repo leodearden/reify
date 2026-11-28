@@ -1,5 +1,7 @@
 module continuous_cost_min
 
+import std.units
+
 // PRD v0_6 continuous-cost-minimisation §8.2 headline: Money-objective robustness
 // floor wired end-to-end.  Task β (#4790) integration-gate example.
 //

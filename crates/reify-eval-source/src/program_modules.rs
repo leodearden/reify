@@ -9,7 +9,7 @@ use std::path::Path;
 
 use reify_ast::ParsedModule;
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::program::{self, CompiledProgram};
+use reify_compiler::program::{self, CompiledImportUnit, CompiledProgram};
 use reify_compiler::{CompiledModule, parse_with_stdlib};
 use reify_core::{Diagnostic, ModuleName, ModulePath};
 use reify_ir::{
@@ -31,8 +31,9 @@ struct UserModule {
     name: Option<ModuleName>,
     parsed: ParsedModule,
     compiled: CompiledModule,
-    /// The user modules its compile bound names against, in that order.
-    imports: Vec<CompiledModule>,
+    /// The modules its compile bound names against, in that order: its
+    /// import tier, std modules included.
+    imports: Vec<CompiledImportUnit>,
 }
 
 impl UserModule {
@@ -41,16 +42,19 @@ impl UserModule {
         parsed: ParsedModule,
         mut program: CompiledProgram,
     ) -> Self {
-        let imports = std::mem::take(&mut program.imports)
-            .into_iter()
-            .map(|unit| unit.module)
-            .collect();
         Self {
             name,
             parsed,
+            imports: std::mem::take(&mut program.imports),
             compiled: program.into_entry(),
-            imports,
         }
+    }
+
+    /// Whether its compile compiled the module it imports as `import_path`.
+    fn compiled_import(&self, import_path: &str) -> bool {
+        self.imports
+            .iter()
+            .any(|unit| unit.import_path == import_path)
     }
 }
 
@@ -79,11 +83,6 @@ impl ProgramModules {
             &cfg,
             &IndeterminateChecker,
         );
-        let compiled_keys: Vec<String> = entry_program
-            .sources
-            .iter()
-            .map(|source| source.module_key.clone())
-            .collect();
         let entry_key = entry_program.entry().path.to_dotted();
         let imported_sources: Vec<_> = entry_program
             .sources
@@ -112,7 +111,7 @@ impl ProgramModules {
 
         for module in &modules {
             for import in program::followed_imports(&module.parsed, &cfg) {
-                if !compiled_keys.contains(&import.path) {
+                if !module.compiled_import(&import.path) {
                     return Err(SourceRefusal::ImportNotCompiled {
                         module: module.parsed.path.clone(),
                         import: ModulePath::from_dotted(&import.path).unwrap_or_else(|e| {
@@ -150,7 +149,10 @@ impl ProgramModules {
             .modules
             .iter()
             .map(|module| {
-                let tier = stdlib.iter().chain(&module.imports).collect();
+                let tier = stdlib
+                    .iter()
+                    .chain(module.imports.iter().map(|unit| &unit.module))
+                    .collect();
                 ModuleContext::new(module.name.clone(), &module.parsed, &module.compiled, tier)
             })
             .collect();

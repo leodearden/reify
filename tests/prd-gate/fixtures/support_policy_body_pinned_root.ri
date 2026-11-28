@@ -1,5 +1,10 @@
 module support_policy_body_pinned_root
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // support-realization-policy (docs/prds/v0_6/support-realization-policy.md) evidence fixture, leaf β.
 // Body overload of solve_elastic_static with a PinnedSupport on the root. A pin is a hinge (ruling
 // R3); a hinge is not realizable on a realized face whose tangent frame the solver does not know,

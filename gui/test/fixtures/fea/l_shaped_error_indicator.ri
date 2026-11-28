@@ -32,6 +32,11 @@
 // Scenario driving this fixture (scenarios.ts): l_shaped_error_indicator
 //   — selects the errorIndicator channel via the set_fea_channel debug tool.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure LShapedErrorIndicator {
     // Geometry: 200 mm × 200 mm footprint, 40 mm thick — an L-bracket scale.
     param length : Length = 200mm

@@ -1,5 +1,8 @@
 module whole_model_cost_min
 
+import std.io
+import std.units
+
 // Example: WHOLE-MODEL COST MINIMISATION — a parent's single cost objective
 // jointly drives TWO coupled children's auto dimensions in one merged solve,
 // instead of each child freezing bottom-up first and the parent merely

@@ -15,6 +15,8 @@
 
 // ── Input fields ──────────────────────────────────────────────────────────────
 
+import std.fields
+
 // f_double(x) = 2.0 * x  (Real → Real)
 field def f_double : Real -> Real { source = analytical { |x| 2.0 * x } }
 

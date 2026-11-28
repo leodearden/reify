@@ -13,6 +13,9 @@
 //   conductivity 0.5W/(m*K)     → 0.5       kg·m·s⁻³·K⁻¹ (THERMAL_CONDUCTIVITY)
 //   stress_sq    (5mm^2)/(1mm^2)→ 25.0      dimensionless (value-level ^)
 
+import std.si_units
+import std.units
+
 structure def UnitExpressions {
     param density      : Density             = 7850kg/m^3
     param gravity      : Acceleration        = 9.81m/s^2

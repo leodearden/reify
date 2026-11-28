@@ -1,6 +1,12 @@
-//! D-2, N0 interim (stdlib-namespace §3.1 NS-P2): a module's own definition
-//! that shadows a same-kind std definition draws ONE
-//! [`DiagnosticCode::StdlibNameShadowed`] Warning, at the local declaration.
+//! D-2 (stdlib-namespace §3.1 NS-P2): a module's own definition that shadows
+//! a same-kind std definition draws ONE [`DiagnosticCode::StdlibNameShadowed`],
+//! at the local declaration.
+//!
+//! It is an Error when the shadowed std module is in scope because the module
+//! chose it ([`StdlibScope::Declared`]) and the module is a user module (D-2
+//! stage 2, κ #5503). It stays a Warning under the ambient whole-stdlib
+//! compile ([`StdlibScope::Ambient`]), where no std name was chosen, and for a
+//! std module, whose std-vs-std collisions the stdlib build checks (NS-P2).
 //!
 //! [`name_env`] decides who wins; this pass only reports local wins over the
 //! stdlib tier. Definitions with no source declaration (monomorphs, registered
@@ -11,11 +17,12 @@
 use std::collections::HashSet;
 
 use reify_ast::{Declaration, FnDef, ParsedModule};
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, Severity, SourceSpan};
 use reify_ir::{CompiledFunction, EnumDef};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::name_env::{self, Definition, Origin, Tier};
+use crate::prelude_context::StdlibScope;
 use crate::type_resolution::TypeAliasEntry;
 use crate::types::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
@@ -24,45 +31,56 @@ use crate::types::{
 
 /// Every stdlib shadowing in the module, ordered by declaration position.
 /// `local_purposes` are the module's own purposes, before the prelude's are
-/// merged in.
+/// merged in; `stdlib_scope` is how the prelude's std modules came into scope.
 pub(crate) fn lint(
     parsed: &ParsedModule,
     ctx: &CompilationCtx,
     local_purposes: &[CompiledPurpose],
     prelude: &[&CompiledModule],
+    stdlib_scope: StdlibScope,
 ) -> Vec<Diagnostic> {
+    let severity = severity(&parsed.path, stdlib_scope);
     let local_aliases: Vec<CompiledTypeAlias> = ctx
         .alias_registry
         .iter()
         .cloned()
         .map(TypeAliasEntry::into_compiled)
         .collect();
-    let mut warnings = [
-        report(parsed, &ctx.templates, prelude),
-        report(parsed, &ctx.enum_defs, prelude),
-        report(parsed, &ctx.trait_defs, prelude),
-        report(parsed, &ctx.functions, prelude),
-        report(parsed, &local_aliases, prelude),
-        report(parsed, &ctx.constraint_defs, prelude),
-        report(parsed, local_purposes, prelude),
+    let mut shadowings = [
+        report(parsed, &ctx.templates, prelude, severity),
+        report(parsed, &ctx.enum_defs, prelude, severity),
+        report(parsed, &ctx.trait_defs, prelude, severity),
+        report(parsed, &ctx.functions, prelude, severity),
+        report(parsed, &local_aliases, prelude, severity),
+        report(parsed, &ctx.constraint_defs, prelude, severity),
+        report(parsed, local_purposes, prelude, severity),
     ]
     .concat();
-    warnings.sort_by_key(|warning| warning.labels.first().map(|label| label.span.start));
-    warnings
+    shadowings.sort_by_key(|shadowing| shadowing.labels.first().map(|label| label.span.start));
+    shadowings
 }
 
-/// One Warning per key whose local winner shadows a std-tier definition.
+/// Error iff the module chose its std modules and is not itself one.
+fn severity(module: &ModulePath, stdlib_scope: StdlibScope) -> Severity {
+    match stdlib_scope {
+        StdlibScope::Declared if name_env::module_tier(module) != Tier::Stdlib => Severity::Error,
+        StdlibScope::Declared | StdlibScope::Ambient => Severity::Warning,
+    }
+}
+
+/// One diagnostic per key whose local winner shadows a std-tier definition.
 fn report<'a, D: Reportable>(
     parsed: &ParsedModule,
     local: &'a [D],
     prelude: &[&'a CompiledModule],
+    severity: Severity,
 ) -> Vec<Diagnostic> {
     if local.is_empty() {
         return Vec::new();
     }
     let bindings = name_env::bind(local, prelude.iter().copied());
     let mut reported = HashSet::new();
-    let mut warnings = Vec::new();
+    let mut diagnostics = Vec::new();
     for shadowing in bindings.shadowings() {
         if shadowing.winner.origin != Origin::Local
             || shadowing.shadowed.origin.tier() != Tier::Stdlib
@@ -76,40 +94,45 @@ fn report<'a, D: Reportable>(
             continue;
         };
         if reported.insert(shadowing.key.clone()) {
-            warnings.push(warning(
+            diagnostics.push(diagnostic(
                 &parsed.path,
                 shadowing.winner.definition,
                 std_module,
                 declaration,
+                severity,
             ));
         }
     }
-    warnings
+    diagnostics
 }
 
-fn warning<D: Reportable>(
+fn diagnostic<D: Reportable>(
     local_module: &ModulePath,
     definition: &D,
     std_module: &ModulePath,
     declaration: SourceSpan,
+    severity: Severity,
 ) -> Diagnostic {
     let name = definition.name();
     let std_module = std_module.0.join(".");
-    Diagnostic::warning(format!(
+    let message = format!(
         "{kind} '{name}' in module '{local}' shadows '{name}' from std module '{std_module}'; \
          the local definition wins",
         kind = definition.kind_word(),
         local = local_module.0.join("."),
-    ))
-    .with_code(DiagnosticCode::StdlibNameShadowed)
-    .with_label(DiagnosticLabel::new(
-        declaration,
-        "shadows a stdlib definition",
-    ))
-    .with_label(DiagnosticLabel::new(
-        SourceSpan::prelude(),
-        format!("defined in std module '{std_module}'"),
-    ))
+    );
+    let mut diagnostic = Diagnostic::warning(message)
+        .with_code(DiagnosticCode::StdlibNameShadowed)
+        .with_label(DiagnosticLabel::new(
+            declaration,
+            "shadows a stdlib definition",
+        ))
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::prelude(),
+            format!("defined in std module '{std_module}'"),
+        ));
+    diagnostic.severity = severity;
+    diagnostic
 }
 
 /// Where one kind of definition was written.

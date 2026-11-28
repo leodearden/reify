@@ -1,3 +1,5 @@
+import std.materials.fea
+
 // Double-parallelogram-stage PRB flexure worked example
 //
 // Demonstrates the pseudo-rigid-body double-parallelogram compound-flexure

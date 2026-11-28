@@ -1,5 +1,7 @@
 module dcr_yield_stress_dimension_silent
 
+import std.materials.fea
+
 // D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
 // leaf β, boundary row B5 — AMENDED at decompose.
 //

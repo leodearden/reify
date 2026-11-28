@@ -1,5 +1,9 @@
 module appearance_viewport_egress
 
+import std.io
+import std.materials.appearance
+import std.materials.fea
+
 // appearance_viewport_egress.ri — §8 appearance-egress integration gate (PRD-2 ε, #4775).
 //
 // Commits the three §8 appearance-contract scenarios end-to-end:

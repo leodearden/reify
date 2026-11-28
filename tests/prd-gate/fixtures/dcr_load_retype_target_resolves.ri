@@ -1,5 +1,8 @@
 module dcr_load_retype_target_resolves
 
+import std.si_units
+import std.units
+
 // D3 decompose-phase GRAMMAR/RESOLUTION probe for PRD
 // `docs/prds/v0_6/dimension-checked-readers.md` leaf γ2.
 //

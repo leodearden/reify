@@ -1,3 +1,8 @@
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 // Task 5194 fixture — a minimal `: Rigid` body whose mass-property cells
 // (mass / centroid / moment_of_inertia / moi_principal) are auto-derived from
 // `geometry` + `material.density` by the stdlib `Rigid : Physical` traits

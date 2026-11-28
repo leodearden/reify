@@ -1,5 +1,10 @@
 module surface_finish_cost
 
+import std.materials.appearance
+import std.si_units
+import std.surface_finish
+import std.units
+
 // Surface-finish cost + coating mass roll-up example (task γ, #4890).
 //
 // Demonstrates two cost-rollup paths from docs/prds/v0_6/surface-finish-functional.md:

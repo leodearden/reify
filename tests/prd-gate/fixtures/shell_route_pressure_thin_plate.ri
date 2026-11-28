@@ -1,5 +1,10 @@
 module shell_route_pressure_thin_plate
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // PRD docs/prds/v0_6/elastic-modal-trampoline-factoring.md leaf μ (BT4). A
 // shell-classified dims plate (50 x 10 x 1 mm, aspect 0.02 < shell_threshold 0.2,
 // ShellForce Auto). At main 1b06f93151 the shell route ignores the PressureLoad silently: max_vm equals the tip-load-only solve (2.143e9 Pa) and no diagnostic names it. After μ: tet route plus FeaShellRouteInputFallback naming PressureLoad.

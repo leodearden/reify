@@ -2,6 +2,8 @@
 // Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
 module s6_idyn_coupling
 
+import std.dynamics
+
 // Probe: an open chain with a coupling body through trajectory inverse dynamics.
 structure def CouplingIdyn {
     let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]])

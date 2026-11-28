@@ -1,5 +1,7 @@
 module getar_recursive_conflict_silent
 
+import std.si_units
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf δ RED
 // before-image: the recursive type-arg conflict that
 // generic-data-carrying-enums.md §7.3 / esc-4031-50 recorded as INFEASIBLE

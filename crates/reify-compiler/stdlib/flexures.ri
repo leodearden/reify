@@ -17,7 +17,7 @@
 //
 // Dependencies, imported below: `std.kinematic` (task #5476 — `structure def
 // FlexureJoint : DrivingJoint` names its `DrivingJoint` trait) and the units
-// (Pa, N, m, etc.) of `std.units` and `std.si_units`. Nothing from the
+// (Pa, N, etc.) of `std.si_units`. Nothing from the
 // materials / structural / solver modules.
 //
 // Joint parameter typing (placeholder ERADICATED — task #5476,
@@ -49,7 +49,6 @@ module std.flexures
 
 import std.kinematic
 import std.si_units
-import std.units
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 

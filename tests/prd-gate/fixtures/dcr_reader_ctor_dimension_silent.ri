@@ -1,5 +1,12 @@
 module dcr_reader_ctor_dimension_silent
 
+import std.dynamics
+import std.fdm.as_printed
+import std.fdm.correlations
+import std.si_units
+import std.trajectory
+import std.units
+
 // D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
 // leaves ε (dynamics `cell_f64`), ζ (trajectory `read_scalar_si`/`field_f64`)
 // and η (FDM / as-printed readers).

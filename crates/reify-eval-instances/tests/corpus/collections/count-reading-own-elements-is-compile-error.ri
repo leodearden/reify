@@ -1,3 +1,5 @@
+import std.si_units
+
 structure def Bolt { param rated_load : Force = 10kN }
 structure def Rack {
     param load : Force = 35kN

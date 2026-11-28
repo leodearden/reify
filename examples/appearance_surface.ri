@@ -1,5 +1,7 @@
 module appearance_surface
 
+import std.materials.appearance
+
 // Appearance-substrate usage example (task α, #4760).
 //
 // Uses Color / Finish / Appearance / Visual from the stdlib prelude

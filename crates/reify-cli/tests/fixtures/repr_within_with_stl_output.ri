@@ -45,6 +45,8 @@
 // the refusal fires before any measurement, so this fixture must not import the
 // 5–20 s OCCT tessellation cost that the PRD §6 gate-cost rule warns about.
 
+import std.io
+
 structure def D {
     let part = box(10mm, 20mm, 5mm)
 

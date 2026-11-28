@@ -46,6 +46,21 @@ use crate::compile_builder::enums_phase::bind_prelude_enum_defs;
 use crate::name_env;
 use crate::types::CompiledTypeAlias;
 
+/// How the std modules a [`PreludeContext`] holds came into scope for the
+/// module compiled against it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum StdlibScope {
+    /// A caller-supplied prelude, taken as the module's declared imports and
+    /// the modules they re-export. Every context built by
+    /// [`PreludeContext::new`] or [`PreludeContext::from_slice`] is this
+    /// scope, whatever slice it is given: neither can tell a whole-stdlib
+    /// slice from a declared import tier.
+    Declared,
+    /// The whole stdlib, seeded with no import: the cached context of the
+    /// ambient compile `compile_with_stdlib` uses. No std name was chosen.
+    Ambient,
+}
+
 /// An immutable, pre-built cache of prelude module data.
 ///
 /// Binds the prelude's own `resolution_enums` (the parser's enum-name seed) and
@@ -54,22 +69,19 @@ use crate::types::CompiledTypeAlias;
 /// # Typical usage
 ///
 /// ```ignore
-/// // Build once (e.g. at process start or the first time a prelude is needed):
-/// let ctx = PreludeContext::from_slice(stdlib_loader::load_stdlib());
+/// // Build once from the import tier the user modules share:
+/// let ctx = PreludeContext::new(&import_tier);
 ///
 /// // Reuse for every subsequent user-module compilation:
 /// for parsed in user_modules {
 ///     let compiled = compile_with_prelude_context(parsed, &ctx);
 /// }
 /// ```
-///
-/// [`extended`](Self::extended) derives a context from an existing one (e.g.
-/// the cached stdlib context plus a unit's direct imports) by re-binding its
-/// modules followed by the extra ones, without re-loading or re-compiling the
-/// base modules.
 pub struct PreludeContext<'a> {
     /// Borrowed references to the prelude modules.
     modules: Vec<&'a CompiledModule>,
+    /// How this context's std modules came into scope.
+    stdlib_scope: StdlibScope,
     /// The prelude's own NS-P1 enum bindings, in precedence order.
     resolution_enums: Vec<EnumDef>,
     /// The prelude's own NS-P1 binding of pub type aliases, in precedence order.
@@ -84,6 +96,12 @@ impl<'a> PreludeContext<'a> {
     ///
     /// Computes `resolution_enums` once, via `bind_prelude_enum_defs`.
     ///
+    /// The prelude counts as the module's declared imports, so a user module
+    /// shadowing one of its std modules' names gets the D-2 Error. For the
+    /// whole stdlib with no import, use
+    /// [`load_stdlib_context`](crate::stdlib_loader::load_stdlib_context),
+    /// the ambient context, where that is a Warning.
+    ///
     /// Use [`from_slice`](Self::from_slice) when you own the `CompiledModule`
     /// values (e.g. `&'static [CompiledModule]` from `load_stdlib()`).
     pub fn new(prelude: &[&'a CompiledModule]) -> Self {
@@ -94,6 +112,7 @@ impl<'a> PreludeContext<'a> {
         let pub_aliases: Vec<CompiledTypeAlias> = alias_bindings.winners().cloned().collect();
         Self {
             modules: prelude.to_vec(),
+            stdlib_scope: StdlibScope::Declared,
             resolution_enums,
             pub_aliases,
             pub_alias_collision_warnings: alias_bindings
@@ -102,17 +121,6 @@ impl<'a> PreludeContext<'a> {
                 .map(|shadowing| name_env::collision_warning(shadowing, None))
                 .collect(),
         }
-    }
-
-    /// A new context whose modules are this context's followed by `extra`.
-    ///
-    /// One NS-P1 bind ([`crate::name_env`]) over the concatenation, so the
-    /// result is `PreludeContext::new(self.modules() ++ extra)`: a user-import
-    /// module in `extra` outranks a std module in the base. The base modules
-    /// are borrowed again, never re-loaded or re-compiled.
-    pub fn extended(&self, extra: &[&'a CompiledModule]) -> PreludeContext<'a> {
-        let modules: Vec<&'a CompiledModule> = self.modules.iter().chain(extra).copied().collect();
-        PreludeContext::new(&modules)
     }
 
     /// Ergonomic constructor from an owned slice of `CompiledModule` values.
@@ -126,9 +134,22 @@ impl<'a> PreludeContext<'a> {
         Self::new(&refs)
     }
 
+    /// This context with its std modules in scope as `stdlib_scope` says.
+    pub(crate) fn with_stdlib_scope(self, stdlib_scope: StdlibScope) -> Self {
+        Self {
+            stdlib_scope,
+            ..self
+        }
+    }
+
     /// The prelude module references this context was built from.
     pub fn modules(&self) -> &[&'a CompiledModule] {
         &self.modules
+    }
+
+    /// How this context's std modules came into scope.
+    pub(crate) fn stdlib_scope(&self) -> StdlibScope {
+        self.stdlib_scope
     }
 
     /// The enums the prelude binds on its own under NS-P1: one per name, user

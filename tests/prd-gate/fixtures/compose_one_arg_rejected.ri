@@ -9,6 +9,8 @@
 //
 // Expectation: `reify check` exits 1 (rejected).
 
+import std.fields
+
 structure def ComposeOneArgRejected {
     let bad = sample(compose(fn_field(|x| 2.0 * x)), 3.0)
 }

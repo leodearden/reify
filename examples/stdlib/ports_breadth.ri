@@ -23,6 +23,8 @@ import std.ports
 import std.ports.mechanical
 import std.ports.thermal
 import std.ports.fluid
+import std.si_units
+import std.units
 
 // ── (a) Signal: ThreadSpec derived-let eval numerics ─────────────────────────
 // ThreadAssembly.spec is an M6×1 ISO metric thread.

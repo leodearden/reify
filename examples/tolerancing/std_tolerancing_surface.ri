@@ -66,6 +66,9 @@
 // it is instantiated via `sub pos_mmc = PosMMCTol()` (user-module sub IS
 // resolvable) so the Conforms predicate can be exercised in check position.
 
+import std.si_units
+import std.tolerancing
+
 // ── Local tolerance type for the Conforms constraint ─────────────────────────
 // Declares a user-module GeometricTolerance implementation so that the
 // `sub pos_mmc = PosMMCTol()` + `constraint Conforms(tolerance: self.pos_mmc,...)`

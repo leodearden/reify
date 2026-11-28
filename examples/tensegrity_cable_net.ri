@@ -43,6 +43,8 @@
 //   every argument's value positionally regardless, but let-binding keeps the
 //   dependency tracking honest — same discipline as fea_cantilever_smoke.ri.)
 
+import std.tensegrity
+
 structure CableNet {
     // ── Network topology ────────────────────────────────────────────────────
     //

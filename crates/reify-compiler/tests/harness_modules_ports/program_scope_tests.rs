@@ -474,23 +474,51 @@ fn the_entry_holds_none_of_its_imports_templates() {
     );
 }
 
-/// `merge_prelude_purposes` copies std purposes into every module's
-/// `compiled_purposes` with prelude-sentinel spans; those copies are not
-/// part of any module's surface, so with no user purposes nothing collides.
+/// `merge_prelude_purposes` copies std purposes into every module that
+/// imports `std.determinacy.purposes`, into its `compiled_purposes` with
+/// prelude-sentinel spans; those copies are not part of any module's
+/// surface, so with no user purposes nothing collides.
+///
+/// Under strict stdlib visibility (stdlib-namespace κ #5503) the copies come
+/// only from a declared import, so this test has its own fixture in which
+/// the entry and both imports declare it. The entry's tier then carries the
+/// one std module that defines the purposes, so the program is bound over no
+/// ambient prelude, which would only duplicate that module.
 #[test]
 fn merged_prelude_purposes_are_not_part_of_a_modules_surface() {
-    let fx = Fixture::new();
-    let p = &fx.program;
+    let dir = tempfile::tempdir().unwrap();
+    let purposes = "import std.determinacy.purposes\n";
+    let body = "structure def S {\n    param x : Real = 1\n}\n";
+    for key in ["a", "b"] {
+        let source = format!("module {key}\n{purposes}{body}");
+        fs::write(dir.path().join(format!("{key}.ri")), source).unwrap();
+    }
+    let entry_path = dir.path().join("main.ri");
+    let main_source = format!("module main\nimport a\nimport b\n{purposes}{body}");
+    let p = &compile_program(
+        &entry_path,
+        &main_source,
+        &ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
+        &CfgSet::default(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    );
+    let unit = |key: &str| {
+        &p.imports
+            .iter()
+            .find(|unit| unit.import_path == key)
+            .unwrap_or_else(|| panic!("precondition: the program imports {key}"))
+            .module
+    };
     let merged = |m: &CompiledModule| {
         m.compiled_purposes
             .iter()
             .any(|purpose| purpose.declaration_span.is_prelude())
     };
     assert!(
-        merged(p.entry()) && merged(fx.a()) && merged(fx.b()),
+        merged(p.entry()) && merged(unit("a")) && merged(unit("b")),
         "precondition: std purposes are merged into the entry and each import"
     );
-    let bindings = bind_program::<CompiledPurpose>(p, prelude());
+    let bindings = bind_program::<CompiledPurpose>(p, &[]);
     assert!(
         bindings.shadowings().is_empty(),
         "no purpose collides: {:?}",

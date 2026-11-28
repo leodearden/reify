@@ -55,9 +55,9 @@ impl<'a> Origin<'a> {
     }
 }
 
-const STDLIB_ROOT_SEGMENT: &str = "std";
+pub(crate) const STDLIB_ROOT_SEGMENT: &str = "std";
 
-fn module_tier(path: &ModulePath) -> Tier {
+pub(crate) fn module_tier(path: &ModulePath) -> Tier {
     if path.0.first().is_some_and(|s| s == STDLIB_ROOT_SEGMENT) {
         Tier::Stdlib
     } else {

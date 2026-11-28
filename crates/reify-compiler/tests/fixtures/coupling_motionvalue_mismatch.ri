@@ -9,6 +9,8 @@
 // Coupling<Revolute>::MotionValue must reduce cleanly to Type::angle() before
 // the dimensional check fires.
 
+import std.kinematic
+
 structure def CouplingConsumerMismatch {
     param gap    : Length
     param motion : Coupling<Revolute>::MotionValue

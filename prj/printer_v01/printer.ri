@@ -1,5 +1,13 @@
 module printer
 
+import std.fea.multi_case
+import std.materials.appearance
+import std.materials.fea
+import std.modal.analysis
+import std.si_units
+import std.solver.elastic
+import std.units
+
 // printer_v01 — single-file integration.
 //
 // Multi-material CoreXY toolchanger build. See docs/projects/printer_v01.md

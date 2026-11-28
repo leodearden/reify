@@ -1,7 +1,13 @@
-//! D-2, N0 interim (stdlib-namespace §3.1 NS-P2): a user declaration that
-//! shadows a stdlib definition of the SAME kind binds locally and draws exactly
-//! one `StdlibNameShadowed` Warning, naming the kind, the name, the local
-//! module and the shadowed std module. Boundary #2's Warning half.
+//! D-2 (stdlib-namespace §3.1 NS-P2): a user declaration that shadows a
+//! stdlib definition of the SAME kind binds locally and draws exactly one
+//! `StdlibNameShadowed`, naming the kind, the name, the local module and the
+//! shadowed std module.
+//!
+//! Its severity follows how the std modules got into scope. Under the ambient
+//! whole-stdlib compile (`compile_with_stdlib`, where no std name was chosen)
+//! it is a Warning: the rows below. When the shadowed std module is a declared
+//! import it is an Error (D-2 stage 2, κ #5503); the program form of that half
+//! is in `strict_visibility_tests`.
 
 use std::fs;
 
@@ -157,7 +163,8 @@ fn row_failures(row: &ShadowRow) -> Vec<String> {
     };
     if warning.severity != Severity::Warning {
         failures.push(format!(
-            "{label} severity must be Warning, got {}",
+            "{label} under the ambient (non-declared) stdlib scope the severity must be \
+             Warning, got {}",
             warning.severity
         ));
     }
@@ -211,47 +218,103 @@ fn a_shadowed_name_warns_once_however_often_it_is_referenced() {
     );
 }
 
-// ─── Negative rows: no StdlibNameShadowed ───────────────────────────────────
-
-/// The only shadowing definition comes from a user import (the import tier):
-/// entry-vs-import and import-vs-import dispositions are resolution-unification
-/// D-6's, not this lint's. The import's own declaration does shadow the stdlib,
-/// and `compile_program` re-homes that Warning onto the entry attributed to the
-/// import; what must not appear is a shadowing raised by the entry itself.
+/// The ambient whole-stdlib scope keeps the Warning; the same source compiled
+/// against the shadowed std module as a declared import draws the Error.
 #[test]
-fn an_import_shadowing_the_stdlib_does_not_warn_in_the_entry() {
-    let entry =
-        "import a\n\nstructure def Main {\n    sub col = Color()\n    let read = col.zz\n}\n";
+fn the_ambient_scope_warns_where_a_declared_std_import_errors() {
+    let source = &rows()[0];
+    let parsed = parse(source.source);
+    let severity_of = |module: &CompiledModule| -> Vec<Severity> {
+        shadow_warnings(module).iter().map(|d| d.severity).collect()
+    };
+
+    let ambient = reify_compiler::compile_with_stdlib(&parsed);
+    assert_eq!(
+        severity_of(&ambient),
+        vec![Severity::Warning],
+        "the ambient (non-declared) stdlib scope: {:#?}",
+        ambient.diagnostics
+    );
+
+    let std_module = reify_compiler::stdlib_loader::load_stdlib()
+        .iter()
+        .find(|module| module.path.to_dotted() == source.std_module)
+        .expect("the shadowed std module")
+        .clone();
+    let declared = reify_compiler::compile_with_prelude(&parsed, &[std_module]);
+    assert_eq!(
+        severity_of(&declared),
+        vec![Severity::Error],
+        "the shadowed std module is a declared import: {:#?}",
+        declared.diagnostics
+    );
+}
+
+// ─── Through the strict program compile ────────────────────────────────────
+
+const ENTRY_USING_COLOR: &str = "module main\n\nimport a\n\nstructure def Main {\n    sub col = Color()\n    let read = col.zz\n}\n";
+
+const COLOR_BODY: &str = "pub structure def Color {\n    param zz : Real = 3.0\n}\n";
+
+/// `ENTRY_USING_COLOR` compiled as a program beside `a.ri` holding `a_source`.
+fn compile_beside_a(a_source: &str) -> reify_compiler::program::CompiledProgram {
     let tmp = tempfile::tempdir().expect("tempdir");
     let dir = tmp.path();
-    fs::write(dir.join("main.ri"), entry).expect("write main.ri");
-    fs::write(
-        dir.join("a.ri"),
-        "pub structure def Color {\n    param zz : Real = 3.0\n}\n",
-    )
-    .expect("write a.ri");
-    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    let program = compile_program(
+    fs::write(dir.join("a.ri"), a_source).expect("write a.ri");
+    compile_program(
         &dir.join("main.ri"),
-        entry,
-        &resolver,
+        ENTRY_USING_COLOR,
+        &ModuleResolver::new(dir, dir.join("stdlib")),
         &CfgSet::default(),
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
-    );
+    )
+}
+
+fn is_shadow(d: &&Diagnostic) -> bool {
+    d.code == Some(DiagnosticCode::StdlibNameShadowed)
+}
+
+/// Under strict visibility a unit that does not import the std module sees no
+/// std `Color`, so its own `Color` shadows nothing.
+#[test]
+fn an_import_defining_a_std_name_it_does_not_import_shadows_nothing() {
+    let program = compile_beside_a(&format!("module a\n\n{COLOR_BODY}"));
     assert_eq!(errors_of(program.entry()), Vec::<&str>::new());
-    let is_shadow = |d: &&Diagnostic| d.code == Some(DiagnosticCode::StdlibNameShadowed);
+    let shadows: Vec<&Diagnostic> = program
+        .entry()
+        .diagnostics
+        .iter()
+        .filter(is_shadow)
+        .collect();
+    assert!(shadows.is_empty(), "nothing is shadowed: {shadows:#?}");
+}
+
+/// A unit that imports the std module and shadows its `Color` draws the
+/// Error, re-homed onto the entry; the entry itself, whose `Color` is the
+/// import tier's, shadows nothing (entry-vs-import is resolution-unification
+/// D-6's, not this lint's).
+#[test]
+fn an_import_shadowing_a_std_name_it_imports_is_an_error_rehomed_onto_the_entry() {
+    let program = compile_beside_a(&format!(
+        "module a\n\nimport std.materials.appearance\n\n{COLOR_BODY}"
+    ));
     let local: Vec<&Diagnostic> = program.entry_own_diagnostics().filter(is_shadow).collect();
     assert!(
         local.is_empty(),
-        "an import-tier winner is not a local shadowing: {local:?}"
+        "an import-tier winner is not a local shadowing: {local:#?}"
     );
     let rehomed: Vec<&Diagnostic> = program.rehomed_from("a").filter(is_shadow).collect();
-    assert!(
-        rehomed.iter().any(|d| d.message.contains("Color")),
-        "a.ri's own shadowing of Color is re-homed onto the entry, got {:?}",
-        program.entry().diagnostics
-    );
+    let [shadow] = rehomed.as_slice() else {
+        panic!(
+            "a.ri's shadowing of Color is re-homed onto the entry once, got {:#?}",
+            program.entry().diagnostics
+        );
+    };
+    assert_eq!(shadow.severity, Severity::Error, "{shadow:#?}");
+    assert!(shadow.message.contains("Color"), "{}", shadow.message);
 }
+
+// ─── Negative rows: no StdlibNameShadowed ───────────────────────────────────
 
 #[test]
 fn a_no_prelude_module_does_not_warn() {

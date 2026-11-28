@@ -32,6 +32,11 @@
 
 // ── Port traits ───────────────────────────────────────────────────────────────
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 trait MechanicalFace {
     param force_capacity : Real
     param area           : Real

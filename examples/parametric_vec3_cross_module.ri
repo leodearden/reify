@@ -13,6 +13,9 @@
 // does NOT declare Vec3 itself (single-file user-module def is the out-of-scope
 // path; general user→user alias import is the deferred bookmark).
 
+import std.si_units
+import std.trajectory
+
 structure def TractionVector {
     /// Surface traction force per unit area: Vec3<Pressure> resolves to
     /// Vector3<Pressure> via the stdlib prelude alias

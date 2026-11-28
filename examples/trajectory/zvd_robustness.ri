@@ -1,3 +1,6 @@
+import std.si_units
+import std.trajectory
+
 // ZVD-shaped ramp robustness example  (task ζ — 3867)
 //
 // Demonstrates ZVDShaper + input_shape(profile, shaper) construction

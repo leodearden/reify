@@ -17,6 +17,10 @@
 //   row 11    (ε): dimensioned-literal density accepted end-to-end (no ArgTypeMismatch)
 //   row 11    (η): compatible same-type conformer override of tensor-defaulted trait param
 
+import std.materials.mechanical
+import std.si_units
+import std.units
+
 // ── §10 row 11 (η): trait with a tensor-typed defaulted member ───────────────
 //
 // A conformer that redeclares `moi` with the SAME `Tensor<2,3,MomentOfInertia>`

@@ -1,5 +1,7 @@
 module getar_let_annotated_result_arg_mismatch_silent
 
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — §10 OUT OF SCOPE
 // evidence (let-annotation form of S-2). MEASURED 2026-09-29, both binaries:
 //   check EXIT 0, "All constraints satisfied."; eval `W.a = Result::Ok`,

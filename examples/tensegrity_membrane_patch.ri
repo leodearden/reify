@@ -36,6 +36,10 @@
 //   triangle 0: [0, 1, 2]  — bottom-left → bottom-right → top-right
 //   triangle 1: [0, 2, 3]  — bottom-left → top-right    → top-left
 
+import std.materials.fea
+import std.si_units
+import std.tensegrity
+
 structure def MembranePatch {
     // ── Topology ─────────────────────────────────────────────────────────────
     //

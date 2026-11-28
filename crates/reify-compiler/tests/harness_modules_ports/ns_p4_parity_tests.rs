@@ -28,7 +28,10 @@ enum Setup {
     SingleFileWithStdlib,
     /// A tempdir project: `main.ri` plus `(module name, source)` siblings,
     /// compiled through `program::compile_program_with_parsed_entry` (prelude
-    /// = stdlib ++ followed imports); production `Engine`. The entry is parsed
+    /// = builtins ++ followed imports, `std.*` ones included, a user import
+    /// outranking a std one whatever their order: stdlib-namespace κ #5503);
+    /// production `Engine`. A "beats the stdlib" row imports the std module
+    /// FIRST, so only the tiered rule lets `a` win. The entry is parsed
     /// by plain `parse_with_stdlib`, as `reify check` parses it: an imported
     /// enum's `E.V` resolves in the compile phase (resolution-unification D-9).
     Project(&'static [(&'static str, &'static str)]),
@@ -97,7 +100,7 @@ fn rows() -> Vec<ParityRow> {
                 "a",
                 "pub structure def Color {\n    param zz : Real = 3.0\n}\n",
             )]),
-            entry: "import a\n\nstructure def Main {\n    sub col = Color()\n    let read = col.PROBE\n}\n",
+            entry: "import std.materials.appearance\nimport a\n\nstructure def Main {\n    sub col = Color()\n    let read = col.PROBE\n}\n",
             winner_probe: "zz",
             winner_value: || Value::Real(3.0),
             loser_probe: "r",
@@ -147,7 +150,7 @@ fn rows() -> Vec<ParityRow> {
         ParityRow {
             name: "(g) enum, import tier beats the stdlib",
             setup: Setup::Project(&[("a", "pub enum SignalKind { Foo }\n")]),
-            entry: "import a\n\nstructure def Main {\n    let read = SignalKind.PROBE\n}\n",
+            entry: "import std.ports.electrical\nimport a\n\nstructure def Main {\n    let read = SignalKind.PROBE\n}\n",
             winner_probe: "Foo",
             winner_value: || enum_value("SignalKind", "Foo"),
             loser_probe: "Analog",
@@ -366,7 +369,7 @@ fn local_enum_variants_resolve_despite_a_same_named_stdlib_enum() {
 // ─── NS-P3: the remaining kinds, compile side ──────────────────────────────
 
 /// A compile-side-only row for a kind the evaluator never looks up by name.
-/// Always a project (prelude = stdlib ++ imports); `PROBE` as in [`ParityRow`].
+/// Always a project, as [`Setup::Project`]; `PROBE` as in [`ParityRow`].
 struct KindRow {
     name: &'static str,
     imports: &'static [(&'static str, &'static str)],
@@ -395,7 +398,7 @@ fn kind_rows() -> Vec<KindRow> {
             // type resolution consults BEFORE any alias.)
             name: "type alias, import tier beats the stdlib",
             imports: &[("a", "pub type ArealCostRate = Length\n")],
-            entry: "import a\n\nstructure def Main {\n    param v : ArealCostRate = PROBE\n}\n",
+            entry: "import std.surface_finish\nimport a\n\nstructure def Main {\n    param v : ArealCostRate = PROBE\n}\n",
             winner_probe: "3mm",
             loser_probe: "2USD/m^2",
             loser_error: "declared `Scalar[m]`",
@@ -408,7 +411,7 @@ fn kind_rows() -> Vec<KindRow> {
                 "a",
                 "pub fn ramp_profile(joint: Real, from: Real, to: Real, max_accel: Real) -> Real { joint }\n",
             )],
-            entry: "import a\n\nstructure def Main {\n    param x : PROBE = ramp_profile(1.0, 2.0, 3.0, 4.0)\n}\n",
+            entry: "import std.dynamics\nimport a\n\nstructure def Main {\n    param x : PROBE = ramp_profile(1.0, 2.0, 3.0, 4.0)\n}\n",
             winner_probe: "Real",
             loser_probe: "MotionTrajectory",
             loser_error: "has type 'Real'",
@@ -421,7 +424,7 @@ fn kind_rows() -> Vec<KindRow> {
                 "a",
                 "pub constraint def Conforms {\n    param t : Length\n    t > 0mm\n}\n",
             )],
-            entry: "import a\n\nstructure def Main {\n    param t : Length = 5mm\n    constraint Conforms(PROBE)\n}\n",
+            entry: "import std.tolerancing\nimport a\n\nstructure def Main {\n    param t : Length = 5mm\n    constraint Conforms(PROBE)\n}\n",
             winner_probe: "t: t",
             loser_probe: "tolerance: t",
             loser_error: "unknown argument 'tolerance'",
@@ -459,7 +462,7 @@ fn every_kind_binds_the_import_tier_first_wins_on_the_compile_side() {
 fn purposes_bind_the_import_tier_over_the_stdlib() {
     let program = compile_project(
         "purpose, import tier beats the stdlib",
-        "import a\n\nstructure def Main {\n    param t : Length = 5mm\n}\n",
+        "import std.determinacy.purposes\nimport a\n\nstructure def Main {\n    param t : Length = 5mm\n}\n",
         &[(
             "a",
             "pub purpose design_review(subject : Structure, witness : Structure) {\n    constraint forall p in subject.params: determined(p)\n}\n",

@@ -1,5 +1,9 @@
 module dcr_shaper_frequency_dimension_silent
 
+import std.si_units
+import std.trajectory
+import std.units
+
 // D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
 // leaf ζ — AMENDED at decompose. PRD §9 phrases ζ's signal as
 // "`ZVShaper(target_frequency: 50rad/s)` exits 1", but the CONSTRUCTOR alone

@@ -1,5 +1,10 @@
 module support_policy_modal_unknown_face
 
+import std.fea.multi_case
+import std.materials.fea
+import std.modal.analysis
+import std.solver.elastic
+
 // support-realization-policy (docs/prds/v0_6/support-realization-policy.md) evidence fixture, leaf ε (and
 // S16 ξ #9120's K5-3 refusal). A modal support whose target names no box face. Today modal skips it
 // silently, so the solve is free-free and reports only W_ModalRigidBodyMode. After ξ (modal-local) and

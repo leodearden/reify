@@ -1,5 +1,8 @@
 module dcr_material_dimension_silent
 
+import std.materials.mechanical
+import std.units
+
 // D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
 // leaf β (boundary row B4).
 //

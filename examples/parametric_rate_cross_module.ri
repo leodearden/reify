@@ -14,6 +14,8 @@
 // NOT declare Rate itself (single-file user-module def is the out-of-scope path;
 // general user→user alias import is the deferred bookmark).
 
+import std.units
+
 structure def Projectile {
     /// Projectile speed: Rate<Length> resolves to the Velocity dimension (m/s)
     /// via the stdlib prelude alias `pub type Rate<Q: Dimension> = Q / Time`.

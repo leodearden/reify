@@ -1,3 +1,5 @@
+import std.result
+
 // B-α #4035 end-to-end fixture: a PINNED `Result<Force, String>` annotation
 // overrides payload-driven inference (task γ #4031), pinning T = Force. The
 // supplied `Ok { value: 5mm }` payload is Length-typed, which disagrees with

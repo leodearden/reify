@@ -1,5 +1,7 @@
 module getar_decl_match_let_construct_ok
 
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε2
 // REGRESSION GUARD. MEASURED 2026-09-29, both binaries: check EXIT 0,
 // "All constraints satisfied."; eval prints `Bolt.r = Result::Ok`.

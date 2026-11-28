@@ -20,6 +20,11 @@
 // Kept as small as the smoke fixture (single box body, one load, one support)
 // so TWO simultaneous solves stay affordable inside the merge gate.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaCantileverDeterministic {
     // Geometry: 1 m long beam with 100 mm x 100 mm square cross-section.
     param length : Length = 1000mm

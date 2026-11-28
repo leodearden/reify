@@ -1,6 +1,7 @@
 //! Adding `import <module>` lines to a module's source text without
 //! disturbing anything else in it. Imports `reify_ast`/`reify_core`, the
-//! [`CfgSet`] type and the sibling [`coverage`](super::coverage) only.
+//! [`CfgSet`] and [`ReExports`] types and the sibling
+//! [`coverage`](super::coverage) only.
 
 use std::collections::HashSet;
 use std::ops::Range;
@@ -10,6 +11,7 @@ use reify_core::ModulePath;
 
 use super::coverage::ImportCoverage;
 use crate::cfg::CfgSet;
+use crate::re_exports::ReExports;
 
 /// A `#cfg(…)` pragma stays pending across pragmas until the next
 /// declaration, which it gates only if that declaration is an import; so a
@@ -35,7 +37,7 @@ pub(crate) fn insert_imports<'m>(
     cfg: &CfgSet,
     modules: &'m [ModulePath],
 ) -> Insertion<'m> {
-    let coverage = ImportCoverage::of(parsed, cfg);
+    let coverage = ImportCoverage::of(parsed, cfg, &ReExports::default());
     let mut emitted: HashSet<&ModulePath> = HashSet::new();
     let modules: Vec<&ModulePath> = modules
         .iter()

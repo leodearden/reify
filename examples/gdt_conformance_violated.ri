@@ -38,6 +38,8 @@
 //            (without OCCT — no kernel → deviation cannot be measured → C1
 //             graceful degradation, never a false Violated)
 
+import std.tolerancing
+
 // Local GeometricTolerance callout type. The `: GeometricTolerance` bound is what
 // the η pass's `satisfies_trait_bound` check keys on (PRD C5). `feature` carries a
 // neutral default so the type is also self-contained when realized standalone;

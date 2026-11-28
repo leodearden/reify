@@ -11,6 +11,12 @@
 // Which of these calls the compiler truly arity-checks, and which it passes
 // silently, is stated in the first gate's module doc.
 
+import std.fields
+import std.option_recovery
+import std.result
+import std.si_units
+import std.units
+
 structure def OptionAndCollectionForms {
     let coating = some(1mm)
     let bare    = unwrap_or(coating, 0mm)

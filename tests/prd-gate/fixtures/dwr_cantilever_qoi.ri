@@ -1,5 +1,10 @@
 module dwr_cantilever_qoi
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // PRD docs/prds/v0_6/goal-oriented-error-estimation.md leaf γ (BT5), the
 // GOAL-ORIENTED twin of dwr_cantilever_energy.ri. Byte-identical except for
 // the `target_quantity_of_interest` lines: naming the mean Z-displacement over

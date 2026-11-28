@@ -10,10 +10,13 @@
 //! cfg, already make visible, and which those the cfg leaves out would make
 //! visible were their `#cfg` satisfied. [`placement`] re-parses an edit that
 //! adds import lines, so [`insert_imports`] refuses one whose added lines
-//! would not stand where they are written.
+//! would not stand where they are written. [`fixit`] turns the same
+//! derivation into the NS-V2 Error a strict compile attaches for a std name
+//! written without its import ([`std_import_fixits`]).
 
 mod attribution;
 mod coverage;
+mod fixit;
 mod header_edit;
 mod name_uses;
 mod placement;
@@ -23,10 +26,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticIdentity, ModulePath, Severity};
 
+pub use fixit::std_import_fixits;
 pub use name_uses::{NameRole, NameUse};
 pub use placement::PlacementDefect;
 
 use crate::cfg::CfgSet;
+use crate::re_exports::ReExports;
 use crate::types::CompiledModule;
 
 /// One std module a module needs, with the written names that need it.
@@ -99,14 +104,16 @@ impl<'u> ImportPlan<'u> {
     }
 
     /// The required imports `parsed` does not yet satisfy, each narrowed to
-    /// the names its imports in effect under `cfg` leave uncovered.
+    /// the names its imports in effect under `cfg` leave uncovered, directly
+    /// or through what the plan's universe re-exports.
     ///
     /// # Panics
     ///
     /// If `parsed` declares an import whose path is not a module path, which
     /// only a module with parse errors can.
     pub fn missing_from(&self, parsed: &ParsedModule, cfg: &CfgSet) -> Vec<RequiredImport> {
-        let coverage = coverage::ImportCoverage::of(parsed, cfg);
+        let re_exports = ReExports::of_compiled(self.universe.iter().copied());
+        let coverage = coverage::ImportCoverage::of(parsed, cfg, &re_exports);
         self.required
             .iter()
             .filter_map(|required| {
@@ -184,8 +191,8 @@ pub fn derive_std_imports<'u>(
     universe: &[&'u CompiledModule],
 ) -> ImportPlan<'u> {
     let local = crate::compile_with_prelude_refs(parsed, universe);
-    let index = attribution::ExportIndex::new(&local, universe);
     let uses = name_uses::collect_name_uses(parsed);
+    let index = attribution::ExportIndex::new(&local, universe, &uses);
 
     let mut by_module: BTreeMap<String, (ModulePath, BTreeSet<NameUse>)> = BTreeMap::new();
     for name_use in &uses.uses {
@@ -243,7 +250,8 @@ pub fn cfg_unsatisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<Modul
 }
 
 /// What the imports `parsed` declares whose `#cfg` predicates `cfg` does not
-/// satisfy would bind, were those predicates satisfied.
+/// satisfy would bind, were those predicates satisfied, directly or through
+/// what the `universe` modules re-export.
 pub struct GatedOffImports<'p> {
     coverage: coverage::ImportCoverage<'p>,
 }
@@ -253,9 +261,10 @@ impl<'p> GatedOffImports<'p> {
     ///
     /// If `parsed` declares an import whose path is not a module path, which
     /// only a module with parse errors can.
-    pub fn of(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
+    pub fn of(parsed: &'p ParsedModule, cfg: &CfgSet, universe: &[&CompiledModule]) -> Self {
+        let re_exports = ReExports::of_compiled(universe.iter().copied());
         Self {
-            coverage: coverage::ImportCoverage::of_gated_off(parsed, cfg),
+            coverage: coverage::ImportCoverage::of_gated_off(parsed, cfg, &re_exports),
         }
     }
 

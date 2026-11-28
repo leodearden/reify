@@ -6,6 +6,8 @@
 // crates/reify-eval/tests/result_match_e2e.rs (bore_is_12mm_when_r_defaults_to_ok).
 module result_match_bore_ok
 
+import std.result
+
 structure def Widget {
     param r : Result<Length, String> = Ok { value: 12mm }
     let bore : Length = match r {

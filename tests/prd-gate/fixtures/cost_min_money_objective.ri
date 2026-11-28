@@ -1,5 +1,7 @@
 module cost_min_money_objective
 
+import std.units
+
 // PRD v0_6 continuous-cost-minimisation §1/§8 — substrate fixture (tasks α/β).
 //
 // Proves the SHIPPED substrate this PRD reuses (decompose-time, before α/β exist):

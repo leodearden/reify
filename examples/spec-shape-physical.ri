@@ -1,3 +1,8 @@
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 // GHR-ζ user-observable signal (task 3608, PRD geometry-handle-runtime.md §8 Phase 6).
 //
 // Running

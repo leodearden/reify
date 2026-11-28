@@ -1,5 +1,10 @@
 module dims_support_root_plus_xmax
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // PRD docs/prds/v0_6/elastic-modal-trampoline-factoring.md leaf μ (BT5a). A
 // shell-classified dims plate (50 x 10 x 1 mm, aspect 0.02 < shell_threshold 0.2,
 // ShellForce Auto). At main 1b06f93151 the PinnedSupport on x_max is dropped silently on both dims routes: max_vm equals the root-only solve and no diagnostic names it. After μ (R3): reify eval exits 1 with one FeaDimsSupportNotRealized Error naming x_max.

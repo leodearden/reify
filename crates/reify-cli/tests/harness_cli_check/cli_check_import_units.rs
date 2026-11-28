@@ -1,43 +1,63 @@
 //! `reify check` over an entry whose imports are themselves compiled as
 //! program units (PRD docs/prds/v0_6/resolution-unification.md §3.1, task #5516).
 //!
-//! An imported module sees the full stdlib (#19), exactly like the entry.
+//! An imported module sees builtins plus what it imports, exactly like the
+//! entry (stdlib-namespace NS-V1, κ #5503, which inverts RU #19).
 
 use crate::common;
 
 use std::fs;
 use std::path::Path;
 
-/// An imported module that uses stdlib units, traits and constructors.
+/// An imported module that uses std.materials.fea's `ElasticMaterial` and
+/// `ABS_Plastic`, and the builtin `Length`/`mm`, importing nothing.
 const PARTS_WITH_STDLIB_NAMES: &str = "module parts\n\
 pub structure def Bracket {\n\
 \x20   param w : Length = 10mm\n\
 \x20   param material : ElasticMaterial = ABS_Plastic()\n\
 }\n";
 
-fn write_project(dir: &Path, main_src: &str) -> String {
-    fs::write(dir.join("parts.ri"), PARTS_WITH_STDLIB_NAMES).unwrap();
-    fs::write(dir.join("main.ri"), main_src).unwrap();
+const MAIN_USING_PARTS: &str = "module main\nimport parts\nstructure def Rig {\n    sub b = Bracket()\n    constraint b.w > 5mm\n}\n";
+
+fn write_project(dir: &Path, parts_src: &str) -> String {
+    fs::write(dir.join("parts.ri"), parts_src).unwrap();
+    fs::write(dir.join("main.ri"), MAIN_USING_PARTS).unwrap();
     dir.join("main.ri").to_str().unwrap().to_string()
 }
 
-/// An import unit that uses stdlib names checks cleanly, and the entry's
-/// constraint over the imported sub's Length param is satisfied.
-///
-/// This is a guard against the aggregation-without-seeding intermediate state
-/// (import diagnostics surfaced while import units still compile without the
-/// stdlib), which would make this exit non-zero. It is NOT the pre-state
-/// discriminator: before import units were stdlib-seeded their errors were
-/// swallowed, so this also exited 0 — the compiler-level
-/// `compile_program_import_units_see_the_stdlib` test is the one that tells the
-/// two states apart.
+/// An import unit that writes std names without importing their module fails
+/// `reify check`, with the NS-V2 fix-it re-homed from the unit's file.
 #[test]
-fn check_import_unit_using_stdlib_names_is_clean() {
+fn check_import_unit_using_unimported_std_names_fails_with_the_fixit() {
     let tmp = tempfile::tempdir().unwrap();
-    let main = write_project(
-        tmp.path(),
-        "module main\nimport parts\nstructure def Rig {\n    sub b = Bracket()\n    constraint b.w > 5mm\n}\n",
+    let main = write_project(tmp.path(), PARTS_WITH_STDLIB_NAMES);
+
+    let (status, stdout, stderr) = common::run_with_args(&["check", &main]);
+
+    assert!(
+        !status.success(),
+        "reify check must exit non-zero; stdout: {stdout}\nstderr: {stderr}"
     );
+    assert!(
+        stderr.lines().any(|l| l.starts_with("error:")
+            && l.contains("parts.ri")
+            && l.contains("ElasticMaterial")
+            && l.contains("import std.materials.fea")),
+        "expected an `error:` line re-homed from parts.ri carrying the fix-it; stderr: {stderr}"
+    );
+}
+
+/// With the std import declared, the import unit checks cleanly, and the
+/// entry's constraint over the imported sub's Length param is satisfied.
+#[test]
+fn check_import_unit_importing_its_std_module_is_clean() {
+    let tmp = tempfile::tempdir().unwrap();
+    let parts = PARTS_WITH_STDLIB_NAMES.replacen(
+        "module parts\n",
+        "module parts\nimport std.materials.fea\n",
+        1,
+    );
+    let main = write_project(tmp.path(), &parts);
 
     let (status, stdout, stderr) = common::run_with_args(&["check", &main]);
 

@@ -1,5 +1,8 @@
 module getar_fallback_type_mismatch_silent
 
+import std.option_recovery
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf γ RED
 // before-image (soundness hole S-1). MEASURED 2026-09-29 with
 // target/debug/reify built 2026-09-25 (compiler paths unchanged through main
