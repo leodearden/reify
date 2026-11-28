@@ -342,6 +342,34 @@ fn an_imports_private_definition_never_shadows_a_visible_one() {
 }
 
 #[test]
+fn an_untyped_let_reads_a_member_of_a_stdlib_occurrence_sub() {
+    let output = accepted(
+        "
+structure def S { sub o : STLOutput  let res = o.resolution }
+structure def T { sub o : STLOutput }
+",
+    );
+    let res = member(table(&output, "S"), "res");
+    assert_eq!(res.kind, MemberKind::Cell);
+    assert_eq!(
+        res.declared_type,
+        DeclaredType::Value(Type::length()),
+        "a sub's members are typed from the sub's own target, an occurrence"
+    );
+    assert_eq!(
+        error_codes(&output),
+        Vec::new(),
+        "{:#?}",
+        output.diagnostics
+    );
+    assert_eq!(
+        member(table(&output, "T"), "o").declared_type,
+        DeclaredType::Definition(module_definition("std.io", "STLOutput")),
+        "the occurrence is found under its own module"
+    );
+}
+
+#[test]
 fn an_unresolved_written_type_is_reported() {
     let output = accepted("structure def A { param x : Nonsuch }\n");
     let a = table(&output, "A");
