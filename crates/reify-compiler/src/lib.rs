@@ -441,6 +441,12 @@ pub fn parse_with_stdlib(
 /// stub. External callers that need to inject a real checker use
 /// [`compile_with_prelude_checked`].
 ///
+/// `prelude` counts as the module's declared imports, whatever it holds, the
+/// whole [`stdlib_loader::load_stdlib`] included: a user module shadowing one
+/// of its std modules' names gets the D-2 Error
+/// ([`DiagnosticCode::StdlibNameShadowed`]). The ambient whole-stdlib compile,
+/// where that is a Warning, is [`compile_with_stdlib`].
+///
 /// **Performance note:** this wrapper allocates a `Vec<&CompiledModule>` on
 /// every call. For the typical call site with a small prelude this is
 /// negligible, but crate-internal callers in a hot loop should use

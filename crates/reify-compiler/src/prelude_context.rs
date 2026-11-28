@@ -50,9 +50,11 @@ use crate::types::CompiledTypeAlias;
 /// module compiled against it.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) enum StdlibScope {
-    /// The module chose them: each is one of its declared imports, or a
-    /// module such an import re-exports. Every context built by
-    /// [`PreludeContext::new`] or [`PreludeContext::from_slice`].
+    /// A caller-supplied prelude, taken as the module's declared imports and
+    /// the modules they re-export. Every context built by
+    /// [`PreludeContext::new`] or [`PreludeContext::from_slice`] is this
+    /// scope, whatever slice it is given: neither can tell a whole-stdlib
+    /// slice from a declared import tier.
     Declared,
     /// The whole stdlib, seeded with no import: the cached context of the
     /// ambient compile `compile_with_stdlib` uses. No std name was chosen.
@@ -67,8 +69,8 @@ pub(crate) enum StdlibScope {
 /// # Typical usage
 ///
 /// ```ignore
-/// // Build once (e.g. at process start or the first time a prelude is needed):
-/// let ctx = PreludeContext::from_slice(stdlib_loader::load_stdlib());
+/// // Build once from the import tier the user modules share:
+/// let ctx = PreludeContext::new(&import_tier);
 ///
 /// // Reuse for every subsequent user-module compilation:
 /// for parsed in user_modules {
@@ -93,6 +95,12 @@ impl<'a> PreludeContext<'a> {
     /// Construct a `PreludeContext` from a slice of prelude module references.
     ///
     /// Computes `resolution_enums` once, via `bind_prelude_enum_defs`.
+    ///
+    /// The prelude counts as the module's declared imports, so a user module
+    /// shadowing one of its std modules' names gets the D-2 Error. For the
+    /// whole stdlib with no import, use
+    /// [`load_stdlib_context`](crate::stdlib_loader::load_stdlib_context),
+    /// the ambient context, where that is a Warning.
     ///
     /// Use [`from_slice`](Self::from_slice) when you own the `CompiledModule`
     /// values (e.g. `&'static [CompiledModule]` from `load_stdlib()`).
