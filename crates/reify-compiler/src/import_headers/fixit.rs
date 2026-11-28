@@ -96,7 +96,7 @@ fn has_absent_user_import(
     cfg: &CfgSet,
 ) -> bool {
     in_effect(parsed, cfg).any(|(module, _)| {
-        !crate::module_dag::is_std_import_path(&module.to_dotted())
+        crate::name_env::module_tier(&module) != crate::name_env::Tier::Stdlib
             && !imports.iter().any(|compiled| compiled.path == module)
     })
 }

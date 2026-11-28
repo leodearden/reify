@@ -918,7 +918,7 @@ pub(crate) fn entry_module_name(entry_path: &Path) -> &str {
 /// `true` iff `path` addresses the standard library (`std` or `std.*`), which
 /// resolves through the stdlib rather than the resolver's project root.
 pub(crate) fn is_std_import_path(path: &str) -> bool {
-    path == "std" || path.starts_with("std.")
+    path.split('.').next() == Some(crate::name_env::STDLIB_ROOT_SEGMENT)
 }
 
 /// The Error for a bare `import std` (stdlib-namespace §10 Q3), naming the
