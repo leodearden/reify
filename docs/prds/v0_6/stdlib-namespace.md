@@ -182,6 +182,10 @@ references. N3/N4 consume resolution-unification substrate (§5).
 - **NS-V2 (fix-it).** An unresolved name that exists in exactly one stdlib module produces
   a structured fix-it diagnostic naming that module and `std.prelude`; ambiguous matches
   list candidates. (G7 `structured-facts-at-failure`.)
+  *Landed in κ (#5503):* `E_STD_NAME_NOT_IMPORTED` (`DiagnosticCode::StdNameNotImported`),
+  one per written name, labelled at its first occurrence; its `candidates` are pick-one
+  import paths, the defining std module(s) first and `std.prelude` last, offered only when
+  the facade's re-export closure contains a candidate.
 - **NS-V3.** Stdlib modules obey NS-V1 themselves (N2): a stdlib module referencing an
   undeclared sibling fails the stdlib build. Stdlib files gain `module std.<path>` headers;
   the `is_std_path` skip of `attach_module_path_diag` (module_dag.rs:527) is removed.
@@ -447,6 +451,11 @@ decompose (its β/θ carry the interim-seeding + units-flip-compile-side clauses
 3. **`import std` (bare) under strict.** Disallow with a fix-it pointing at
    `std.prelude`, or alias it to the facade? Suggested: disallow (explicit is the point).
    Decide in κ.
+   *Decided in κ (#5503):* disallowed. A followed bare `import std`, in the entry or in any
+   import unit at any depth, is a coded `E_BARE_STD_IMPORT` Error (`DiagnosticCode::BareStdImport`)
+   whose message points at `import std.prelude` and whose `candidates` are `["std.prelude"]`;
+   the module's own declarations still compile. An alias would be a second spelling of
+   `std.prelude`. A cfg-gated-out `import std` is inert.
 4. **Build-time stdlib precompilation trigger.** If startup profiling ever attributes
    user-noticeable latency to the per-process stdlib compile, revisit D-5's rejection
    (two-stage build + IR serialization). Requires a measurement first.

@@ -197,6 +197,9 @@ instead of discarding them.
   deliberately **superseded** by `stdlib-namespace.md` N2/N3 (strict imports — `std.*`
   imports become DAG-walked over an embedded mount, and they determine visibility).
   Not drift; see §6 row for the namespace PRD.
+  *Superseded in stdlib-namespace κ (#5503):* `compile_program` now walks every
+  cfg-satisfied `std.*` import, resolving it from the embedded stdlib only, and each unit
+  binds against builtins plus its own import tier.
 - **I5 (interim merge, P1 only).** `entry.templates` contains merged direct-import pub
   templates under the existing policy, verbatim. **Post-P2:** `entry.templates` =
   entry-declared only; cross-module exposure moves to `DefEnv`. I5's deletion is a
@@ -639,6 +642,10 @@ resolve #5387 relationship per its live status (§6 row 2).
    β's I2 aggregation already surfaces the import side's module-path
    diagnostics (`W_MODULE_DECL_MISSING` / `E_MODULE_PATH_MISMATCH`) at their
    existing severities, so ξ owns only their wording and severity policy.
+   *Superseded in stdlib-namespace κ (#5503):* `origin: None` stands, now for every std
+   unit `compile_program` walks from the embedded stdlib. Std units' diagnostics are no
+   longer re-homed (they are not the user's), so the `(embedded stdlib)` re-home branch
+   and its unit test are retired.
 4. **DefEnv function overload precedence** — `resolve_function` must compose with the
    existing signature-based overload table (`merge_functions` shadowing rules). Exact
    merge of "first-wins across modules" with "signature match within module" decided
