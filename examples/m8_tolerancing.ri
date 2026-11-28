@@ -28,6 +28,9 @@
 
 // ── Flange structure ──────────────────────────────────────────────────────────
 
+import std.si_units
+import std.tolerancing
+
 structure def Flange {
     // Position tolerance — ⌀0.1mm tolerance zone at MMC
     // feature and datum_refs: real geometry handles (tightened from Real — task #3116)

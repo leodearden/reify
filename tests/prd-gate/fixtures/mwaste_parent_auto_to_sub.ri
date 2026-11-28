@@ -1,6 +1,11 @@
 // M-WASTE PRD baseline (§2.3, §5 B14): a parent auto, through a let, sizes a sub's geometry.
 module mwaste_parent_auto_to_sub
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 structure def Plate : Physical {
     param w : Length = 100mm
     param l : Length = 200mm

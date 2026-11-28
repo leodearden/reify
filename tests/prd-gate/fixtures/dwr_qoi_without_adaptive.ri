@@ -1,5 +1,10 @@
 module dwr_qoi_without_adaptive
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // PRD docs/prds/v0_6/goal-oriented-error-estimation.md leaf γ, §5.7 row 1
 // (negative assertion, BT4 through the CLI). A quantity of interest is named
 // but `adaptive` is left at its `false` default, so the QoI cannot be honored.

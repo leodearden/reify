@@ -1,5 +1,10 @@
 module surface_finish_viewport
 
+import std.io
+import std.materials.appearance
+import std.materials.fea
+import std.surface_finish
+
 // surface_finish_viewport.ri — B9 integration gate for PRD §9 (task ε, #4892).
 //
 // Proves the third-producer subsumption on the VIEWPORT surface: the functional

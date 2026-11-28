@@ -29,6 +29,8 @@
 // Together with vc_bolt_pattern_clearance.ri this is the B8 "both verdicts in CI"
 // requirement (verdict flip: hole_r=5.2mm→Satisfied vs hole_r=5.0mm→Violated).
 
+import std.tolerancing
+
 structure def VcBoltPatternInterference {
     // ── Dimensional tolerance for the pin/bolt (external FOS) ───────────────
     // symmetric_tolerance(10mm, 0.05mm): upper_limit=10.05mm, lower_limit=9.95mm

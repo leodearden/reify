@@ -27,6 +27,9 @@
 
 module m6_result_recovery
 
+import std.option_recovery
+import std.result
+
 fn parse_len(s : String) -> Result<Length, String> { parse_length_r(s) }
 
 structure def MountValid {

@@ -1,3 +1,5 @@
+import std.materials.fea
+
 // Circular-notch-flexure PRB worked example
 //
 // Demonstrates the Paros-Weisbord (1965) pseudo-rigid-body circular notch

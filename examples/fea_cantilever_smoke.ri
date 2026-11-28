@@ -43,6 +43,11 @@
 //     `List<Trait>` wildcard + per-element conformance pass — no LoadCase
 //     bundle is required.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaCantileverSmoke {
     // Geometry: 1 m long beam with 100 mm × 100 mm square cross-section.
     param length : Length = 1000mm

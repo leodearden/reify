@@ -18,6 +18,9 @@
 
 // ── Line item 1: CapScrew (a McMaster-Carr fastener) ────────────────────────
 
+import std.io
+import std.units
+
 structure def CapScrew : Costed {
     param supplier          : String = "McMaster-Carr"
     param part_number       : String = "91251A190"

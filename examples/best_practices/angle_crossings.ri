@@ -1,5 +1,7 @@
 module angle_crossings
 
+import std.si_units
+
 // angle_crossings.ri — IDIOM: an angle reading of an ARC-MEASURE ratio is an
 // explicit crossing — multiply by `1rad` to ENTER Angle, divide by `1rad` to
 // LEAVE it.

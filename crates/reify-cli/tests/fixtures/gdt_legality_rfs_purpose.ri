@@ -10,6 +10,8 @@
 //
 // Compiles CLEAN.
 
+import std.tolerancing
+
 structure AllLegalGdtPurpose {
     param width : Length = 80mm
 

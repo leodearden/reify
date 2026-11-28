@@ -17,6 +17,8 @@
 // panic-free instantiation path.  The forbidden param/port/sub still fire the
 // validator at compile time regardless of whether the base type resolves.
 
+import std.ports.mechanical
+
 structure Base {
     param size : Length = 10mm
 }

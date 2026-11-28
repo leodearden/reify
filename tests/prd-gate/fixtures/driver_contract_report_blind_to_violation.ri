@@ -8,6 +8,9 @@
 // Post-fix (leaf κ): report runs check() and exits 1 without emitting a
 // procurement-actionable BOM for a design that does not satisfy its constraints.
 module driver_contract_report_blind_to_violation
+
+import std.io
+import std.units
 pub structure Bolt : Buy {
     param supplier : String = "Acme"
     param part_number : String = "M8-25"

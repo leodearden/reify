@@ -1,5 +1,7 @@
 module gui_purpose_surface
 
+import std.si_units
+
 // PRD evidence fixture — docs/prds/v0_6/gui-purpose-surface.md
 //
 // Carries three distinct pieces of evidence in one module:

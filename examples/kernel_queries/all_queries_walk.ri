@@ -45,6 +45,8 @@
 //   crates/reify-eval/tests/kernel_queries_integration.rs (all tests in this file)
 //   crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (auto-discovered, compile-smoked)
 
+import std.units
+
 structure def AllQueriesWalk {
 
     // ── Multi-feature part ────────────────────────────────────────────────────

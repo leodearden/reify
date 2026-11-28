@@ -2,6 +2,8 @@
 // Row B9. Today: `h` displays 0.005 m; extrude's distance is unresolved (Undef).
 module realized_world_derived_let
 
+import std.si_units
+
 structure P {
     let g = box(5mm, 5mm, 5mm)
     let v = volume(g)

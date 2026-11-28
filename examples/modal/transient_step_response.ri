@@ -50,6 +50,12 @@
 //     What the compiler does with the typo'd arg, and how loudly it says so, are
 //     deliberately NOT restated here; both are pinned in `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.modal.analysis
+import std.si_units
+import std.solver.elastic
+
 structure CantileverStepResponse {
     // Geometry: 200 mm slender beam, 10 mm × 2 mm rectangular cross-section.
     param length : Length = 200mm

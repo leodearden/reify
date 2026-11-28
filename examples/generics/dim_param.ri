@@ -12,6 +12,8 @@
 // epsilon at these magnitudes, making `reify check` a deterministic value gate
 // for both dimensions.
 
+import std.si_units
+
 fn scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> { x * k }
 
 structure def GenericsDimParam {

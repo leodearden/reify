@@ -1,5 +1,7 @@
 module getar_fn_param_rejects_construct
 
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf β RED
 // before-image (usability gap U-1). MEASURED 2026-09-29 with
 // target/debug/reify built 2026-09-25 (main 300910857b):

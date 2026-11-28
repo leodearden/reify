@@ -1,3 +1,7 @@
+import std.si_units
+import std.trajectory
+import std.units
+
 // Time-Optimal Trajectory Shaping (TOTS) example  (task λ — 3872)
 //
 // Demonstrates TOTSShaper + input_shape(profile, shaper) construction

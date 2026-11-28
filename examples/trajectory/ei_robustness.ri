@@ -1,3 +1,6 @@
+import std.si_units
+import std.trajectory
+
 // EI-shaped robustness example  (task ζ — 3867)
 //
 // Demonstrates EIShaper + input_shape(profile, shaper) construction

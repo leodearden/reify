@@ -18,6 +18,8 @@
 // is why it lives here and not under examples/.
 module struct_ctor_conformance_pose_at_selector_field
 
+import std.fea.multi_case
+
 structure def PoseAtSelectorField {
     let pl = PressureLoad(face: frame3(point3(0mm, 0mm, 0mm), orient_axis_angle(dir(0, 0, 1), 0rad)))
 }

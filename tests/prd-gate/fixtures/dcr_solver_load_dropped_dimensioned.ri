@@ -1,5 +1,10 @@
 module dcr_solver_load_dropped_dimensioned
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // D3 decompose-phase RED for PRD `docs/prds/v0_6/dimension-checked-readers.md`
 // leaf γ1 (boundary row B1) — the headline solver inversion, measured end to end.
 //

@@ -1,3 +1,5 @@
+import std.units
+
 // PRD implicit-solids section 1 Goal, theta-era file (epsilon ships it without the mass line; theta appends it). Also B8/B21 inputs.
 structure def SmoothBracket {
     param web   : Length = 6mm

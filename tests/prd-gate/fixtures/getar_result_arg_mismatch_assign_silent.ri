@@ -1,5 +1,8 @@
 module getar_result_arg_mismatch_assign_silent
 
+import std.result
+import std.si_units
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf γ RED
 // before-image (soundness hole S-2). MEASURED 2026-09-29 with
 // target/debug/reify built 2026-09-25 (main 300910857b):

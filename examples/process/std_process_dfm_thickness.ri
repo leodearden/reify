@@ -54,6 +54,7 @@
 // Companion test: crates/reify-eval/tests/process_dfm_thickness_example.rs.
 
 import std.process
+import std.units
 
 // ── CNC milling process conformer ────────────────────────────────────────────
 // Subtracting: carries min_feature_size (triggers the dfm_thickness_spec path).

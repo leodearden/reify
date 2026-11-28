@@ -21,6 +21,8 @@
 // argument's `EulerConvention` type and `angles` inherited it in turn —
 // neither call's static type had anything to do with what it evaluates to.
 
+import std.geometry.traits
+
 fn angle_count(xs: List<Angle>) -> Int { xs.count }
 
 structure def EulerArgOk {

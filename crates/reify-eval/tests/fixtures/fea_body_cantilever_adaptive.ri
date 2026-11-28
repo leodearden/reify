@@ -30,6 +30,11 @@
 // mesh, and a remesh preserves no index, so their presence forces the uniform
 // fallback lane by design.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaBodyCantileverAdaptive {
     let material = Steel_AISI_1045()
 

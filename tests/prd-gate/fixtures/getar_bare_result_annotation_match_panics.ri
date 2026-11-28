@@ -1,5 +1,7 @@
 module getar_bare_result_annotation_match_panics
 
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — fork R2 evidence
 // (third P-1 path). MEASURED 2026-09-29:
 //   target/debug/reify:   check/eval EXIT 101, panic "unrepresentable

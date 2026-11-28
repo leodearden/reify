@@ -1,5 +1,10 @@
 module geometry_query_violated
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 // Task 5748 fixture (D1, exit-code leg): a `: Rigid` body whose ONLY explicit
 // constraint reads a geometry-query cell and is FALSE once that cell resolves.
 //

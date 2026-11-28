@@ -1,3 +1,5 @@
+import std.materials.fea
+
 // Parallelogram-stage PRB flexure worked example
 //
 // Demonstrates the pseudo-rigid-body parallelogram compound-flexure constructor

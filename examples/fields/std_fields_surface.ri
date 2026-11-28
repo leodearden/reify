@@ -31,6 +31,9 @@
 //
 // ── Top-level field defs (shared between StdFieldsSurface and RestrictSurface) ─
 
+import std.fields
+import std.si_units
+
 // f_double(x) = 2.0 * x   (B9: compose input / B1/B10: used directly via fn_field inline)
 field def f_double : Real -> Real { source = analytical { |x| 2.0 * x } }
 

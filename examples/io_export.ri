@@ -40,6 +40,12 @@
 //   lower_limit   = 100mm - 0.05mm  = 99.95mm  = 0.09995m
 //   tolerance_band = 0.05mm - (-0.05mm) = 0.1mm = 0.0001m
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.tolerancing
+import std.units
+
 structure def ExportPart : Physical + Elastic + Strong {
     // ── Physical (spec shape: geometry + material slots) ──────────────────
     param geometry : Solid = box(100mm, 50mm, 10mm)

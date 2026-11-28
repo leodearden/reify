@@ -1,5 +1,10 @@
 module aux_assembly
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 // aux_assembly.ri — aux-bearing multi-sub assembly fixture
 //
 // The aux-bearing half of the mesh-count parity smoke

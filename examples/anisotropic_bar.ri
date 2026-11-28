@@ -24,6 +24,13 @@
 //   wildcard + per-element conformance pass — no LoadCase bundle required.
 //   See fea_cantilever_smoke.ri for the full rationale.
 
+import std.constitutive
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+import std.units
+
 structure AnisotropicBar {
     // Geometry: 500 mm long bar with 25 mm × 25 mm square cross-section.
     param length : Length = 500mm

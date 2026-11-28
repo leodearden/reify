@@ -1,3 +1,5 @@
+import std.si_units
+
 structure def Block {
     param w : Length = 10mm
     let body = box(w, w, w)

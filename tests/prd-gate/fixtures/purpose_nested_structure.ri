@@ -7,6 +7,8 @@
 // When the grammar is extended to accept nested structures in purpose blocks,
 // tree-sitter exits 0 → PRESENT → PASS → gate fires ("update corpus").
 
+import std.materials.mechanical
+
 purpose Exploration() {
     structure Inner {
         param width : Length = 80mm

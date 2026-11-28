@@ -1,5 +1,8 @@
 module getar_wildcard_headed_arg_silent
 
+import std.option_recovery
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf β RED
 // before-image (soundness hole S-4, pre-existing). MEASURED 2026-09-29:
 //   target/debug/reify   (2026-09-25): check EXIT 0, eval EXIT 0, `W.v = Result::Ok`

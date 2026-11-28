@@ -1,5 +1,10 @@
 module surface_finish_functional
 
+import std.materials.appearance
+import std.si_units
+import std.surface_finish
+import std.units
+
 // Functional surface-finish vocabulary usage example (task α, #4888).
 //
 // Demonstrates the std.surface_finish stdlib module (Coating, CoatingProcess,

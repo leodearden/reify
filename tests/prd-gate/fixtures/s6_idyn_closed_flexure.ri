@@ -2,6 +2,9 @@
 // Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
 module s6_idyn_closed_flexure
 
+import std.dynamics
+import std.materials.fea
+
 // Probe: a sprung flexure joint in the spanning tree of a CLOSED chain.
 structure def ClosedFlexure {
     let steel = Steel_AISI_1045()

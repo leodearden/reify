@@ -23,6 +23,9 @@
 
 // ── BOM line item 1: Bolt (a purchased fastener) ────────────────────────────
 
+import std.io
+import std.units
+
 structure def Bolt : Costed {
     param supplier          : String = "Fastenal"
     param part_number       : String = "BOLT-M6-20"

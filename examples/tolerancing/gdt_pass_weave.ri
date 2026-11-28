@@ -32,6 +32,8 @@
 // far below the RepresentationWithin 1mm bound → Satisfied under OCCT.
 #precision(0.1mm)
 
+import std.tolerancing
+
 // ── Local tolerance type declarations ─────────────────────────────────────────
 //
 // The two callout types below have no stdlib counterpart. MaterialCondition

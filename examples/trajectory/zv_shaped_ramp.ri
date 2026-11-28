@@ -1,3 +1,6 @@
+import std.si_units
+import std.trajectory
+
 // ZV-shaped ramp smoke example  (task ε — 3866)
 //
 // Demonstrates ZVShaper + PiecewisePolynomialProfile construction

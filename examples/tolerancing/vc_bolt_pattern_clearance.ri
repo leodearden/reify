@@ -28,6 +28,8 @@
 // This file is also the VC-boundary-clearance e2e (VC boundary solid + mating geometry +
 // min_clearance constraint all wired together under one `reify build` call).
 
+import std.tolerancing
+
 structure def VcBoltPatternClearance {
     // ── Dimensional tolerance for the pin/bolt (external FOS) ───────────────
     // symmetric_tolerance(10mm, 0.05mm): upper_limit=10.05mm, lower_limit=9.95mm

@@ -26,6 +26,8 @@
 // Deferred: geometry-metrology DFM engine (docs/prds/v0_6/process-dfm-geometry-metrology.md).
 
 import std.process
+import std.si_units
+import std.units
 
 // ── 1. Process conformers — one per category ──────────────────────────────────
 //

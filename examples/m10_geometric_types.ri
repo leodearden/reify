@@ -15,6 +15,8 @@
 //  11. Component access (scalar params as point components)
 //  12. Dimensional arithmetic on geometric types
 
+import std.si_units
+
 structure def GeometricDemo {
     // ── Feature 1: Point3<Length> params ────────────────────────────────
     // Scalar components that will be assembled into a Point3.

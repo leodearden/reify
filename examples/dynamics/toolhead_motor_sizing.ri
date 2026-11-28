@@ -1,3 +1,5 @@
+import std.dynamics
+
 // Printer-toolhead motor-sizing worked example (RBD-κ, task 3840).
 //
 // PRD: docs/prds/v0_3/rigid-body-dynamics.md §1 / task κ (Phase 5).

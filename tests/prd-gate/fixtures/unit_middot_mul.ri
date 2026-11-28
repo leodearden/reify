@@ -50,6 +50,9 @@
 // test is leaf μ (#5789), which must NOT assume the space is already handled.
 // `Display` is deliberately unchanged here.
 
+import std.si_units
+import std.units
+
 structure def UnitMiddotMul {
     let torque_like = 5N·m
     let with_div    = 5N·m/rad

@@ -12,6 +12,9 @@
 //   Bracket : 4.00 USD * 3.0 = 12.00 USD   (line_cost)
 //   Total   :                  12.00 USD
 
+import std.io
+import std.units
+
 structure def Bracket : Costed {
     param supplier          : String = "McMaster"
     param part_number       : String = "BRACKET-X1"

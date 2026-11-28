@@ -40,6 +40,12 @@
 
 module shift_invert_modal_unshifted
 
+import std.fea.multi_case
+import std.materials.fea
+import std.modal.analysis
+import std.si_units
+import std.solver.elastic
+
 structure ShiftInvertModalUnshifted {
     param length : Length = 20mm
     param width  : Length = 10mm

@@ -1,3 +1,5 @@
+import std.units
+
 // Fixture for task 4789 (cost-min α): floor-infeasible signal.
 //
 // CostMinFloorInfeasible has one `Length = auto` param `x` and a fixed

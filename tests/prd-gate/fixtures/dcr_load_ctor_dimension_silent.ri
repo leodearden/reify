@@ -1,5 +1,8 @@
 module dcr_load_ctor_dimension_silent
 
+import std.fea.multi_case
+import std.si_units
+
 // D3 decompose-phase RED before-image for PRD `docs/prds/v0_6/dimension-checked-readers.md`
 // leaves γ1 / γ2 / γ3 (boundary rows B1, B2, B3).
 //

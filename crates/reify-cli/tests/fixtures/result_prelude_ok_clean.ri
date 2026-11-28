@@ -1,3 +1,5 @@
+import std.result
+
 // B-α #4035 end-to-end fixture: `Ok { value: 5mm }` against the PRELUDE
 // Result<T, E> enum, with NO inline `enum Result` declared. Task γ #4031's
 // payload-driven inference binds T = Length from the supplied 5mm -> no

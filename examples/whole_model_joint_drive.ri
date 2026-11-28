@@ -1,5 +1,8 @@
 module whole_model_joint_drive
 
+import std.io
+import std.units
+
 // Example: WHOLE-MODEL JOINT DRIVE — the parent's cost objective drives the
 // CHILD's auto param directly, in one merged solve, instead of the child
 // freezing bottom-up first and the parent merely reading the frozen result.

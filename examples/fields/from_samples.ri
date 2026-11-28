@@ -23,6 +23,8 @@
 // to a `let` cell), so the let-cells hold Real and field-as-let-cell
 // representability is not required.
 
+import std.fields
+
 structure def FromSamplesDemo {
     // sample(from_samples([0.0, 1.0, 2.0], [0.0, 10.0, 20.0], InterpolationMethod.Linear), 0.5)
     // = lerp(0.0, 10.0, 0.5) = 5.0   (B2 worked example)

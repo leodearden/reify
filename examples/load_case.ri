@@ -12,6 +12,9 @@
 //
 // PRD: docs/prds/v0_3/structure-instance-runtime.md §8 task SIR-β-mlcfea.
 
+import std.fea.multi_case
+import std.si_units
+
 // ── LoadCase ctor + member-access readthrough ─────────────────────────────────
 structure def LoadCaseDemo {
     let case          = LoadCase(

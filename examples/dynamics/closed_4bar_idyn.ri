@@ -1,3 +1,5 @@
+import std.dynamics
+
 // Closed-chain revolute FOUR-BAR worked example — committable foothold for the
 // closed-chain inverse-dynamics e2e (KIN-OFFSET β1, task 4428; split child of
 // task 4391 option C; the EXPRESSIBLE successor to the descoped 4146 revolute

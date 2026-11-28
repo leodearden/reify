@@ -1,5 +1,7 @@
 module getar_match_over_let_construct_panics
 
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε RED
 // before-image (defect P-1). MEASURED 2026-09-29 with target/debug/reify
 // built 2026-09-25 (main 300910857b):

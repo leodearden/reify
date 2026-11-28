@@ -9,6 +9,11 @@
 // Value literals mirror the forms used in drivebelt_trait_bounds.ri and the
 // structural_physical_tests.rs fixtures (box(...), Material(...), W/(m*K), etc.).
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 // ── (1) Rigid : Physical ─────────────────────────────────────────────────────
 //
 // task 4229 (Option A): moment_of_inertia is now auto-derived from geometry as

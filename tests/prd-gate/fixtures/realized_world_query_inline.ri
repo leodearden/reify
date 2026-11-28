@@ -2,6 +2,8 @@
 // Row B24 (leaf gamma). Today: extrude's distance is unresolved (Undef).
 module realized_world_query_inline
 
+import std.si_units
+
 structure P {
     let g = box(10mm, 10mm, 10mm)
     let r = extrude(rectangle(5mm, 5mm), volume(g) / 25mm^2)

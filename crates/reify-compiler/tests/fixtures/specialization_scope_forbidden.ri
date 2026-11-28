@@ -14,6 +14,8 @@
 //   - one for 'port' named 'p'
 //   - one for 'sub' named 'child'
 
+import std.ports.mechanical
+
 structure Base {
     param size : Length = 10mm
 }

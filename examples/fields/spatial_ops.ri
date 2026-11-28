@@ -14,6 +14,9 @@
 // All assertions made as `reify check` constraint gates (structure range/boolean
 // constraints), matching the compose.ri + cli_generics_eval.rs pattern.
 
+import std.fields
+import std.si_units
+
 structure def SpatialOpsDemo {
     // ── B6: constant_field ──────────────────────────────────────────────────────
     //

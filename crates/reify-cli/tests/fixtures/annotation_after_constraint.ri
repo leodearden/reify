@@ -1,3 +1,5 @@
+import std.stock
+
 structure S {
     param a : Length = 5mm
     constraint a >= 1mm

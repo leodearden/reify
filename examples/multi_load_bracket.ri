@@ -45,6 +45,12 @@
 // produce inspectable structure values.  The eval-layer contract for the full
 // solve is pinned in `crates/reify-eval/tests/multi_load_bracket_e2e.rs`.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+import std.units
+
 structure MultiLoadBracket {
     // ── Geometry ─────────────────────────────────────────────────────────────
     param width        : Length = 80mm

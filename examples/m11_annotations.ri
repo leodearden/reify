@@ -24,6 +24,8 @@
 
 // ── Shared constraint defs ─────────────────────────────────────────────────────
 
+import std.stock
+
 // Positive: value must be strictly above zero.
 constraint def Positive {
     param v: Length

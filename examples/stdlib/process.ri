@@ -8,6 +8,7 @@
 // additionally compiled by the capstone test in process_stdlib_compile.rs.
 
 import std.process
+import std.units
 
 // A milled part provides the duration and cost required by Process (via
 // Subtracting : Process), plus the three capability params added in β.

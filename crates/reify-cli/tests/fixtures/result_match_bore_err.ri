@@ -5,6 +5,8 @@
 // (bore_is_6mm_when_r_defaults_to_err).
 module result_match_bore_err
 
+import std.result
+
 structure def Widget {
     param r : Result<Length, String> = Err { error: "bad" }
     let bore : Length = match r {

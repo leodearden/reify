@@ -1,5 +1,10 @@
 module damped_material_preset_conformance
 
+import std.materials.appearance
+import std.materials.fea
+import std.si_units
+import std.units
+
 // PRD gate fixture: docs/prds/v0_6/damped-modal-bonded-heterogeneous.md,
 // leaf α (#6877).
 //

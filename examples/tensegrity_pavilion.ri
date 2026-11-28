@@ -42,6 +42,9 @@
 //     node 4: (−0.866,  0.500, −1)   — bottom B'
 //     node 5: ( 0.000, −1.000, −1)   — bottom C'
 
+import std.si_units
+import std.tensegrity
+
 structure def Pavilion {
     // ── Network topology ─────────────────────────────────────────────────────
     //

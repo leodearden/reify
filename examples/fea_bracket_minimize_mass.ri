@@ -68,6 +68,11 @@
 // tet mesh of a plate this stubby will not reproduce it exactly, and it is not
 // expected to. Its job is to put the stress/yield crossing in a sane place.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaBracketMinimizeMass {
     // ── Geometry ─────────────────────────────────────────────────────────────
     //

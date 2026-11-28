@@ -32,6 +32,11 @@
 //   scripts/run-gui-dev.sh examples/shells/thin_walled_bracket.ri
 //   (renders mid-surface mesh with vonMises_top colormap)
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure ThinWalledBracket {
     // Geometry: 100 mm long bracket with a 20 mm × 2 mm cross-section.
     // thickness/extent = 2/100 = 0.02 < shell_threshold 0.2 → shell-classified.

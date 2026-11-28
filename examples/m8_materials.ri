@@ -19,6 +19,11 @@
 // shear_modulus/yield_strength/uts/compressive_strength → Pressure (Pa);
 // density → Density (kg/m³). Tightened by task #3111.
 
+import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
 structure def AluminumBracket : Physical + Elastic + Strong {
     // Physical (spec shape: geometry + material slots)
     param geometry : Solid = box(20mm, 20mm, 10mm)

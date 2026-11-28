@@ -4,6 +4,9 @@
 
 module joint_direction_axis_rejections
 
+import std.kinematic
+import std.materials.fea
+
 structure def PrismaticVectorAxis {
     let j = prismatic(vec3(0, 1, 0), 0mm .. 10mm)
 }

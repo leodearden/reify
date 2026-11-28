@@ -11,6 +11,8 @@
 
 module curated_unit_labels
 
+import std.si_units
+
 structure def CuratedUnitLabels {
     let f : Frequency = 50Hz
     let k : Stiffness = 1000N / 1m

@@ -1,5 +1,8 @@
 module fasteners
 
+import std.io
+import std.units
+
 pub structure def Bolt : Costed {
     param supplier : String = "Fastenal"
     param part_number : String = "BOLT-M6-20"

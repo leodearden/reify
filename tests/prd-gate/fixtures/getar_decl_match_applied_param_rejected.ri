@@ -1,5 +1,7 @@
 module getar_decl_match_applied_param_rejected
 
+import std.result
+
 // PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` — leaf ε2 RED
 // before-image (pre-existing defect, NOT S1-induced). MEASURED 2026-09-29,
 // both binaries: check EXIT 1, eval EXIT 1:

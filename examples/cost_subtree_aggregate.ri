@@ -33,6 +33,9 @@
 // would not resolve at its instance path (a documented limitation, not
 // exercised here; see plan.json design_decisions).
 
+import std.io
+import std.units
+
 structure def CapScrew : Costed {
     param supplier          : String = "McMaster-Carr"
     param part_number       : String = "91251A190"

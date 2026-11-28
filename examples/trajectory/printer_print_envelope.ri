@@ -1,3 +1,10 @@
+import std.fea.multi_case
+import std.materials.fea
+import std.modal.analysis
+import std.si_units
+import std.solver.elastic
+import std.trajectory
+
 // Printer print-envelope dogfood fixture  (task ρ — 3878)
 //
 // PRD reference: docs/prds/v0_3/trajectory-input-shaping.md §1, §10.2, §11 Phase 6.

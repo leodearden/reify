@@ -1,3 +1,5 @@
+import std.io
+
 // B21: declarative STLOutput / STEPOutput on an implicit body (E_IMPLICIT_EXPORT_UNROUTED / E_IMPLICIT_NO_BREP).
 structure def ImplicitExport {
     let f = sdf_sphere(8mm)

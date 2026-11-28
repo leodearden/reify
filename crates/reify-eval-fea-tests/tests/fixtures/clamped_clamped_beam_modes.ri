@@ -55,6 +55,14 @@
 // `material : ElasticMaterial`, so the material is wrapped as
 // `FEAMaterialInput(material: mat)` and passed as `mi.material`.
 
+import std.fea.multi_case
+import std.materials.appearance
+import std.materials.fea
+import std.modal.analysis
+import std.si_units
+import std.solver.elastic
+import std.units
+
 structure def CFRP_Rolled_Tube : ElasticMaterial + Visual {
     param youngs_modulus : Pressure = 110GPa
     param poisson_ratio : Real = 0.3

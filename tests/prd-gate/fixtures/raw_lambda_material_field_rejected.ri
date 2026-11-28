@@ -1,5 +1,11 @@
 module raw_lambda_material_field_rejected
 
+import std.constitutive
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 // PRD negative fixture: damped-modal-bonded-heterogeneous (leaf γ scope pin).
 // A raw fn_field lambda CANNOT author a spatially-typed material field today:
 // the parameterized lambda-param annotation does not resolve

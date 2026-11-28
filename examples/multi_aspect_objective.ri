@@ -1,5 +1,7 @@
 module multi_aspect_objective
 
+import std.units
+
 // PRD v0_6 multi-aspect-objective-units-coherence §δ headline: a coherent
 // multi-aspect objective — Money AND Mass combined in ONE dimensionless
 // `minimize` term — solves end-to-end. Task δ (#5020) integration-gate

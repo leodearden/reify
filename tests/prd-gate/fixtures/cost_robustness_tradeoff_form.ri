@@ -1,5 +1,7 @@
 module cost_robustness_tradeoff_form
 
+import std.units
+
 // PRD v0_6 continuous-cost-minimisation §2.4/§8 — substrate fixture (task γ).
 // The `cost_robustness_tradeoff(<money-expr>, <λ:Real>)` override surface.
 //

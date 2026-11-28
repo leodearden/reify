@@ -1,4 +1,7 @@
 module flexure_compliance_prb_joint
+
+import std.flexures
+import std.materials.fea
 // PRD §7.3 BT2 (task #5476). Must stay exit 0 across the retarget.
 structure def FlexureCompliancePrbJoint {
     let steel = Steel_AISI_1045()

@@ -17,6 +17,8 @@
 //   crates/reify-eval/tests/topology_selector_smoke_tests.rs::
 //     block_inertia_evals_moment_of_inertia_to_tensor  ← #[ignore]-gated
 
+import std.units
+
 structure def BlockInertia {
     let b = box(50mm, 30mm, 10mm)
     let steel_density = 7850kg/m^3

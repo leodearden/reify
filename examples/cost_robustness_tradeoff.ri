@@ -1,5 +1,7 @@
 module cost_robustness_tradeoff
 
+import std.units
+
 // PRD v0_6 continuous-cost-minimisation §2.4/§8.1 — the
 // `minimize cost_robustness_tradeoff(<money-expr>, λ)` override (task γ #4791).
 // Leaf-signal example for the γ decompose slice.

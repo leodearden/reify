@@ -1,5 +1,8 @@
 module dwr_qoi_readback
 
+import std.option_recovery
+import std.result
+
 // PRD docs/prds/v0_6/goal-oriented-error-estimation.md §5.6 / leaf ζ — the
 // READ-BACK substrate, pinned against today's tree (a PASSING fixture).
 //

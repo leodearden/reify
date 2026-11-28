@@ -8,6 +8,11 @@
 // Modelled after examples/fea_cantilever_smoke.ri (same geometry, same
 // material) but `supports: []` so no user-specified support is supplied.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.si_units
+import std.solver.elastic
+
 structure FeaNoSupports {
     param length : Length = 1000mm
     param width  : Length = 100mm

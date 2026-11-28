@@ -71,6 +71,12 @@
 //   frequency gate is unaffected. Fall back to `NoDamping()` if ctor-lowering
 //   ever misbehaves.
 
+import std.fea.multi_case
+import std.materials.fea
+import std.modal.analysis
+import std.si_units
+import std.solver.elastic
+
 structure PrinterGantryModes {
     // Geometry: 500 mm span, 60 × 40 mm rectangular cross-section.
     // Asymmetric width ≠ height keeps vertical/lateral bending families

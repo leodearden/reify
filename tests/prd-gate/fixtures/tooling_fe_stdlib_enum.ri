@@ -5,6 +5,8 @@
 // the same file.
 module tooling_fe_stdlib_enum
 
+import std.fdm
+
 structure def Print {
     param infill : InfillPattern = InfillPattern.Gyroid
     param w : Length = 10mm

@@ -21,6 +21,9 @@
 
 // ── Analytical scalar fields (Real -> Real) ───────────────────────────────────
 
+import std.si_units
+import std.solver.elastic
+
 field def top_layer : Real -> Real { source = analytical { |x| 100.0 } }
 field def mid_layer : Real -> Real { source = analytical { |x| 100.0 } }
 field def bot_layer : Real -> Real { source = analytical { |x| 100.0 } }
