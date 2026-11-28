@@ -80,6 +80,7 @@ pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
 pub use kernel::KernelId;
 pub use units::{
-    BUILTIN_UNITS, RI_COMPOUND_BASE_SYMBOLS, RI_NAMED_DERIVED_SYMBOLS, ri_compound_unit_expr,
-    ri_emittable_units, unit_exponent_in_range, unit_symbol_to_si,
+    BUILTIN_UNITS, RI_COMPOUND_BASE_SYMBOLS, RI_NAMED_DERIVED_SYMBOLS,
+    ri_builtin_compound_unit_expr, ri_compound_unit_expr, ri_emittable_units,
+    unit_exponent_in_range, unit_symbol_to_si,
 };

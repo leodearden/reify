@@ -24,9 +24,12 @@
 //!
 //! Plain `eval_source` deliberately does NOT seed the stdlib unit registry.
 //! That is not an oversight — it is the guarantee under test. Every symbol the
-//! serializer emits is a bare built-in resolved by the compiler's
-//! unconditional `unit_to_scalar` fallback, so a rewritten literal must parse
-//! in a module that imports nothing.
+//! serializer emits is a built-in, bare (`80mm`) or as a compound factor
+//! (`7850kg/m^3`), and the compiler falls back to the built-in table for both
+//! (for a compound atom via `lookup_unit_atom`, task #5503), so a rewritten
+//! literal must parse in a module that imports nothing. Every case is spliced
+//! as a structure param, which meets a compound literal's
+//! position precondition (`reify_ir::ri_literal` qualification 3).
 //!
 //! That is the *unshadowed* case, and it is the weaker half of what a real
 //! caller needs. γ's edit path splices into user modules, which usually DO
@@ -50,9 +53,7 @@
 use reify_compiler::{CompiledModule, UnitEntry, UnitRegistry, seed_prelude_units, stdlib_loader};
 use reify_core::DimensionVector;
 use reify_ir::Value;
-use reify_ir::ri_literal::{
-    UnitScope, value_to_ri_literal, value_to_ri_literal_in_scope,
-};
+use reify_ir::ri_literal::{RiLiteralError, value_to_ri_literal, value_to_ri_literal_with_unit};
 use reify_test_support::{cell_value, eval_source};
 
 // ─── harness ─────────────────────────────────────────────────────────────────
@@ -63,12 +64,6 @@ struct Case {
     value: Value,
     hint: Option<&'static str>,
     expect_literal: Option<&'static str>,
-    /// Which [`UnitScope`] to SERIALIZE under. Independent of [`Prelude`],
-    /// which is what the spliced source is COMPILED under — the whole point of
-    /// section (d)'s negative pin is that the two can disagree, and that a
-    /// compound literal emitted under `SiBaseUnitsSeeded` genuinely fails to
-    /// compile under `Prelude::None`.
-    scope: UnitScope,
     label: String,
 }
 
@@ -78,16 +73,8 @@ impl Case {
             value,
             hint: None,
             expect_literal: None,
-            scope: UnitScope::BareBuiltinsOnly,
             label: label.into(),
         }
-    }
-
-    /// Serialize under an explicit [`UnitScope`]. Defaults to
-    /// `BareBuiltinsOnly`, so every pre-existing case is unaffected.
-    fn in_scope(mut self, scope: UnitScope) -> Self {
-        self.scope = scope;
-        self
     }
 
     fn with_hint(mut self, hint: &'static str) -> Self {
@@ -103,54 +90,24 @@ impl Case {
 
 /// The `.ri` type name to declare a param of, for a value this test generates.
 ///
-/// Every name here is in `NAMED_DIMENSIONS` (or is a primitive), so it
-/// resolves with no stdlib import.
+/// A dimensioned scalar declares its dimension's `NAMED_DIMENSIONS` name
+/// (`canonical_name`), which resolves with no stdlib import.
 fn ri_type_name(v: &Value) -> &'static str {
     match v {
         Value::Bool(_) => "Bool",
         Value::Int(_) => "Int",
         Value::Real(_) => "Real",
         Value::String(_) => "String",
-        Value::Scalar { dimension, .. } => match *dimension {
-            DimensionVector::LENGTH => "Length",
-            DimensionVector::ANGLE => "Angle",
-            DimensionVector::MASS => "Mass",
-            DimensionVector::TIME => "Time",
-            DimensionVector::TEMPERATURE => "Temperature",
-            // A dimensionless Scalar is emitted as a bare real and comes back
-            // as a `Value::Real`, so `Real` is the type its param must declare.
-            // That variant change is the serializer's one documented
-            // exception, pinned by
-            // `a_dimensionless_scalar_downgrades_to_real_with_identical_bits`
-            // — it cannot ride `assert_round_trips`, whose `assert_identical`
-            // asserts discriminant equality.
-            DimensionVector::DIMENSIONLESS => "Real",
-            // The compound dimensions unlocked by `UnitScope::SiBaseUnitsSeeded`
-            // (task #6400). Every name is in `NAMED_DIMENSIONS` too, so the
-            // "resolves with no stdlib import" property above still holds —
-            // which is what lets section (d)'s negative pin splice one into a
-            // `Prelude::None` module and observe the UNIT resolution failing
-            // rather than the type name.
-            DimensionVector::AREA => "Area",
-            DimensionVector::VOLUME => "Volume",
-            DimensionVector::PRESSURE => "Pressure",
-            DimensionVector::FORCE => "Force",
-            DimensionVector::MASS_DENSITY => "Density",
-            DimensionVector::ENERGY => "Energy",
-            DimensionVector::FREQUENCY => "Frequency",
-            DimensionVector::SOLID_ANGLE => "SolidAngle",
-            DimensionVector::MONEY => "Money",
-            DimensionVector::CURRENT => "Current",
-            DimensionVector::AMOUNT_OF_SUBSTANCE => "AmountOfSubstance",
-            DimensionVector::LUMINOUS_INTENSITY => "LuminousIntensity",
-            DimensionVector::VOLTAGE => "Voltage",
-            DimensionVector::CHARGE => "Charge",
-            DimensionVector::ILLUMINANCE => "Illuminance",
-            DimensionVector::POWER => "Power",
-            DimensionVector::DYNAMIC_VISCOSITY => "DynamicViscosity",
-            DimensionVector::FRACTURE_TOUGHNESS => "FractureToughness",
-            other => panic!("no .ri type name wired for dimension {other}"),
-        },
+        // A dimensionless Scalar is emitted as a bare real and comes back as a
+        // `Value::Real`, so `Real` is the type its param must declare. That
+        // variant change is the serializer's one documented exception, pinned
+        // by `a_dimensionless_scalar_downgrades_to_real_with_identical_bits` —
+        // it cannot ride `assert_round_trips`, whose `assert_identical` asserts
+        // discriminant equality.
+        Value::Scalar { dimension, .. } if dimension.is_dimensionless() => "Real",
+        Value::Scalar { dimension, .. } => dimension
+            .canonical_name()
+            .unwrap_or_else(|| panic!("dimension {dimension} has no NAMED_DIMENSIONS name")),
         Value::Direction(_) => "Direction",
         other => panic!("no .ri type name wired for {other:?}"),
     }
@@ -195,13 +152,12 @@ fn assert_round_trips_under(cases: &[Case], prelude: Prelude) {
     let mut literals: Vec<String> = Vec::with_capacity(cases.len());
 
     for (i, case) in cases.iter().enumerate() {
-        let literal = value_to_ri_literal_in_scope(&case.value, case.hint, case.scope)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "case {i} [{}]: serializer refused {:?}: {e}",
-                    case.label, case.value
-                )
-            });
+        let literal = value_to_ri_literal_with_unit(&case.value, case.hint).unwrap_or_else(|e| {
+            panic!(
+                "case {i} [{}]: serializer refused {:?}: {e}",
+                case.label, case.value
+            )
+        });
         if let Some(expected) = case.expect_literal {
             assert_eq!(
                 literal, expected,
@@ -929,43 +885,29 @@ fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
     assert_round_trips_under(&cases, Prelude::Stdlib);
 }
 
-// ─── (d2) the COMPOUND precondition (task #6400) ─────────────────────────────
+// ─── (d2) compound literals (tasks #6400, #10778) ────────────────────────────
 
-/// DIRECT: every compound literal `UnitScope::SiBaseUnitsSeeded` unlocks
-/// re-parses BIT-EXACTLY through the registry-first path.
-///
-/// This tier is the only one that can prove the claim at all, because it is the
-/// only one that runs the real parser and `resolve_unit_expr` against a real
-/// seeded registry. `reify-core` can pin the emitted STRING and `reify-ir` can
-/// pin the emitted MAGNITUDE, but neither can see whether `m^2` resolves, what
-/// factor it folds to, or whether `kg/m/s` even parses.
+/// Hand-picked compound values, each pinning its exact literal where the shape
+/// is the point. Coverage of every compound dimension the serializer writes is
+/// `named_compound_dimensions`' job.
 ///
 /// The awkward-bits cases are the point, not padding. A naive implementation
 /// that scaled the magnitude — or reproduced `resolve_unit_expr`'s fold by hand
 /// and got the association wrong — passes on `2.5` and fails here.
-#[test]
-fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
+fn compound_cases() -> Vec<Case> {
     fn compound(label: &'static str, si_value: f64, dimension: DimensionVector) -> Case {
-        Case::new(label, Value::Scalar {
-            si_value,
-            dimension,
-        })
-        .in_scope(UnitScope::SiBaseUnitsSeeded)
+        Case::new(
+            label,
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+        )
     }
 
-    let cases = vec![
-        // One per compound dimension, each pinning its exact literal.
+    vec![
         compound("area", 2.5, DimensionVector::AREA).emitting("2.5m^2"),
         compound("volume", 1e-6, DimensionVector::VOLUME).emitting("1e-6m^3"),
-        // Named factor-1.0 derived symbols: a single atom, resolved through the
-        // BARE path rather than `resolve_unit_expr`.
-        compound("pressure", 101_325.0, DimensionVector::PRESSURE).emitting("101325Pa"),
-        compound("force", -9.81, DimensionVector::FORCE).emitting("-9.81N"),
-        compound("energy", 1234.5, DimensionVector::ENERGY).emitting("1234.5J"),
-        compound("power", 750.0, DimensionVector::POWER).emitting("750W"),
-        // NEGATIVE ZERO on a named atom: the bare path computes
-        // `v * factor + offset`, so the sign must ride the unary minus.
-        compound("negative-zero pressure", -0.0, DimensionVector::PRESSURE).emitting("-0Pa"),
         compound("density", 7850.0, DimensionVector::MASS_DENSITY).emitting("7850kg/m^3"),
         // ASSOCIATIVITY WITNESS. `unit_expr` is `prec.left(1)` for `*` and `/`,
         // so this must fold as `Div(Div(kg, m), s)`. Under RIGHT association it
@@ -984,16 +926,10 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
         // would read `s^3/A` as one denominator and flip A's sign.
         compound("voltage", 230.0, DimensionVector::VOLTAGE).emitting("230m^2*kg/s^3/A"),
         compound("charge", 2.5, DimensionVector::CHARGE).emitting("2.5s*A"),
-        compound("illuminance", 500.0, DimensionVector::ILLUMINANCE).emitting("500cd*sr/m^2"),
         // The empty-numerator form. A leading `/` is not a valid `unit_expr`,
         // so this is the one shape that MUST use signed powers — and only a
         // real parse can confirm `s^-1` lexes and folds as `Pow(s, -1)`.
         compound("frequency", 60.0, DimensionVector::FREQUENCY).emitting("60s^-1"),
-        // Single-atom compounds with no bare built-in symbol at all: `sr` and
-        // `USD` are absent from `unit_symbol_to_si` entirely, so they are
-        // reachable ONLY through the registry.
-        compound("solid angle", 1.5, DimensionVector::SOLID_ANGLE).emitting("1.5sr"),
-        compound("money", 19.99, DimensionVector::MONEY).emitting("19.99USD"),
         // NEGATIVE ZERO on a compound dimension. `-0.0` and `0.0` are the one
         // pair that compares equal while differing in bits, so `to_bits()` in
         // `assert_identical` is the only assertion here that can tell them
@@ -1003,10 +939,22 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
         // Magnitudes a scaling or rounding implementation gets wrong.
         compound("long decimal area", 0.1 + 0.2, DimensionVector::AREA)
             .emitting("0.30000000000000004m^2"),
-        compound("subnormal volume", f64::MIN_POSITIVE / 2.0, DimensionVector::VOLUME),
-        compound("tiny pressure", 1e-9, DimensionVector::PRESSURE),
-        compound("huge force", 1.7976931348623157e308, DimensionVector::FORCE),
-        compound("awkward density", -0.5566166674539299, DimensionVector::MASS_DENSITY),
+        compound(
+            "subnormal volume",
+            f64::MIN_POSITIVE / 2.0,
+            DimensionVector::VOLUME,
+        ),
+        compound("tiny area", 1e-9, DimensionVector::AREA),
+        compound(
+            "huge volume",
+            1.7976931348623157e308,
+            DimensionVector::VOLUME,
+        ),
+        compound(
+            "awkward density",
+            -0.5566166674539299,
+            DimensionVector::MASS_DENSITY,
+        ),
         // A RATIONAL exponent (task #9236): FractureToughness's Length^(-1/2)
         // in `Rational`'s `p/q` spelling, read back by the unit grammar.
         compound(
@@ -1020,7 +968,101 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
             -0.5566166674539299,
             DimensionVector::FRACTURE_TOUGHNESS,
         ),
-    ];
+    ]
+}
+
+/// The serializer's compound literals compile with NO unit registry seeded and
+/// no import, and re-parse BIT-EXACTLY: every atom is a factor-1.0 built-in,
+/// and the compiler resolves a compound atom registry-first, then the built-in
+/// table (task #5503). "No registry seeded" means none SEEDED; a structure
+/// param meets the position precondition (`reify_ir::ri_literal`
+/// qualification 3). This is the "round-trips in a module that imports
+/// nothing" claim.
+///
+/// This tier is the only one that can prove it, because it is the only one that
+/// runs the real parser and `resolve_unit_expr`. `reify-core` can pin the
+/// emitted STRING and `reify-ir` can pin the emitted MAGNITUDE, but neither can
+/// see whether `m^2` resolves, what factor it folds to, or whether `kg/m/s`
+/// even parses.
+#[test]
+fn compound_literals_round_trip_with_no_unit_registry() {
+    assert_round_trips_under(&compound_cases(), Prelude::None);
+}
+
+/// The same compound literals, resolved registry-first against the stdlib
+/// `UnitRegistry` — the SHADOWED case a user module importing `std.units`
+/// presents.
+#[test]
+fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
+    assert_round_trips_under(&compound_cases(), Prelude::Stdlib);
+}
+
+/// Every `NAMED_DIMENSIONS` dimension the serializer writes as a compound:
+/// dimensioned, with no bare ladder, and not refused. Alias rows are skipped,
+/// since each repeats its canonical row's dimension.
+///
+/// Derived rather than listed, like the set it covers: the serializer's
+/// built-in slot table is filtered out of `BUILTIN_UNITS` at call time, so a
+/// dimension it starts writing joins this list, and is re-parsed, the same
+/// day. `a_refused_dimensions_spelling_does_not_compile_without_its_import`
+/// is the refused-side mirror.
+fn named_compound_dimensions() -> Vec<(DimensionVector, &'static str)> {
+    reify_core::NAMED_DIMENSIONS
+        .iter()
+        .copied()
+        .filter(|&(dimension, name)| {
+            dimension.canonical_name() == Some(name)
+                && !dimension.is_dimensionless()
+                && reify_core::ri_emittable_units(&dimension).is_empty()
+                && value_to_ri_literal(&Value::Scalar {
+                    si_value: 1.0,
+                    dimension,
+                })
+                .is_ok()
+        })
+        .collect()
+}
+
+/// SWEPT: every compound dimension the serializer writes re-parses with
+/// identical bits and dimension, under both unit-resolution regimes.
+///
+/// `compound_cases` holds the exact-string and awkward-bits witnesses for a
+/// few dimensions; this carries one plain and one awkward magnitude for all
+/// of them.
+#[test]
+fn every_named_compound_dimension_round_trips_under_both_regimes() {
+    let rows = named_compound_dimensions();
+    // MEASURED: 34 canonical rows today. A floor, not an equality: the set
+    // may grow by itself (see `named_compound_dimensions`), but a shrink means
+    // NAMED_DIMENSIONS lost rows or the serializer stopped writing some.
+    const NAMED_COMPOUND_ROWS_FLOOR: usize = 34;
+    let names: Vec<&str> = rows.iter().map(|&(_, name)| name).collect();
+    println!(
+        "compound NAMED_DIMENSIONS rows swept: {}: {names:?}",
+        rows.len()
+    );
+    assert!(
+        rows.len() >= NAMED_COMPOUND_ROWS_FLOOR,
+        "expected at least {NAMED_COMPOUND_ROWS_FLOOR} compound NAMED_DIMENSIONS \
+         rows, saw {}: {names:?}",
+        rows.len()
+    );
+
+    let cases: Vec<Case> = rows
+        .iter()
+        .flat_map(|&(dimension, name)| {
+            [2.5, -0.5566166674539299].map(|si_value| {
+                Case::new(
+                    format!("{name} {si_value:?}"),
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    },
+                )
+            })
+        })
+        .collect();
+    assert_round_trips_under(&cases, Prelude::None);
     assert_round_trips_under(&cases, Prelude::Stdlib);
 }
 
@@ -1058,11 +1100,10 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
                 let entry = registry.lookup(sym).unwrap_or_else(|| {
                     panic!(
                         "slot {i}: RI_COMPOUND_BASE_SYMBOLS marks {sym:?} emittable, \
-                         but it is NOT in the stdlib-seeded UnitRegistry. \
-                         `resolve_unit_expr` is registry-ONLY with no unit_to_scalar \
-                         fallback, so every compound literal naming {sym:?} now fails \
-                         to parse. Either restore the stdlib declaration, or set slot \
-                         {i} to `None` and drop that dimension's cases."
+                         but it is NOT in the stdlib-seeded UnitRegistry, so a \
+                         compound literal naming {sym:?} no longer resolves through \
+                         the stdlib registry. Either restore the stdlib declaration, \
+                         or set slot {i} to `None` and drop that dimension's cases."
                     )
                 });
                 assert_factor_one_entry(entry, sym, basis_dimension(i), &format!("slot {i}"));
@@ -1233,39 +1274,132 @@ fn the_ieee_fold_of_factor_one_atoms_is_exactly_one() {
     }
 }
 
-/// POSITIVE PIN: a compound SI-base literal compiles with NO seeded registry.
+/// NEGATIVE PIN: every dimension the serializer refuses although
+/// `ri_compound_unit_expr` can spell it really does fail to compile without its
+/// import, so each refusal still guards a real failure.
 ///
-/// This test used to be the negative pin for `UnitScope::SiBaseUnitsSeeded`: a
-/// literal like `2.5m^2` failed with `unknown unit: m` in a module with no unit
-/// registry, because `resolve_unit_expr` read the registry only. Under strict
-/// stdlib visibility (task #5503, NS-V1) a compound unit's factors fall back to
-/// the builtin unit table exactly as a bare unit does, and every SI base symbol
-/// the emitter writes (`m`, `kg`, `s`, `K`, `A`, `mol`, `cd`) is a builtin. So
-/// the literal now compiles anywhere, and the opt-in no longer guards a real
-/// failure. Retiring it in favour of widening `value_to_ri_literal`
-/// unconditionally is the follow-up the old pin named.
+/// The refused spellings need `N`/`Pa`/`J`/`W`, `sr` or `USD`, none of which is
+/// a built-in. Swept over `NAMED_DIMENSIONS`, so no refused dimension can dodge
+/// it. If one of those symbols ever becomes import-free, this fires for its
+/// dimensions: that is when the serializer can widen to them.
 #[test]
-fn a_compound_si_base_literal_compiles_without_a_seeded_registry() {
-    let area = Value::Scalar {
+fn a_refused_dimensions_spelling_does_not_compile_without_its_import() {
+    let mut swept: Vec<&str> = Vec::new();
+    for &(dim, name) in reify_core::NAMED_DIMENSIONS {
+        if dim.is_dimensionless() {
+            continue;
+        }
+        let refused = matches!(
+            value_to_ri_literal(&Value::Scalar {
+                si_value: 1.0,
+                dimension: dim,
+            }),
+            Err(RiLiteralError::UnrepresentableDimension { .. })
+        );
+        let Some(unit) = reify_core::ri_compound_unit_expr(&dim) else {
+            continue;
+        };
+        if !refused {
+            continue;
+        }
+        let source = format!("structure def S {{\n  param x : {name} = 1{unit}\n}}\n");
+        let compiled = reify_test_support::compile_source_allow_parse_errors(&source);
+        let errors: Vec<&reify_core::Diagnostic> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .collect();
+        assert!(
+            errors.iter().any(|d| d.message.contains("unknown unit")),
+            "{name}: the serializer refuses it, but `1{unit}` does not fail with \
+             `unknown unit` in a module that imports nothing — the refusal no longer \
+             guards a real failure, so the serializer can widen to {name}. \
+             Errors: {errors:?}\nSource:\n{source}"
+        );
+        swept.push(name);
+    }
+    for expected in [
+        "Force",
+        "Pressure",
+        "Energy",
+        "Power",
+        "SolidAngle",
+        "Money",
+        "Illuminance",
+    ] {
+        assert!(
+            swept.contains(&expected),
+            "{expected} was not swept (swept: {swept:?}) — is it no longer refused?"
+        );
+    }
+}
+
+/// POSITION PIN: a compound literal re-parses only where the compile scope
+/// carries a `UnitRegistry`. A fn body and a fn param default compile with
+/// none, whatever the module imports, so the serializer's compound output is
+/// rejected there; a bare literal has no such precondition.
+#[test]
+fn compound_literals_do_not_compile_in_a_fn_body_or_fn_param_default() {
+    const NEEDS_A_REGISTRY: &str = "compound unit expression requires a unit registry in scope";
+
+    fn compile_errors(source: &str, prelude: Prelude) -> Vec<String> {
+        let compiled = match prelude {
+            Prelude::None => reify_test_support::compile_source_allow_parse_errors(source),
+            Prelude::Stdlib => reify_test_support::compile_source_with_stdlib_allow_parse_errors(
+                &format!("import std.units\n{source}"),
+            ),
+        };
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    let compound = value_to_ri_literal(&Value::Scalar {
         si_value: 2.5,
         dimension: DimensionVector::AREA,
-    };
-    let literal = value_to_ri_literal_in_scope(&area, None, UnitScope::SiBaseUnitsSeeded)
-        .expect("AREA must be emittable under SiBaseUnitsSeeded");
-    assert_eq!(literal, "2.5m^2");
+    })
+    .expect("an Area is a builtin-only compound the serializer writes");
+    assert_eq!(compound, "2.5m^2");
+    let bare = value_to_ri_literal(&Value::Scalar {
+        si_value: 0.08,
+        dimension: DimensionVector::LENGTH,
+    })
+    .expect("a Length has a bare builtin symbol");
+    assert_eq!(bare, "80mm");
 
-    let source = format!("structure def S {{\n  param x : Area = {literal}\n}}\n");
-    let compiled = reify_test_support::compile_source_allow_parse_errors(&source);
-    let errors: Vec<&reify_core::Diagnostic> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_core::Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "compound literal {literal:?} must compile with no seeded unit registry: \
-         its factors are builtin units. Got: {errors:?}\nSource:\n{source}"
-    );
+    type SourceAt = fn(ty: &str, lit: &str) -> String;
+    let positions: [(&str, SourceAt); 2] = [
+        ("fn param default", |ty, lit| {
+            format!("fn f(x: {ty} = {lit}) -> {ty} {{ x }}\n")
+        }),
+        ("fn body", |ty, lit| format!("fn g() -> {ty} {{ {lit} }}\n")),
+    ];
+    for prelude in [Prelude::None, Prelude::Stdlib] {
+        for (position, source_at) in positions {
+            let source = source_at("Area", &compound);
+            let errors = compile_errors(&source, prelude);
+            assert!(
+                errors.iter().any(|m| m.contains(NEEDS_A_REGISTRY)),
+                "Prelude::{prelude:?}, {position}: the compound literal {compound:?} no longer \
+                 fails for want of a unit registry, so fn scopes now carry one. Drop the \
+                 position precondition from reify-ir ri_literal.rs qualification 3, \
+                 update every doc that points at it (grep `position precondition`), \
+                 then retire this pin. Errors: {errors:?}\nSource:\n{source}"
+            );
+
+            let control = source_at("Length", &bare);
+            let control_errors = compile_errors(&control, prelude);
+            assert!(
+                control_errors.is_empty(),
+                "Prelude::{prelude:?}, {position}: the bare control {bare:?} must compile \
+                 clean, or the compound failure above is not specific to compound literals. \
+                 Errors: {control_errors:?}\nSource:\n{control}"
+            );
+        }
+    }
 }
 
 // ─── (e) rejections are never spliced ────────────────────────────────────────
@@ -1280,7 +1414,7 @@ fn unrepresentable_values_are_refused_rather_than_written() {
     };
     assert!(
         value_to_ri_literal(&pressure).is_err(),
-        "a Pressure has no bare built-in symbol and must be refused"
+        "a Pressure must be refused: its spelling `Pa` needs an import"
     );
 
     let braced = Value::String("hole {x}".into());

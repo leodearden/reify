@@ -55,32 +55,49 @@
 //! into arbitrary user source should treat a user-shadowed unit symbol as
 //! outside the guarantee.
 //!
-//! **3. Compound emission is OPT-IN, and its precondition is strictly
-//! stronger.** [`value_to_ri_literal`] and [`value_to_ri_literal_with_unit`]
-//! write bare built-in symbols only, and refuse every dimension that would
-//! need a compound `UnitExpr`. [`value_to_ri_literal_in_scope`] with
-//! [`UnitScope::SiBaseUnitsSeeded`] lifts that refusal (`2.5m^2`,
-//! `101325Pa`, `7850kg/m^3`) — but qualification 2 above says a bare
-//! symbol resolves as `registry.lookup(..).or_else(|| unit_to_scalar(..))`,
-//! and the `or_else` is what makes the bare guarantee TOTAL: it holds even in
-//! a module that imports nothing. A compound `UnitExpr` has no such fallback.
-//! `resolve_unit_expr` (reify-compiler `units.rs`) does a bare
-//! `registry.lookup(name)` and returns `UnknownUnit` on a miss, and the
-//! registry is populated purely from prelude/imported `.ri` `unit`
-//! declarations. So the compound guarantee is CONTINGENT on the target module,
-//! where the bare one is not — measured, not inferred: a `2.5m^2` spliced into
-//! a `#no_prelude` module is answered `unknown unit: m`, pinned by
-//! `ri_literal_roundtrip.rs`'s
-//! `a_compound_literal_does_not_compile_without_a_seeded_registry`.
+//! **3. Compound emission covers exactly the dimensions spelled from
+//! built-in symbols, and needs a unit registry at the splice position.** A
+//! dimension with no bare built-in symbol is written as a compound `UnitExpr`
+//! (`2.5m^2`, `7850kg/m^3`, `60s^-1`) when every atom of its spelling is a
+//! factor-1.0 built-in (`m`/`kg`/`s`/`A`/`K`/`mol`/`cd`/`rad`);
+//! `reify_core::units::ri_builtin_compound_unit_expr` gives that spelling.
 //!
-//! `stdlib/units.ri`'s own `STANDARD_GRAVITY` is the in-repo statement of that
-//! asymmetry: its body writes the compositional `1m / (1s * 1s)` rather than
-//! the compound literal `9.80665m/s^2`, with the comment that "compound-unit
-//! resolution requires the unit registry in scope". Making compound the
-//! default would silently downgrade a total contract to a contingent one for
-//! every existing caller, so it is a named [`UnitScope`] the caller must
-//! consciously assert — a thing this crate structurally cannot verify, since
-//! it has no view of the target module's registry.
+//! Such a literal needs no import: `resolve_unit_expr` (reify-compiler
+//! `units.rs`) resolves each compound atom registry-first, then the built-in
+//! table (`lookup_unit_atom`, task #5503). Unlike a bare one, though, it has a
+//! *position precondition*, on WHERE it is spliced, because reify-compiler's
+//! `expr.rs` takes the compound path only when the compile scope carries a
+//! `UnitRegistry` at all. So the guarantee for a compound literal reads in
+//! full:
+//!
+//! > …provided the compile scope at the splice position carries a
+//! > `UnitRegistry`.
+//!
+//! Structure, purpose and file-scope params, lets and constraints always
+//! carry one: an empty one in a module that imports nothing. A fn body and a
+//! fn param default carry none, and there reify-compiler answers "compound
+//! unit expression requires a unit registry in scope" whatever the module
+//! imports. A bare literal has no such precondition. Pinned by
+//! `ri_literal_roundtrip.rs`'s
+//! `compound_literals_do_not_compile_in_a_fn_body_or_fn_param_default`.
+//!
+//! A compound literal carries qualification 2's shadowing caveat too. A
+//! module that imports `std.units` resolves those atoms through
+//! its registry, which agrees at factor exactly 1.0, as
+//! `ri_literal_roundtrip.rs`'s
+//! `si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry` cross-guards.
+//!
+//! A dimension whose spelling needs an imported symbol is refused with
+//! [`RiLiteralError::UnrepresentableDimension`]: the named `N`/`Pa`/`J`/`W`,
+//! and any `sr` or `USD` factor (Force, Pressure, Energy, Power, SolidAngle,
+//! Money, Illuminance, …). None of those is a built-in, so such a literal
+//! compiles only where its std module is imported, and this crate cannot see
+//! the target module's imports. That each refusal still guards a real failure
+//! is pinned by `ri_literal_roundtrip.rs`'s
+//! `a_refused_dimensions_spelling_does_not_compile_without_its_import`.
+//! A dimension with an exponent outside `reify_core::unit_exponent_in_range`
+//! (a `Length^200` from a product chain) is refused the same way: no unit
+//! expression can carry it, whatever the module imports.
 //!
 //! One corollary, easy to mistake for an oversight: **the unit hint is inert
 //! for a compound dimension.** A hinted `mm^2` would fold `0.001.powi(2)`,
@@ -161,7 +178,7 @@
 
 use crate::Value;
 use reify_core::DimensionVector;
-use reify_core::units::{ri_compound_unit_expr, ri_emittable_units, unit_symbol_to_si};
+use reify_core::units::{ri_builtin_compound_unit_expr, ri_emittable_units, unit_symbol_to_si};
 use std::fmt;
 
 /// Why a [`Value`] cannot be written as a `.ri` source literal.
@@ -187,9 +204,9 @@ pub enum RiLiteralError {
         /// The first offending character.
         offending: char,
     },
-    /// A dimension with no bare built-in unit symbol, so it would need a
-    /// compound `UnitExpr` that only a seeded per-module registry can
-    /// resolve.
+    /// A dimension with no bare built-in unit symbol and no compound spelling
+    /// from built-in symbols: its spelling needs an import, or it cannot be
+    /// written exactly at all (module doc, qualification 3).
     UnrepresentableDimension {
         /// The dimension that has no emittable bare symbol.
         dimension: DimensionVector,
@@ -255,60 +272,19 @@ fn format_f64_shortest(x: f64, force_decimal_point: bool) -> String {
     s.strip_suffix(".0").map(str::to_owned).unwrap_or(s)
 }
 
-/// Which unit-resolution regime the TARGET module is asserted to provide
-/// (task #6400).
-///
-/// The two arms are not a preference — they are genuinely different
-/// preconditions, and the caller is the only party that can tell them apart.
-/// `reify-compiler`'s `expr.rs` forks on the shape of the emitted `UnitExpr`:
-/// a BARE unit resolves as `registry.lookup(..).or_else(|| unit_to_scalar(..))`
-/// while a COMPOUND one goes to `resolve_unit_expr`, which consults the
-/// per-module `UnitRegistry` and NOTHING else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnitScope {
-    /// Bare built-in symbols only — today's shipped contract, and the default
-    /// every existing entry point delegates with.
-    ///
-    /// Round-trips in ANY module, including one that imports nothing and one
-    /// compiled `#no_prelude`, because the built-in table is an unconditional
-    /// `or_else` fallback behind the registry. Nothing about this arm is
-    /// contingent on what the target file imports.
-    BareBuiltinsOnly,
-    /// The caller ASSERTS that the target module resolves every symbol of
-    /// [`reify_core::RI_COMPOUND_BASE_SYMBOLS`] and
-    /// [`reify_core::RI_NAMED_DERIVED_SYMBOLS`] to factor exactly `1.0` — that
-    /// is, that `std.units` and `std.si_units` are seeded. Unlocks
-    /// compound emission, and with it every dimension that has no bare symbol
-    /// at all — Area, Volume, Force, Pressure, Density, Energy, SolidAngle,
-    /// Money, and Current-bearing ones such as Voltage and Charge.
-    ///
-    /// True for any module compiled with the stdlib prelude (`compile_with_stdlib`
-    /// seeds all stdlib modules unconditionally), and for one that imports
-    /// `std.units` and `std.si_units`. NOT true for a `#no_prelude` module, for
-    /// a `compile_project` module that imports neither, or inside a stdlib `fn`
-    /// body — those load with `unit_registry == None`, where a compound literal
-    /// does not compile at all.
-    ///
-    /// This crate CANNOT verify the assertion: it has no view of the target
-    /// module's registry, and inverting the crate DAG to get one is not on the
-    /// table. That unverifiability is precisely why this is a named opt-in
-    /// rather than the default — the precondition sits in the type at the call
-    /// site, where the caller must consciously make the claim.
-    SiBaseUnitsSeeded,
-}
-
 /// Serialize a [`Value`] as `.ri` source text that re-parses to that same value.
 ///
 /// Equivalent to [`value_to_ri_literal_with_unit`] with no unit preference.
 ///
 /// Re-parsing an `Ok` result yields the same variant, dimension and f64 bits,
-/// subject to the module-level doc's qualifications 1, 2 and 4: a
-/// *dimensionless* `Value::Scalar` comes back as a `Value::Real` (same
-/// dimension, same bits, different variant — an un-suffixed `.ri` number
-/// literal has no other reading), the bit-exactness holds unless the target
-/// module's `UnitRegistry` shadows the emitted symbol with a different factor,
-/// and a `Value::Direction` round-trips only while no user `fn dir` is in
-/// scope.
+/// subject to the module-level doc's qualifications 1–4: a *dimensionless*
+/// `Value::Scalar` comes back as a `Value::Real` (same dimension, same bits,
+/// different variant — an un-suffixed `.ri` number literal has no other
+/// reading), the bit-exactness holds unless the target module's
+/// `UnitRegistry` shadows an emitted symbol with a different factor, a
+/// dimension whose spelling needs an import is refused, a compound literal
+/// carries a position precondition, and a `Value::Direction` round-trips only
+/// while no user `fn dir` is in scope.
 pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
     value_to_ri_literal_with_unit(value, None)
 }
@@ -332,38 +308,22 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
 /// falls back to the canonical ladder. A hint can therefore change *which*
 /// exact literal is written, never *whether* the write is exact.
 ///
+/// A dimension with NO bare built-in symbol is written as a compound unit
+/// expression built from factor-1.0 built-in symbols (`2.5m^2`, `7850kg/m^3`),
+/// or refused when its spelling needs an import (`Pa`, `sr`, `USD`) — the
+/// module doc's qualification 3, which also states such a literal's
+/// position precondition. `reify_core::units::ri_compound_unit_expr`
+/// explains why bit-exactness on that path is structural rather than measured.
+/// The compound attempt is made in exactly one place — inside the
+/// empty-bare-ladder branch — so a dimension that HAS a bare ladder can never
+/// reach it. `80mm` stays `80mm`; `0.08m^1` is unreachable, not merely
+/// unpreferred.
+///
 /// Every arm checks finiteness and representability BEFORE it formats
 /// anything, so no partially-formed literal can escape on the error path.
 pub fn value_to_ri_literal_with_unit(
     value: &Value,
     preferred_unit: Option<&str>,
-) -> Result<String, RiLiteralError> {
-    value_to_ri_literal_in_scope(value, preferred_unit, UnitScope::BareBuiltinsOnly)
-}
-
-/// Serialize a [`Value`] as `.ri` source text under an explicit
-/// [`UnitScope`] (task #6400).
-///
-/// The widening entry point. [`value_to_ri_literal`] and
-/// [`value_to_ri_literal_with_unit`] are exactly this function with
-/// [`UnitScope::BareBuiltinsOnly`], so the shipped contract is untouched on
-/// both the `Ok` and `Err` paths — pinned by `the_unhinted_entry_point_delegates`.
-///
-/// Under [`UnitScope::SiBaseUnitsSeeded`] a dimension with NO bare built-in
-/// symbol is written as a compound unit expression built from factor-1.0
-/// symbols (`2.5m^2`, `101325Pa`, `7850kg/m^3`) instead of being refused. See
-/// the module doc's qualification 3 for the precondition that carries, and
-/// `reify_core::units::ri_compound_unit_expr` for why bit-exactness on that
-/// path is structural rather than measured.
-///
-/// The compound attempt is made in exactly one place — inside the
-/// already-existing empty-bare-ladder branch — so a dimension that HAS a bare
-/// ladder can never reach it. `80mm` stays `80mm`; `0.08m^1` is unreachable,
-/// not merely unpreferred.
-pub fn value_to_ri_literal_in_scope(
-    value: &Value,
-    preferred_unit: Option<&str>,
-    scope: UnitScope,
 ) -> Result<String, RiLiteralError> {
     match value {
         Value::Bool(b) => Ok(if *b {
@@ -408,14 +368,11 @@ pub fn value_to_ri_literal_in_scope(
             }
             let ladder = ri_emittable_units(dimension);
             if ladder.is_empty() {
-                // THE ONLY behavioural edit the compound widening makes, and it
-                // sits inside this branch deliberately: containment is then
-                // STRUCTURAL rather than incidental. A dimension with a
-                // non-empty bare ladder cannot reach the compound path at all,
-                // so the hint logic, the ladder walk and the trailing
-                // "unreachable" `Err` below are byte-for-byte what task #5095
-                // shipped, and no value that is `Ok` today can change its
-                // literal.
+                // The compound path sits inside this branch deliberately:
+                // containment is then STRUCTURAL rather than incidental. A
+                // dimension with a non-empty bare ladder cannot reach it at
+                // all, so the hint logic, the ladder walk and the trailing
+                // "unreachable" `Err` below never see a compound dimension.
                 //
                 // The magnitude is the SI value VERBATIM: no `exact_magnitude`
                 // call, no ladder search, and `preferred_unit` deliberately not
@@ -426,9 +383,7 @@ pub fn value_to_ri_literal_in_scope(
                 // The finiteness guard above has already run, so a non-finite
                 // compound value returns `NonFiniteNumber` before anything here
                 // formats.
-                if scope == UnitScope::SiBaseUnitsSeeded
-                    && let Some(unit_expr) = ri_compound_unit_expr(dimension)
-                {
+                if let Some(unit_expr) = ri_builtin_compound_unit_expr(dimension) {
                     return Ok(format!(
                         "{}{unit_expr}",
                         format_f64_shortest(*si_value, false)
@@ -466,7 +421,7 @@ pub fn value_to_ri_literal_in_scope(
         }
         // Every component is finite by `UnitVec3`'s invariant, and an integral
         // one re-parses as an exact `Int`. A direction has no unit, so the
-        // scope and hint are irrelevant.
+        // hint is irrelevant.
         Value::Direction(u) => {
             let [x, y, z] = u.components().map(|c| format_f64_shortest(c, false));
             Ok(format!("dir({x}, {y}, {z})"))
@@ -610,15 +565,7 @@ mod tests {
     }
 
     /// `value_to_ri_literal(v)` must be exactly `..._with_unit(v, None)`,
-    /// including on the error paths.
-    ///
-    /// Extended by task #6400 with the third layer: BOTH shipped entry points
-    /// must be exactly `value_to_ri_literal_in_scope(.., BareBuiltinsOnly)`.
-    /// That is the CONTAINMENT assertion for the compound widening — every
-    /// value that is `Ok` today keeps its identical literal, and every value
-    /// that is `Err` today stays `Err`. Asserted over the one shared case list
-    /// rather than a duplicated one, so a case added for either purpose is
-    /// covered by both.
+    /// including on the error paths, over bare, compound and refused values.
     #[test]
     fn the_unhinted_entry_point_delegates() {
         let cases = [
@@ -633,8 +580,6 @@ mod tests {
                 si_value: 1.0,
                 dimension: DimensionVector::PRESSURE,
             },
-            // Compound dimensions the widening unlocks under the OTHER scope;
-            // here they must still delegate to a refusal.
             Value::Scalar {
                 si_value: 2.5,
                 dimension: DimensionVector::AREA,
@@ -652,19 +597,6 @@ mod tests {
                 value_to_ri_literal_with_unit(&v, None),
                 "delegation mismatch for {v:?}"
             );
-            assert_eq!(
-                value_to_ri_literal(&v),
-                value_to_ri_literal_in_scope(&v, None, UnitScope::BareBuiltinsOnly),
-                "value_to_ri_literal must be exactly ..._in_scope(.., BareBuiltinsOnly) \
-                 for {v:?}"
-            );
-            for hint in [None, Some("cm"), Some("furlong")] {
-                assert_eq!(
-                    value_to_ri_literal_with_unit(&v, hint),
-                    value_to_ri_literal_in_scope(&v, hint, UnitScope::BareBuiltinsOnly),
-                    "hinted delegation mismatch for {v:?} + {hint:?}"
-                );
-            }
         }
     }
 
@@ -755,19 +687,22 @@ mod tests {
         assert_eq!(lit(&Value::String("naïve—Ω".into())), "\"naïve—Ω\"");
     }
 
-    /// Dimensions with no bare built-in symbol are rejected outright. Several
-    /// of these DO have `display_units` ladders — the GUI can still *show* a
-    /// pressure — which is the clearest demonstration that the display table
-    /// and the emission table answer different questions.
+    /// Dimensions whose spelling needs an imported symbol (`N`/`Pa`/`J`/`W`,
+    /// `sr`, `USD`) are rejected outright: this crate cannot see the target
+    /// module's imports. Several of these DO have `display_units` ladders — the
+    /// GUI can still *show* a pressure — which is the clearest demonstration
+    /// that the display table and the emission table answer different
+    /// questions.
     #[test]
-    fn dimensions_needing_a_compound_unit_are_rejected() {
+    fn dimensions_whose_spelling_needs_an_import_are_rejected() {
         for dim in [
-            DimensionVector::AREA,
-            DimensionVector::VOLUME,
             DimensionVector::PRESSURE,
             DimensionVector::FORCE,
+            DimensionVector::ENERGY,
+            DimensionVector::POWER,
             DimensionVector::SOLID_ANGLE,
             DimensionVector::MONEY,
+            DimensionVector::ILLUMINANCE,
         ] {
             let v = Value::Scalar {
                 si_value: 1.5,
@@ -775,7 +710,7 @@ mod tests {
             };
             assert!(
                 matches!(err(&v), RiLiteralError::UnrepresentableDimension { .. }),
-                "{:?} must be rejected — no bare built-in symbol",
+                "{:?} must be rejected — its spelling needs an import",
                 dim.canonical_name()
             );
         }
@@ -1061,23 +996,16 @@ mod tests {
         }
     }
 
-    // ─── The opt-in COMPOUND regime (task #6400) ─────────────────────────────
+    // ─── The COMPOUND path (tasks #6400, #10778) ─────────────────────────────
     //
-    // `UnitScope::SiBaseUnitsSeeded` is the caller's assertion that the target
-    // module resolves the SI base symbols to factor exactly 1.0 — true for any
-    // module compiled with the stdlib prelude. It is a named opt-in rather than
-    // a silent widening because its precondition is STRICTLY STRONGER than the
-    // bare ladder's: a bare unit resolves through
-    // `registry.lookup(..).or_else(|| unit_to_scalar(..))`, so the built-in
-    // table is an unconditional fallback, whereas a compound `UnitExpr` goes to
-    // `resolve_unit_expr`, which is registry-ONLY. Nothing in this crate can
-    // observe the target module's registry, which is exactly why the caller
-    // must say so.
-
-    fn seeded(v: &Value) -> String {
-        value_to_ri_literal_in_scope(v, None, UnitScope::SiBaseUnitsSeeded)
-            .unwrap_or_else(|e| panic!("expected Ok for {v:?} under SiBaseUnitsSeeded, got {e:?}"))
-    }
+    // A dimension with no bare built-in symbol is written as a compound
+    // `UnitExpr` when every atom of its spelling is a factor-1.0 built-in
+    // (`m`/`kg`/`s`/`A`/`K`/`mol`/`cd`/`rad`). The compiler resolves each
+    // compound atom registry-first, then the built-in table (task #5503), so
+    // such a literal needs no import (for its position precondition, see the
+    // module doc's qualification 3). A spelling that needs an imported symbol
+    // is refused instead (see
+    // `dimensions_whose_spelling_needs_an_import_are_rejected`).
 
     fn compound(si_value: f64, dimension: DimensionVector) -> Value {
         Value::Scalar {
@@ -1086,8 +1014,8 @@ mod tests {
         }
     }
 
-    /// (a) UNLOCK — dimensions that are `Err` today emit
-    /// magnitude-then-compound, with the magnitude being the SI value VERBATIM.
+    /// (a) Compound dimensions emit magnitude-then-compound, with the
+    /// magnitude being the SI value VERBATIM.
     ///
     /// No ladder scaling occurs on this path and none may: every emitted atom
     /// resolves to factor exactly 1.0, so the compiler's fold is exactly 1.0
@@ -1095,21 +1023,20 @@ mod tests {
     /// is the IEEE identity. `ri_literal_roundtrip.rs` re-parses each of these
     /// through the real parser and asserts identical f64 BITS.
     #[test]
-    fn compound_dimensions_emit_the_si_value_verbatim_when_the_scope_allows_it() {
+    fn compound_dimensions_emit_the_si_value_verbatim() {
         let cases: &[(Value, &str)] = &[
             (compound(2.5, DimensionVector::AREA), "2.5m^2"),
             (compound(1e-6, DimensionVector::VOLUME), "1e-6m^3"),
-            (compound(101325.0, DimensionVector::PRESSURE), "101325Pa"),
-            (compound(-9.81, DimensionVector::FORCE), "-9.81N"),
-            (compound(1234.5, DimensionVector::ENERGY), "1234.5J"),
-            (compound(750.0, DimensionVector::POWER), "750W"),
-            (compound(7850.0, DimensionVector::MASS_DENSITY), "7850kg/m^3"),
-            (compound(1.5, DimensionVector::SOLID_ANGLE), "1.5sr"),
-            (compound(19.99, DimensionVector::MONEY), "19.99USD"),
+            (
+                compound(7850.0, DimensionVector::MASS_DENSITY),
+                "7850kg/m^3",
+            ),
             (compound(1.5, DimensionVector::VOLTAGE), "1.5m^2*kg/s^3/A"),
+            (compound(2.5, DimensionVector::CHARGE), "2.5s*A"),
+            (compound(60.0, DimensionVector::FREQUENCY), "60s^-1"),
         ];
         for (v, expected) in cases {
-            assert_eq!(&seeded(v), expected, "compound emission drifted for {v:?}");
+            assert_eq!(&lit(v), expected, "compound emission drifted for {v:?}");
         }
     }
 
@@ -1122,10 +1049,10 @@ mod tests {
     /// prevent.
     #[test]
     fn compound_magnitudes_are_the_shortest_round_tripping_form() {
-        assert_eq!(seeded(&compound(-0.0, DimensionVector::AREA)), "-0m^2");
+        assert_eq!(lit(&compound(-0.0, DimensionVector::AREA)), "-0m^2");
 
         for si in [0.1 + 0.2, 1e-9, f64::MIN_POSITIVE / 2.0, 1.7976931348623157e308] {
-            let emitted = seeded(&compound(si, DimensionVector::AREA));
+            let emitted = lit(&compound(si, DimensionVector::AREA));
             let magnitude = emitted
                 .strip_suffix("m^2")
                 .unwrap_or_else(|| panic!("{emitted:?} must end in the unit expression"));
@@ -1144,48 +1071,15 @@ mod tests {
         }
     }
 
-    /// (b) CONTAINMENT — under `BareBuiltinsOnly` every value the other scope
-    /// unlocks is still the structured refusal it is today. The shipped
-    /// contract is untouched; `dimensions_needing_a_compound_unit_are_rejected`
-    /// stays green and unmodified.
-    #[test]
-    fn the_bare_scope_still_refuses_every_compound_dimension() {
-        for dim in [
-            DimensionVector::AREA,
-            DimensionVector::VOLUME,
-            DimensionVector::PRESSURE,
-            DimensionVector::FORCE,
-            DimensionVector::MASS_DENSITY,
-            DimensionVector::SOLID_ANGLE,
-            DimensionVector::MONEY,
-        ] {
-            let v = compound(2.5, dim);
-            assert!(
-                seeded(&v).len() > 1,
-                "{:?} must be emittable under SiBaseUnitsSeeded — otherwise this \
-                 test is vacuous",
-                dim.canonical_name()
-            );
-            assert!(
-                matches!(
-                    value_to_ri_literal_in_scope(&v, None, UnitScope::BareBuiltinsOnly),
-                    Err(RiLiteralError::UnrepresentableDimension { .. })
-                ),
-                "{:?} must stay a structured refusal under BareBuiltinsOnly",
-                dim.canonical_name()
-            );
-        }
-    }
-
-    /// (b2) The bare ladder ALWAYS wins, so widening cannot silently re-spell
-    /// an existing param.
+    /// (b) The bare ladder ALWAYS wins, so the compound path cannot silently
+    /// re-spell an existing param.
     ///
     /// This is structural rather than incidental: compound is reached only from
     /// inside the existing `if ladder.is_empty()` branch, so a dimension with a
     /// non-empty bare ladder can never take the compound path. `0.08m^1` is not
     /// merely unpreferred here — it is unreachable.
     #[test]
-    fn a_dimension_with_a_bare_ladder_emits_identically_under_both_scopes() {
+    fn a_dimension_with_a_bare_ladder_never_takes_the_compound_path() {
         let cases: &[(Value, &str)] = &[
             (Value::length(0.08), "80mm"),
             (Value::angle(std::f64::consts::FRAC_PI_2), "90deg"),
@@ -1194,12 +1088,10 @@ mod tests {
             (compound(293.15, DimensionVector::TEMPERATURE), "293.15K"),
         ];
         for (v, expected) in cases {
-            assert_eq!(&lit(v), expected, "shipped literal drifted for {v:?}");
             assert_eq!(
-                &seeded(v),
+                &lit(v),
                 expected,
-                "{v:?} must emit the IDENTICAL bare literal under \
-                 SiBaseUnitsSeeded — the bare ladder always wins"
+                "{v:?} must emit its bare literal — the bare ladder always wins"
             );
         }
     }
@@ -1209,50 +1101,55 @@ mod tests {
     #[test]
     fn rational_exponent_dimensions_emit_their_p_over_q_spelling() {
         assert_eq!(
-            value_to_ri_literal_in_scope(
-                &compound(1.5, DimensionVector::LENGTH.root(2)),
-                None,
-                UnitScope::SiBaseUnitsSeeded
-            ),
+            value_to_ri_literal(&compound(1.5, DimensionVector::LENGTH.root(2))),
             Ok("1.5m^1/2".to_string())
         );
         assert_eq!(
-            value_to_ri_literal_in_scope(
-                &compound(5e7, DimensionVector::FRACTURE_TOUGHNESS),
-                None,
-                UnitScope::SiBaseUnitsSeeded
-            ),
+            value_to_ri_literal(&compound(5e7, DimensionVector::FRACTURE_TOUGHNESS)),
             Ok("50000000kg/m^1/2/s^2".to_string())
         );
     }
 
-    /// (c) REJECTIONS THAT SURVIVE THE UNLOCK. Each is a case where emitting
+    /// (c) REJECTIONS ON A COMPOUND DIMENSION. Each is a case where emitting
     /// something would produce a literal that does not re-parse.
     #[test]
-    fn the_unlock_does_not_widen_to_what_still_cannot_be_written() {
+    fn a_compound_dimension_still_refuses_non_finite_and_non_scalar_values() {
         // Finiteness is checked BEFORE any formatting, so a non-finite
         // compound value is `NonFiniteNumber` — never a partially-formed
         // `NaNm^2`.
         for si in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert_eq!(
-                value_to_ri_literal_in_scope(
-                    &compound(si, DimensionVector::AREA),
-                    None,
-                    UnitScope::SiBaseUnitsSeeded
-                ),
+                value_to_ri_literal(&compound(si, DimensionVector::AREA)),
                 Err(RiLiteralError::NonFiniteNumber),
                 "non-finite {si:?} on a compound dimension must be refused before \
                  anything is formatted"
             );
         }
 
-        // Non-Scalar kinds are untouched by the scope entirely.
+        // Non-Scalar kinds never reach the compound path.
         for v in [Value::Undef, Value::List(vec![])] {
             assert!(matches!(
-                value_to_ri_literal_in_scope(&v, None, UnitScope::SiBaseUnitsSeeded),
+                value_to_ri_literal(&v),
                 Err(RiLiteralError::UnsupportedValueKind { .. })
             ));
         }
+    }
+
+    /// (c2) An exponent no unit expression can carry is refused as
+    /// `UnrepresentableDimension`, though every atom of its spelling would be
+    /// a built-in: no import could make it writable.
+    #[test]
+    fn an_exponent_outside_the_unit_expression_range_is_refused() {
+        let mut exponents = [reify_core::Rational::ZERO; 10];
+        exponents[0] = reify_core::Rational::new(200, 1);
+        let length_200 = DimensionVector(exponents);
+        assert!(!reify_core::units::unit_exponent_in_range(exponents[0]));
+        assert_eq!(
+            value_to_ri_literal(&compound(1.5, length_200)),
+            Err(RiLiteralError::UnrepresentableDimension {
+                dimension: length_200
+            })
+        );
     }
 
     /// (d) THE HINT IS INERT FOR A COMPOUND DIMENSION.
@@ -1266,11 +1163,7 @@ mod tests {
     fn a_hint_never_reaches_a_compound_dimension() {
         for hint in [Some("mm"), Some("cm"), Some("m"), Some("kg"), Some("furlong")] {
             assert_eq!(
-                value_to_ri_literal_in_scope(
-                    &compound(2.5, DimensionVector::AREA),
-                    hint,
-                    UnitScope::SiBaseUnitsSeeded
-                ),
+                value_to_ri_literal_with_unit(&compound(2.5, DimensionVector::AREA), hint),
                 Ok("2.5m^2".to_owned()),
                 "hint {hint:?} must not reach the compound path"
             );

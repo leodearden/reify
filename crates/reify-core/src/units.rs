@@ -193,32 +193,28 @@ pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
 ///
 /// Returns `&[]` — meaning "not emittable as a bare unit literal" — for
 /// dimensionless values and for every dimension that would need a compound
-/// `UnitExpr` (Area `m^2`, Volume `m^3`, Pressure, Force, …). Compound unit
-/// expressions go through the compiler's `resolve_unit_expr`, which is
-/// registry-ONLY with no built-in fallback, so emitting one would make the
-/// round-trip contingent on the target module's imports. `sr` (SolidAngle)
-/// and `USD` (Money) are simply absent from [`unit_symbol_to_si`].
+/// `UnitExpr` (Area `m^2`, Volume `m^3`, Pressure, Force, …). `sr`
+/// (SolidAngle) and `USD` (Money) are simply absent from
+/// [`unit_symbol_to_si`].
 ///
-/// # Those dimensions now have a SIBLING, not a widening
+/// # Those dimensions have a SIBLING, not a widening
 ///
-/// [`ri_compound_unit_expr`] writes exactly the dimensions this function
-/// refuses (task #6400). The split is deliberate and must stay: this table
-/// answers "which BARE symbols may be written, most-preferred first" — an
-/// ORDERED ladder the caller WALKS for bit-exactness, whose factor-1.0
-/// TERMINATOR contract is meaningless for a compound expression — while that
-/// one answers "which `UnitExpr`-shaped string spells this dimension out of
-/// factor-1.0 symbols", and is unordered and total.
+/// [`ri_compound_unit_expr`] spells the dimensions this function refuses
+/// (task #6400), and [`ri_builtin_compound_unit_expr`] is that spelling
+/// restricted to built-in atoms, which is what `reify_ir::ri_literal` writes.
+/// The split is deliberate and must stay: this table answers "which BARE
+/// symbols may be written, most-preferred first" — an ORDERED ladder the
+/// caller WALKS for bit-exactness, whose factor-1.0 TERMINATOR contract is
+/// meaningless for a compound expression — while those answer "which
+/// `UnitExpr`-shaped string spells this dimension out of factor-1.0 symbols",
+/// and are unordered.
 ///
-/// The preconditions differ too, which is the half that actually matters: a
-/// bare symbol round-trips in ANY module because the built-in table is an
-/// unconditional `or_else` fallback, whereas a compound expression needs a
-/// seeded registry and is therefore gated behind an explicit
-/// `reify_ir::ri_literal::UnitScope`. Merging the two tables would silently
-/// attach the weaker precondition to every bare emission, and would force
-/// rewriting all four drift guards below — including
+/// Merging them would force rewriting all four drift guards below — including
 /// `ri_emittable_units_is_empty_for_dimensionless_and_unsupported_dimensions`,
 /// whose empty-ladder assertions are what make the compound path's containment
-/// STRUCTURAL at the `reify-ir` call site. Do not "fix" this by unifying them.
+/// STRUCTURAL at the `reify-ir` call site: a dimension with a bare ladder never
+/// reaches the compound builder, so `80mm` is never written `0.08m`. Do not
+/// "fix" this by unifying them.
 ///
 /// # Intentionally NOT [`crate::display_units::unit_ladders`]
 ///
@@ -263,11 +259,16 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
 /// dimension then breaks BOTH tables at compile time rather than silently
 /// mis-labelling a slot.
 ///
-/// A compound `UnitExpr` resolves against the compiler's `UnitRegistry` alone,
-/// so a slot is `Some` only if its bare symbol is seeded there at factor exactly
-/// `1.0` — see [`ri_compound_unit_expr`] for what that identity buys. All ten
-/// slots are today: nine bases are declared in `stdlib/units.ri`, and `sr` is
-/// generated bare by `si_units.rs`.
+/// Each compound atom resolves against the compiler's `UnitRegistry` first,
+/// then [`BUILTIN_UNITS`] (reify-compiler `lookup_unit_atom`, task #5503),
+/// subject to the position precondition in `reify_ir::ri_literal`'s
+/// qualification 3. A slot is `Some` only if its bare symbol is seeded in the
+/// stdlib registry at
+/// factor exactly `1.0` — see [`ri_compound_unit_expr`] for what that identity
+/// buys. All ten slots are today: nine bases are declared in `stdlib/units.ri`,
+/// and `sr` is generated bare by `si_units.rs`. Eight of them (all but `sr` and
+/// `USD`) are also built-ins, which is the subset
+/// [`ri_builtin_compound_unit_expr`] writes.
 ///
 /// That is an empirical fact about the stdlib, so it is not left to trust:
 /// `ri_literal_roundtrip.rs`'s
@@ -280,7 +281,7 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
 /// a literal that cannot re-parse.
 ///
 /// Read by `ri_compound_unit_expr`, and through it by reify-compiler's
-/// conformance migration hint.
+/// conformance migration hint, and filtered by `ri_builtin_compound_unit_expr`.
 pub const RI_COMPOUND_BASE_SYMBOLS: [Option<&'static str>; 10] = [
     Some("m"),   // 0 Length
     Some("kg"),  // 1 Mass
@@ -340,10 +341,11 @@ fn ri_unit_factor(symbol: &str, exponent: Rational) -> String {
 /// symbol when one exists, else SI base symbols — or `None` when it cannot be
 /// written exactly (task #6400).
 ///
-/// The COMPOUND sibling of [`ri_emittable_units`], used by
-/// `reify_ir::ri_literal` under `UnitScope::SiBaseUnitsSeeded` to write values
-/// whose dimension has no bare symbol at all: `2.5m^2`, `101325Pa`,
-/// `7850kg/m^3`.
+/// The COMPOUND sibling of [`ri_emittable_units`], for dimensions with no bare
+/// symbol at all: `m^2`, `Pa`, `kg/m^3`. reify-compiler's conformance migration
+/// hint reads it. `reify_ir::ri_literal` reads its built-in-only restriction,
+/// [`ri_builtin_compound_unit_expr`], instead, because `Pa`, `sr` and `USD`
+/// resolve only in a module that imports them.
 ///
 /// # Why this is not a widening of [`ri_emittable_units`]
 ///
@@ -356,15 +358,14 @@ fn ri_unit_factor(symbol: &str, exponent: Rational) -> String {
 /// AREA/VOLUME/PRESSURE/FORCE/SOLID_ANGLE/MONEY have EMPTY ladders. All four
 /// stay green and unmodified precisely because this is a separate function.
 ///
-/// The preconditions differ too, and that is the load-bearing half. A bare
-/// symbol resolves as `registry.lookup(..).or_else(|| unit_to_scalar(..))`, so
-/// the built-in table is an unconditional fallback and a bare literal parses in
-/// a module that imports nothing. A compound `UnitExpr` goes through
-/// `resolve_unit_expr` (reify-compiler `units.rs`), which is registry-ONLY with
-/// NO built-in fallback — `stdlib/units.ri`'s own `STANDARD_GRAVITY` comment
-/// states the asymmetry, writing `1m / (1s * 1s)` rather than `9.80665m/s^2`
-/// for exactly this reason. So this function is pure and total, and the
-/// PRECONDITION is asserted by the caller, not by it.
+/// Whether the result resolves in a given module is not this function's
+/// concern: it is pure and total over the dimensions it can spell. A compound
+/// `UnitExpr` goes through `resolve_unit_expr` (reify-compiler `units.rs`),
+/// which resolves each atom registry-first, then [`BUILTIN_UNITS`]
+/// (`lookup_unit_atom`, task #5503). So a built-in atom needs no import,
+/// while `N`/`Pa`/`J`/`W`/`sr`/`USD` resolve only where their std module is
+/// imported. Either way a compound literal carries a position precondition,
+/// stated in `reify_ir::ri_literal`'s qualification 3.
 ///
 /// # Exactness is structural, not measured
 ///
@@ -412,16 +413,68 @@ fn ri_unit_factor(symbol: &str, exponent: Rational) -> String {
 ///   compiler's;
 /// - any non-zero exponent on a slot [`RI_COMPOUND_BASE_SYMBOLS`] marks `None`.
 pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
+    named_derived_symbol(dim)
+        .map(str::to_owned)
+        .or_else(|| ri_base_symbol_unit_expr(dim, &RI_COMPOUND_BASE_SYMBOLS))
+}
+
+/// [`ri_compound_unit_expr`]'s spelling restricted to symbols that need no
+/// import: `Some(s)` implies `s == ri_compound_unit_expr(dim)`, and every atom
+/// of `s` is a factor-1.0 [`BUILTIN_UNITS`] entry (task #10778).
+///
+/// reify-compiler's `resolve_unit_expr` resolves each compound atom
+/// registry-first, then [`BUILTIN_UNITS`] (`lookup_unit_atom`, task #5503), so
+/// a literal spelled this way needs no import. It still carries the
+/// position precondition in `reify_ir::ri_literal`'s qualification 3.
+/// `reify_ir::ri_literal` writes it unconditionally, and it is exact for the
+/// reasons [`ri_compound_unit_expr`] gives.
+///
+/// Returns `None` wherever [`ri_compound_unit_expr`] does, and also for:
+///
+/// - a [`RI_NAMED_DERIVED_SYMBOLS`] dimension. It is refused, not re-spelled in
+///   base symbols (`kg/m/s^2`), which keeps task #6516's decision that the
+///   named symbol is the readable spelling;
+/// - any non-zero exponent on a slot whose [`RI_COMPOUND_BASE_SYMBOLS`] symbol
+///   is not a factor-1.0 built-in (`sr`, `USD`).
+pub fn ri_builtin_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
+    if named_derived_symbol(dim).is_some() {
+        return None;
+    }
+    ri_base_symbol_unit_expr(dim, &builtin_compound_base_symbols())
+}
+
+/// The [`RI_NAMED_DERIVED_SYMBOLS`] symbol naming exactly `dim`, if any.
+fn named_derived_symbol(dim: &DimensionVector) -> Option<&'static str> {
     RI_NAMED_DERIVED_SYMBOLS
         .iter()
         .find(|&&(_, named)| named == *dim)
-        .map(|&(sym, _)| sym.to_owned())
-        .or_else(|| ri_base_symbol_unit_expr(dim))
+        .map(|&(sym, _)| sym)
 }
 
-/// [`ri_compound_unit_expr`]'s fallback: `dim` spelled out of
-/// [`RI_COMPOUND_BASE_SYMBOLS`].
-fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
+/// [`RI_COMPOUND_BASE_SYMBOLS`] with every slot whose symbol is not a [`BUILTIN_UNITS`]
+/// entry of factor exactly `1.0` and of that slot's own base dimension set to
+/// `None`.
+fn builtin_compound_base_symbols() -> [Option<&'static str>; 10] {
+    std::array::from_fn(|i| {
+        let mut exponents = [Rational::ZERO; 10];
+        exponents[i] = Rational::ONE;
+        let slot_dimension = DimensionVector(exponents);
+        RI_COMPOUND_BASE_SYMBOLS[i].filter(|sym| {
+            matches!(
+                unit_symbol_to_si(sym),
+                Some((factor, dimension))
+                    if factor.to_bits() == 1.0f64.to_bits() && dimension == slot_dimension
+            )
+        })
+    })
+}
+
+/// `dim` spelled out of the slot symbols in `slots`; the shared shape algorithm
+/// of [`ri_compound_unit_expr`] and [`ri_builtin_compound_unit_expr`].
+fn ri_base_symbol_unit_expr(
+    dim: &DimensionVector,
+    slots: &[Option<&'static str>; 10],
+) -> Option<String> {
     // Collect first, decide the form second: whether the numerator is empty is
     // a property of the WHOLE vector, and the two forms write different
     // exponents (the signed form writes `s^-128`, the denominator form would
@@ -434,7 +487,7 @@ fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
         if !unit_exponent_in_range(exponent) {
             return None;
         }
-        factors.push((RI_COMPOUND_BASE_SYMBOLS[i]?, exponent));
+        factors.push((slots[i]?, exponent));
     }
     if factors.is_empty() {
         return None;
@@ -831,11 +884,11 @@ mod tests {
     // `ri_emittable_units_is_empty_for_dimensionless_and_unsupported_dimensions`,
     // which asserts AREA/VOLUME/PRESSURE/FORCE/SOLID_ANGLE/MONEY have empty
     // ladders) must stay green and unmodified. This one answers "which
-    // `UnitExpr`-shaped string spells this dimension out of SI base symbols",
-    // and it carries a STRICTLY STRONGER precondition: the compiler's
-    // `resolve_unit_expr` is registry-ONLY with no `unit_to_scalar` fallback,
-    // so the caller must assert a seeded registry. The function itself is pure
-    // — the opt-in lives at `reify_ir::ri_literal::UnitScope`.
+    // `UnitExpr`-shaped string spells this dimension out of factor-1.0
+    // symbols". Its built-in-only restriction, `ri_builtin_compound_unit_expr`
+    // (task #10778), is what `reify_ir::ri_literal` writes: the compiler
+    // resolves each compound atom registry-first, then `BUILTIN_UNITS`, so only
+    // that restriction needs no import.
 
     /// A `DimensionVector` with a single slot set — the escape hatch for
     /// exponents the named constants cannot express.
@@ -1042,8 +1095,8 @@ mod tests {
             );
             assert!(
                 ri_emittable_units(&dim).is_empty(),
-                "{sym:?} names {:?}, which has a bare ladder — reify-ir never takes \
-                 the compound path for it, so this row is dead",
+                "{sym:?} names {:?}, which already has a bare built-in ladder; the \
+                 named table is only for dimensions no bare built-in can write",
                 dim.canonical_name()
             );
             assert!(
@@ -1092,6 +1145,130 @@ mod tests {
             "expected to check at least {DIMENSIONED_ROWS_FLOOR} dimensioned \
              NAMED_DIMENSIONS rows, saw {checked} — did the table lose entries?"
         );
+    }
+
+    /// The import-free compound spellings: every atom is a factor-1.0 built-in,
+    /// so the literal needs no import.
+    #[test]
+    fn ri_builtin_compound_unit_expr_writes_builtin_only_spellings() {
+        let cases: &[(DimensionVector, &str)] = &[
+            (DimensionVector::AREA, "m^2"),
+            (DimensionVector::VOLUME, "m^3"),
+            (DimensionVector::MASS_DENSITY, "kg/m^3"),
+            (DimensionVector::DYNAMIC_VISCOSITY, "kg/m/s"),
+            (DimensionVector::VOLTAGE, "m^2*kg/s^3/A"),
+            (DimensionVector::CHARGE, "s*A"),
+            (DimensionVector::FREQUENCY, "s^-1"),
+            (DimensionVector::FRACTURE_TOUGHNESS, "kg/m^1/2/s^2"),
+            (
+                DimensionVector::AMOUNT_OF_SUBSTANCE.div(&DimensionVector::VOLUME),
+                "mol/m^3",
+            ),
+            (DimensionVector::ANGLE.div(&DimensionVector::TIME), "rad/s"),
+            (DimensionVector::LENGTH, "m"),
+        ];
+        for &(dim, expected) in cases {
+            assert_eq!(
+                ri_builtin_compound_unit_expr(&dim).as_deref(),
+                Some(expected),
+                "builtin-only compound emission for {:?} drifted",
+                dim.canonical_name()
+            );
+        }
+    }
+
+    /// Refusals: a named derived dimension is never re-spelled in base symbols,
+    /// and a slot whose symbol is not a built-in (`sr`, `USD`) is unwritable.
+    #[test]
+    fn ri_builtin_compound_unit_expr_refuses_spellings_that_need_an_import() {
+        for &(sym, dim) in RI_NAMED_DERIVED_SYMBOLS {
+            assert_eq!(
+                ri_builtin_compound_unit_expr(&dim),
+                None,
+                "{:?} is spelled {sym:?}, which needs an import; it must be refused, \
+                 not re-spelled in base symbols",
+                dim.canonical_name()
+            );
+        }
+        for dim in [
+            DimensionVector::SOLID_ANGLE,
+            DimensionVector::MONEY,
+            DimensionVector::ILLUMINANCE,
+        ] {
+            assert_eq!(
+                ri_builtin_compound_unit_expr(&dim),
+                None,
+                "{:?} needs `sr` or `USD`, neither of which is a built-in",
+                dim.canonical_name()
+            );
+        }
+        assert_eq!(
+            ri_builtin_compound_unit_expr(&DimensionVector::DIMENSIONLESS),
+            None
+        );
+        assert_eq!(
+            ri_builtin_compound_unit_expr(&one_slot(0, crate::Rational::new(200, 1))),
+            None,
+            "an exponent outside i8 is what `resolve_unit_expr` rejects"
+        );
+    }
+
+    /// The builtin-only spelling is `ri_compound_unit_expr`'s spelling, restricted
+    /// to dimensions every atom of which is a factor-1.0 built-in — so the
+    /// serializer and the conformance migration hint never disagree on a
+    /// dimension the serializer writes.
+    #[test]
+    fn ri_builtin_compound_unit_expr_is_the_compound_spelling_restricted_to_builtins() {
+        let is_named_row =
+            |dim: &DimensionVector| RI_NAMED_DERIVED_SYMBOLS.iter().any(|(_, d)| d == dim);
+        let atoms = |expr: &str| -> Vec<String> {
+            expr.split(|c: char| !c.is_alphabetic())
+                .filter(|atom| !atom.is_empty())
+                .map(str::to_owned)
+                .collect()
+        };
+        let (mut written, mut refused) = (0usize, 0usize);
+        for &(dim, name) in crate::NAMED_DIMENSIONS {
+            if dim.is_dimensionless() {
+                continue;
+            }
+            match ri_builtin_compound_unit_expr(&dim) {
+                Some(s) => {
+                    assert_eq!(
+                        Some(s.as_str()),
+                        ri_compound_unit_expr(&dim).as_deref(),
+                        "{name}: the builtin-only spelling must equal the compound one"
+                    );
+                    for atom in atoms(&s) {
+                        let (factor, _) = unit_symbol_to_si(&atom).unwrap_or_else(|| {
+                            panic!("{name}: {s:?} names {atom:?}, which is not a built-in")
+                        });
+                        assert_eq!(
+                            factor.to_bits(),
+                            1.0f64.to_bits(),
+                            "{name}: {s:?} names {atom:?}, whose built-in factor is not 1.0"
+                        );
+                    }
+                    written += 1;
+                }
+                None => {
+                    let t = ri_compound_unit_expr(&dim)
+                        .unwrap_or_else(|| panic!("{name} has no compound spelling at all"));
+                    assert!(
+                        is_named_row(&dim)
+                            || atoms(&t).iter().any(|a| unit_symbol_to_si(a).is_none()),
+                        "{name}: refused, yet its compound spelling {t:?} is a \
+                         non-named, built-in-only expression"
+                    );
+                    refused += 1;
+                }
+            }
+        }
+        assert!(
+            written >= 10,
+            "only {written} rows written — vacuous sweep?"
+        );
+        assert!(refused >= 7, "only {refused} rows refused — vacuous sweep?");
     }
 
     /// The one bound on a unit-expression exponent: numerator and denominator

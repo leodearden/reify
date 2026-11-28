@@ -1285,7 +1285,6 @@ fn mesh_stats_json_emits_populated_element_kind_histogram() {
 const AUX_AND_CONSUMED_FLANGE_SRC: &str = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def Flange : Rigid {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
@@ -3364,7 +3363,6 @@ fn rigid_mass_props_determined_across_all_gui_load_paths() {
 const RIGID_TWO_BODY_SRC: &str = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def RigidBodyA : Rigid {
     param depth : Length = 300mm
     param geometry : Solid = box(100mm, 100mm, depth)
@@ -3383,7 +3381,6 @@ structure def RigidBodyB : Rigid {
 const RIGID_TWO_REALIZATION_SRC: &str = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def RigidTwoRealizations : Rigid {
     param geometry : Solid = box(100mm, 100mm, 300mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
@@ -3678,7 +3675,6 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
 const RIGID_DENSITY_SCALE_SRC: &str = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def RigidDensityScale : Rigid {
     param depth : Length = 300mm
     param density_scale : Real = 1.0
@@ -3857,7 +3853,6 @@ fn warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props() {
 const RIGID_CONTAINED_SUB_SRC: &str = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def RigidPart : Rigid {
     param geometry : Solid = box(100mm, 100mm, 300mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
@@ -4008,7 +4003,6 @@ fn contained_rigid_sub_part_retention_works_once_the_demand_key_resolves() {
 const COLLIDING_BODY_SRC_A: &str = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def Body : Rigid {
     param geometry : Solid = box(100mm, 100mm, 300mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
@@ -4025,7 +4019,6 @@ structure def Body : Rigid {
 const COLLIDING_BODY_SRC_B: &str = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def Body : Rigid {
     param geometry : Solid = box(50mm, 50mm, 50mm)
     param material : Material = Material(name: "alu", density: 3925kg/m^3, youngs_modulus: 70GPa)

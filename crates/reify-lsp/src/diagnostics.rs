@@ -674,7 +674,6 @@ mod tests {
     const STDLIB_PROBE_SRC: &str = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 
 structure S : Rigid {
     param geometry: Solid = box(10mm, 20mm, 30mm)

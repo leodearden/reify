@@ -8255,10 +8255,13 @@ pub(crate) fn unit_hint_from_default_literal(default_slice: &str) -> Option<&str
 /// That is the same class of silent destruction the non-literal gate exists to
 /// prevent (see [`EngineSession::apply_param_to_source`]), so it gets the same
 /// answer: REFUSE, with a discriminated message δ can surface, rather than
-/// canonicalize behind the user's back. Compound unit expressions (`kN*m`,
-/// `kg/m^3`) are refused for the same reason plus a second one — the emitter's
-/// ladder covers no compound dimension at all, so they could only ever be
-/// rejected one phase later with a much vaguer message.
+/// canonicalize behind the user's back. Compound unit expressions are refused
+/// too, for one of two reasons depending on the dimension. Where the emitter
+/// can spell the dimension from built-in symbols (`g/cm^3`, `mm^2`) it never
+/// consults the hint, so `5g/cm^3` would come back as `5000kg/m^3`: the same
+/// vocabulary loss. Where the dimension's spelling needs an import (`kN*m` is
+/// an Energy, `N/mm^2` a Pressure) the emitter writes nothing at all, so the
+/// edit would only be rejected one phase later with a much vaguer message.
 ///
 /// This is a LIMITATION of the emitter, not a policy: the day
 /// `value_to_ri_literal_with_unit` can resolve a hint through the compiled
