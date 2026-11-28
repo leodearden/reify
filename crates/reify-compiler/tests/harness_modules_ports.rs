@@ -78,8 +78,6 @@ mod qualified_access_compile_tests;
 mod reserved_name_lint_tests;
 #[path = "harness_modules_ports/standard_gravity_tests.rs"]
 mod standard_gravity_tests;
-#[path = "harness_modules_ports/std_prelude_facade_tests.rs"]
-mod std_prelude_facade_tests;
 #[path = "harness_modules_ports/stdlib_shadow_warning_tests.rs"]
 mod stdlib_shadow_warning_tests;
 #[path = "harness_modules_ports/stdlib_strict_build_tests.rs"]
