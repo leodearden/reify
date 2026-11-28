@@ -348,7 +348,8 @@ pub(crate) fn read_base_elastic(
         Err(err) if err.is_unresolved() => None,
         Err(err) => return Err(err),
     };
-    let density = read_field(material, "density", &density_spec()).map_err(in_process)?;
+    let density = read_field(material, "density", &density_spec())
+        .map_err(|r| InputDecodeError::refused(IsotropicElastic::STRUCTURE, r))?;
     Ok(match (elastic, density) {
         (Some(elastic), Some(density)) => Some(BaseElastic {
             youngs_modulus: elastic.youngs_modulus,
