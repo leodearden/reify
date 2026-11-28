@@ -3,10 +3,13 @@
 //! writes without importing a defining module draws one coded Error naming
 //! the imports that would bring the name in.
 //!
-//! The same derivation `fix --imports` runs: [`name_uses`](super::name_uses)
-//! finds the written names, [`attribution`](super::attribution) the std
-//! modules that can bind each, and [`coverage`](super::coverage) what the
-//! module's in-effect imports make visible, `pub import` re-exports included.
+//! [`name_uses`](super::name_uses) finds the written names and
+//! [`attribution`](super::attribution) the std modules that can bind each.
+//! Visibility is the compile's own: a module is visible iff it is in the
+//! import tier the module was compiled against (whole-module, entity imports
+//! included, `pub import` re-exports folded in), so the fix-it and the
+//! compile cannot disagree about what the module imports.
+//! [`coverage`](super::coverage) only supplies the gated-off note.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,7 +26,8 @@ use crate::types::CompiledModule;
 const PRELUDE: &str = "std.prelude";
 
 /// One NS-V2 Error per name `parsed` writes that only std modules define
-/// when `cfg`'s in-effect imports make none of those modules visible.
+/// when none of those modules is in `imports`, the tier `local` was compiled
+/// against.
 ///
 /// `local` is `parsed` compiled against its own import tier, `imports`;
 /// attribution ranks its definitions and the tier's ahead of the whole
@@ -48,15 +52,15 @@ pub fn std_import_fixits(
     let index = ExportIndex::new(local, &universe);
     let uses = collect_name_uses(parsed);
     let re_exports = ReExports::of_compiled(universe.iter().copied());
-    let in_effect = ImportCoverage::of(parsed, cfg, &re_exports);
     let gated_off = ImportCoverage::of_gated_off(parsed, cfg, &re_exports);
+    let in_tier = |module: &ModulePath| imports.iter().any(|compiled| &compiled.path == module);
 
     let mut unimported: BTreeMap<&str, Unimported> = BTreeMap::new();
     let distinct: BTreeSet<_> = uses.uses.iter().collect();
     for name_use in distinct {
         let name = name_use.name.as_str();
         let modules = defining_std_modules(name_use, &uses, &index);
-        if modules.is_empty() || modules.iter().any(|module| in_effect.covers(module, name)) {
+        if modules.is_empty() || modules.iter().any(|module| in_tier(module)) {
             continue;
         }
         let entry = unimported.entry(name).or_default();

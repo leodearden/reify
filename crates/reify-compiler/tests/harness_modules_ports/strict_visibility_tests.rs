@@ -349,6 +349,30 @@ fn importing_the_unit_module_or_the_prelude_compiles_the_entry_clean() {
     }
 }
 
+/// The compile builds a unit's tier one whole module at a time, so an
+/// entity-form std import makes the module's whole pub surface visible; the
+/// fix-it must agree and stay silent on a name the compile resolved.
+#[test]
+fn an_entity_form_std_import_makes_the_whole_module_visible_to_the_fixit() {
+    let sources = [
+        "module main\n\nimport std.si_units.{MPa}\n\nstructure def S {\n    param e : Pressure = 200GPa\n}\n",
+        "module main\n\nimport std.materials.fea.{ElasticMaterial}\n\nstructure def S {\n    param material : ElasticMaterial = ABS_Plastic()\n}\n",
+    ];
+    for source in sources {
+        let program = compile_main(source, &linux());
+        assert!(
+            std_name_fixits(program.entry()).is_empty(),
+            "{source}: {:#?}",
+            program.entry().diagnostics
+        );
+        assert!(
+            error_diagnostics(program.entry()).is_empty(),
+            "{source}: {:#?}",
+            program.entry().diagnostics
+        );
+    }
+}
+
 #[test]
 fn builtin_dimensions_and_units_need_no_import_in_a_program() {
     let program = compile_main(
