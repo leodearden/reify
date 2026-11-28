@@ -191,8 +191,8 @@ pub fn derive_std_imports<'u>(
     universe: &[&'u CompiledModule],
 ) -> ImportPlan<'u> {
     let local = crate::compile_with_prelude_refs(parsed, universe);
-    let index = attribution::ExportIndex::new(&local, universe);
     let uses = name_uses::collect_name_uses(parsed);
+    let index = attribution::ExportIndex::new(&local, universe, &uses);
 
     let mut by_module: BTreeMap<String, (ModulePath, BTreeSet<NameUse>)> = BTreeMap::new();
     for name_use in &uses.uses {

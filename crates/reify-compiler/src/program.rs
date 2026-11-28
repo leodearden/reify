@@ -319,13 +319,11 @@ fn compile_entry(
 
     // The entry's import tier (D-5, D-7), shared by the prelude and the
     // returned units so check and eval see the same modules. A
-    // satisfied-but-failed import is absent from `dag.modules`; `filter_map`
-    // skips it (its failure is already collected).
+    // satisfied-but-failed import is absent from the DAG; `filter_map` skips
+    // it (its failure is already collected).
     let visible = dag.visible_imports(&followed);
-    let import_refs: Vec<&CompiledModule> = visible
-        .iter()
-        .filter_map(|path| dag.modules.get(path))
-        .collect();
+    let import_refs: Vec<&CompiledModule> =
+        visible.iter().filter_map(|path| dag.module(path)).collect();
     let mut entry = crate::compile_with_prelude_refs_checked(parsed, &import_refs, checker);
     let fixits = crate::import_headers::std_import_fixits(parsed, &entry, &import_refs, cfg);
     entry.diagnostics.extend(fixits);
@@ -358,7 +356,7 @@ fn compile_entry(
             } else {
                 ImportReach::ReExported
             };
-            dag.modules.remove(&path).map(|module| CompiledImportUnit {
+            dag.remove_module(&path).map(|module| CompiledImportUnit {
                 import_path: path,
                 reach,
                 module,

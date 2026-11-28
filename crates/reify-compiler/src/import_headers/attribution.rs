@@ -6,7 +6,7 @@
 //! `name_env::bind`, so a local or user-import definition beats a std one
 //! exactly as NS-P1 ranks them during compilation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use reify_core::ModulePath;
 use reify_core::units::unit_symbol_to_si;
@@ -120,38 +120,66 @@ fn no_builtin(_: &str) -> bool {
     false
 }
 
-/// The definitions every name can bind to, per kind, over one module's own
-/// definitions and a universe of compiled modules: the `name_env` winners for
-/// its kinds, and every exporter for units and fields, which are deliberately
-/// not `name_env` kinds.
+/// The definitions each name a module writes can bind to, per kind, over the
+/// module's own definitions and a universe of compiled modules: the
+/// `name_env` winners for its kinds, and every exporter for units and fields,
+/// which are deliberately not `name_env` kinds. A name the module does not
+/// write is not indexed.
 pub(crate) struct ExportIndex<'a> {
     origins: HashMap<ExportKind, HashMap<&'a str, Vec<Origin<'a>>>>,
 }
 
 impl<'a> ExportIndex<'a> {
-    pub(crate) fn new(local: &'a CompiledModule, universe: &[&'a CompiledModule]) -> Self {
+    /// The index of the names `uses` holds. Every definition key carries its
+    /// name, so keeping only the written names keeps each key's definitions
+    /// together, and each binds exactly as over every name
+    /// (`name_env::bind_scopes_where`).
+    pub(crate) fn new(
+        local: &'a CompiledModule,
+        universe: &[&'a CompiledModule],
+        uses: &NameUses,
+    ) -> Self {
+        let written: HashSet<&str> = uses.uses.iter().map(|u| u.name.as_str()).collect();
         let mut index = Self {
             origins: HashMap::new(),
         };
-        index.add_winners(ExportKind::Template, &local.templates, universe, |t| {
-            &t.name
-        });
-        index.add_winners(ExportKind::Trait, &local.trait_defs, universe, |t| &t.name);
-        index.add_winners(ExportKind::TypeAlias, &local.type_aliases, universe, |a| {
-            &a.name
-        });
-        index.add_winners(ExportKind::Function, &local.functions, universe, |f| {
-            &f.name
-        });
+        index.add_winners(ExportKind::Template, &local.templates, universe, &written);
+        index.add_winners(ExportKind::Trait, &local.trait_defs, universe, &written);
+        index.add_winners(
+            ExportKind::TypeAlias,
+            &local.type_aliases,
+            universe,
+            &written,
+        );
+        index.add_winners(ExportKind::Function, &local.functions, universe, &written);
         index.add_winners(
             ExportKind::ConstraintDef,
             &local.constraint_defs,
             universe,
-            |c| &c.name,
+            &written,
         );
 
-        // A variant belongs to whichever enum wins the enum's name.
-        let enums = name_env::bind(&local.enum_defs, universe.iter().copied());
+        // A variant belongs to whichever enum wins the enum's name, so an
+        // enum name is kept when it or a variant of any enum of that name is
+        // written.
+        let enum_names: HashSet<&str> = std::iter::once(local)
+            .chain(universe.iter().copied())
+            .flat_map(|module| &module.enum_defs)
+            .filter(|def| {
+                written.contains(def.name.as_str())
+                    || def
+                        .variants
+                        .iter()
+                        .any(|variant| written.contains(variant.name.as_str()))
+            })
+            .map(|def| def.name.as_str())
+            .collect();
+        let enums = name_env::bind_scopes_where(
+            &local.enum_defs,
+            std::iter::empty(),
+            universe.iter().copied(),
+            |def| enum_names.contains(def.name.as_str()),
+        );
         for candidate in enums.winning_candidates() {
             index.add(
                 ExportKind::Enum,
@@ -163,18 +191,27 @@ impl<'a> ExportIndex<'a> {
             }
         }
 
-        for unit in &local.units {
+        let is_written = |name: &str| written.contains(name);
+        for unit in local.units.iter().filter(|unit| is_written(&unit.name)) {
             index.add(ExportKind::Unit, &unit.name, Origin::Local);
         }
-        for field in &local.fields {
+        for field in local.fields.iter().filter(|field| is_written(&field.name)) {
             index.add(ExportKind::Field, &field.name, Origin::Local);
         }
         for module in universe {
             let origin = Origin::Module(&module.path);
-            for unit in module.units.iter().filter(|unit| unit.is_pub) {
+            for unit in module
+                .units
+                .iter()
+                .filter(|u| u.is_pub && is_written(&u.name))
+            {
                 index.add(ExportKind::Unit, &unit.name, origin);
             }
-            for field in module.fields.iter().filter(|field| field.is_pub) {
+            for field in module
+                .fields
+                .iter()
+                .filter(|f| f.is_pub && is_written(&f.name))
+            {
                 index.add(ExportKind::Field, &field.name, origin);
             }
         }
@@ -195,11 +232,16 @@ impl<'a> ExportIndex<'a> {
         kind: ExportKind,
         local: &'a [D],
         universe: &[&'a CompiledModule],
-        name_of: fn(&'a D) -> &'a str,
+        written: &HashSet<&str>,
     ) {
-        let bindings = name_env::bind(local, universe.iter().copied());
+        let bindings = name_env::bind_scopes_where(
+            local,
+            std::iter::empty(),
+            universe.iter().copied(),
+            |definition| written.contains(definition.name()),
+        );
         for candidate in bindings.winning_candidates() {
-            self.add(kind, name_of(candidate.definition), candidate.origin);
+            self.add(kind, candidate.definition.name(), candidate.origin);
         }
     }
 

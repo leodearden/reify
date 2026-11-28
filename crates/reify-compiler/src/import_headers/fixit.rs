@@ -12,12 +12,13 @@
 //! [`coverage`](super::coverage) only supplies the gated-off note.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use reify_ast::ParsedModule;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, SourceSpan};
 
 use super::attribution::{ExportIndex, defining_std_modules};
-use super::coverage::{ImportCoverage, in_effect};
+use super::coverage::{ImportCoverage, gated_off, in_effect};
 use super::name_uses::collect_name_uses;
 use crate::cfg::CfgSet;
 use crate::re_exports::ReExports;
@@ -49,10 +50,9 @@ pub fn std_import_fixits(
         return Vec::new();
     }
     let universe = tier_then_stdlib(local, imports);
-    let index = ExportIndex::new(local, &universe);
     let uses = collect_name_uses(parsed);
-    let re_exports = ReExports::of_compiled(universe.iter().copied());
-    let gated_off = ImportCoverage::of_gated_off(parsed, cfg, &re_exports);
+    let index = ExportIndex::new(local, &universe, &uses);
+    let gated_off = gated_off_coverage(parsed, cfg, &universe);
     let in_tier = |module: &ModulePath| imports.iter().any(|compiled| &compiled.path == module);
 
     let mut unimported: BTreeMap<&str, Unimported> = BTreeMap::new();
@@ -67,7 +67,12 @@ pub fn std_import_fixits(
         entry
             .modules
             .extend(modules.iter().map(|module| module.to_dotted()));
-        entry.gated_off |= modules.iter().any(|module| gated_off.covers(module, name));
+        entry.through_prelude |= modules
+            .iter()
+            .any(|module| prelude_closure().contains(module));
+        entry.gated_off |= gated_off
+            .as_ref()
+            .is_some_and(|coverage| modules.iter().any(|module| coverage.covers(module, name)));
         if let Some(&span) = uses.first_spans.get(name_use) {
             entry.first_span = Some(match entry.first_span {
                 Some(first) if first.start <= span.start => first,
@@ -76,17 +81,9 @@ pub fn std_import_fixits(
         }
     }
 
-    let prelude_closure = re_exports.closure(PRELUDE);
     let mut fixits: Vec<(Option<SourceSpan>, Diagnostic)> = unimported
         .into_iter()
-        .map(|(name, found)| {
-            let offers_prelude = !found.modules.contains(PRELUDE)
-                && found
-                    .modules
-                    .iter()
-                    .any(|module| prelude_closure.contains(module));
-            (found.first_span, found.into_fixit(name, offers_prelude))
-        })
+        .map(|(name, found)| (found.first_span, found.into_fixit(name)))
         .collect();
     fixits.sort_by_key(|(span, _)| span.map(|span| span.start));
     fixits.into_iter().map(|(_, fixit)| fixit).collect()
@@ -102,6 +99,29 @@ fn has_absent_user_import(
     in_effect(parsed, cfg).any(|(module, _)| {
         crate::name_env::module_tier(&module) != crate::name_env::Tier::Stdlib
             && !imports.iter().any(|compiled| compiled.path == module)
+    })
+}
+
+/// What the imports `parsed` declares that `cfg` leaves out would make
+/// visible, along the re-export edges of `universe`; `None` when `cfg` leaves
+/// none out.
+fn gated_off_coverage<'p>(
+    parsed: &'p ParsedModule,
+    cfg: &CfgSet,
+    universe: &[&CompiledModule],
+) -> Option<ImportCoverage<'p>> {
+    gated_off(parsed, cfg).next()?;
+    let re_exports = ReExports::of_compiled(universe.iter().copied());
+    Some(ImportCoverage::of_gated_off(parsed, cfg, &re_exports))
+}
+
+/// `std.prelude` and every module it re-exports: a property of the stdlib
+/// build, since a std module re-exports only std modules.
+fn prelude_closure() -> &'static [ModulePath] {
+    static CLOSURE: OnceLock<Vec<ModulePath>> = OnceLock::new();
+    CLOSURE.get_or_init(|| {
+        let prelude = ModulePath::from_dotted(PRELUDE).expect("`std.prelude` is a module path");
+        ReExports::of_stdlib().closure(&prelude)
     })
 }
 
@@ -126,6 +146,8 @@ fn tier_then_stdlib<'a>(
 struct Unimported {
     /// The dotted paths of the std modules that define it.
     modules: BTreeSet<String>,
+    /// Whether one of those modules is `std.prelude` or one it re-exports.
+    through_prelude: bool,
     /// Whether one of the module's `#cfg`-gated imports the active cfg leaves
     /// out would make it visible.
     gated_off: bool,
@@ -133,7 +155,8 @@ struct Unimported {
 }
 
 impl Unimported {
-    fn into_fixit(self, name: &str, offers_prelude: bool) -> Diagnostic {
+    fn into_fixit(self, name: &str) -> Diagnostic {
+        let offers_prelude = self.through_prelude && !self.modules.contains(PRELUDE);
         let modules: Vec<String> = self.modules.into_iter().collect();
         let mut candidates = modules.clone();
         if offers_prelude {

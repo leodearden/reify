@@ -98,10 +98,7 @@ impl<'p> ImportCoverage<'p> {
         let mut by_module = HashMap::new();
         for (module, kind) in imports {
             let binding = kind.binding();
-            for reached in re_exports.closure(&module.to_dotted()) {
-                let reached = ModulePath::from_dotted(&reached).unwrap_or_else(|error| {
-                    panic!("re-export edge `{reached}` is not a module path: {error}")
-                });
+            for reached in re_exports.closure(&module) {
                 match &binding {
                     ImportBinding::Namespace { .. } => {
                         by_module.insert(reached, Coverage::WholeSurface);
