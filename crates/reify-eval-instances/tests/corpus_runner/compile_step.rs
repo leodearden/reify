@@ -2,15 +2,13 @@
 //! section 5.8): its entry file is compiled by the second output, and the
 //! outcome is compared with the entry's compile rows.
 
-use std::path::PathBuf;
-
 use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_eval_source::compile_entry;
 
 use crate::bookkeeping::{Built, Disputed, EntryState};
-use crate::corpus_tree::{self, EntryId, EntrySources, LoadedEntry, Problem, SourceFile};
-use crate::entry::EntryRecord;
+use crate::corpus_tree::{self, LoadedEntry, Problem, SourceFile};
 use crate::expectation::Form;
+use crate::seeded::seeded;
 
 /// Every way `entry`'s compile outcome differs from what its compile rows
 /// expect, each naming the entry. The rows that decide are those about the
@@ -113,26 +111,6 @@ fn rendered(errors: &[&Diagnostic]) -> String {
         .map(|error| format!("{} {:?}", rendered_code(&error.code), error.message))
         .collect();
     format!("errors {}", each.join("; "))
-}
-
-/// A one-file entry in theme `other`, from its expectations and its source.
-fn seeded(name: &str, expectations: &str, source: &str) -> LoadedEntry {
-    let record = EntryRecord::from_toml(expectations)
-        .unwrap_or_else(|error| panic!("the seeded entry `{name}` loads: {error}"));
-    LoadedEntry {
-        id: EntryId {
-            theme: "other".to_string(),
-            name: name.to_string(),
-        },
-        record,
-        sources: EntrySources {
-            files: vec![SourceFile {
-                name: "seeded.ri".to_string(),
-                text: source.to_string(),
-            }],
-            import_root: PathBuf::from("/nonexistent/seeded-corpus-entry"),
-        },
-    }
 }
 
 const EXPECTS_PRIVATE_LET_ERROR: &str = r#"tests = "seeded"
