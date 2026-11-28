@@ -147,6 +147,46 @@ struct WrittenIn<'l, 'm> {
     trait_declaration: Option<&'m CompiledTrait>,
 }
 
+/// What one member's form writes: everything of its table entry but its kind
+/// and origin.
+struct WrittenMember<'d> {
+    /// The member's own name; `None` for a form that names nothing.
+    name: Option<&'d str>,
+    guarded: bool,
+    declared_type: DeclaredType,
+    branches: Vec<MemberTable>,
+}
+
+impl<'d> WrittenMember<'d> {
+    fn named(name: &'d str, guarded: bool, declared_type: DeclaredType) -> Self {
+        Self {
+            name: Some(name),
+            guarded,
+            declared_type,
+            branches: Vec::new(),
+        }
+    }
+
+    fn unnamed(guarded: bool, declared_type: DeclaredType) -> Self {
+        Self {
+            name: None,
+            guarded,
+            declared_type,
+            branches: Vec::new(),
+        }
+    }
+
+    /// A guarded or match group, which holds its members in `branches`.
+    fn group(branches: Vec<MemberTable>) -> Self {
+        Self {
+            name: None,
+            guarded: false,
+            declared_type: DeclaredType::None,
+            branches,
+        }
+    }
+}
+
 /// What lowering one definition's members reads and reports into.
 struct Lowering<'l, 'm> {
     definition: &'l DefinitionName,
@@ -170,130 +210,93 @@ impl Lowering<'_, '_> {
     }
 
     fn member(&mut self, decl: &MemberDecl, written: &WrittenIn<'_, '_>) -> Member {
-        let (name, guard, declared_type, branches) = match decl {
-            MemberDecl::Param(param) => (
-                Some(param.name.as_str()),
-                param.where_clause.as_ref(),
+        let form = self.written_member(decl, written);
+        let table_type = match &form.declared_type {
+            DeclaredType::Value(ty) => Some(ty),
+            _ => None,
+        };
+        let existing_type = form
+            .name
+            .and_then(|name| template_cell_type(self.template, name));
+        let kind = member_kind::kind(decl, table_type.into_iter().chain(existing_type));
+        Member {
+            name: form.name.map(identifier),
+            kind,
+            declared_type: form.declared_type,
+            origin: written.origin.clone(),
+            guarded: form.guarded,
+            branches: form.branches,
+        }
+    }
+
+    /// What the form `decl` writes, lowered.
+    fn written_member<'d>(
+        &mut self,
+        decl: &'d MemberDecl,
+        written: &WrittenIn<'_, '_>,
+    ) -> WrittenMember<'d> {
+        match decl {
+            MemberDecl::Param(param) => WrittenMember::named(
+                &param.name,
+                param.where_clause.is_some(),
                 self.cell_type(&param.name, param.span, written),
-                Vec::new(),
             ),
             MemberDecl::Let(binding) => {
                 let declared_type = match binding.type_expr {
                     Some(_) => self.cell_type(&binding.name, binding.span, written),
                     None => DeclaredType::Value(self.expression_type(&binding.value)),
                 };
-                (
-                    Some(binding.name.as_str()),
-                    binding.where_clause.as_ref(),
-                    declared_type,
-                    Vec::new(),
-                )
+                WrittenMember::named(&binding.name, binding.where_clause.is_some(), declared_type)
             }
-            MemberDecl::Constraint(constraint) => (
-                None,
-                constraint.where_clause.as_ref(),
-                DeclaredType::None,
-                Vec::new(),
-            ),
-            MemberDecl::ConstraintInst(applied) => (
-                None,
-                applied.where_clause.as_ref(),
+            MemberDecl::Constraint(constraint) => {
+                WrittenMember::unnamed(constraint.where_clause.is_some(), DeclaredType::None)
+            }
+            MemberDecl::ConstraintInst(applied) => WrittenMember::unnamed(
+                applied.where_clause.is_some(),
                 DeclaredType::Written(identifier(&applied.name)),
-                Vec::new(),
             ),
-            MemberDecl::Sub(sub) => {
-                let element = if sub.keyed_members.is_empty() {
-                    sub.structure_name.as_str()
-                } else {
-                    keyed_element(sub).unwrap_or(sub.structure_name.as_str())
-                };
-                (
-                    Some(sub.name.as_str()),
-                    sub.where_clause.as_ref(),
-                    self.sub_definition(&sub.name, element, sub.span, written.names),
-                    Vec::new(),
-                )
+            MemberDecl::Sub(sub) => WrittenMember::named(
+                &sub.name,
+                sub.where_clause.is_some(),
+                self.sub_definition(sub, written.names),
+            ),
+            MemberDecl::Minimize(objective) => {
+                WrittenMember::unnamed(objective.where_clause.is_some(), DeclaredType::None)
             }
-            MemberDecl::Minimize(objective) => (
-                None,
-                objective.where_clause.as_ref(),
-                DeclaredType::None,
-                Vec::new(),
-            ),
-            MemberDecl::Maximize(objective) => (
-                None,
-                objective.where_clause.as_ref(),
-                DeclaredType::None,
-                Vec::new(),
-            ),
-            MemberDecl::GuardedGroup(group) => (
-                None,
-                None,
-                DeclaredType::None,
-                vec![
-                    self.table(&group.members, written),
-                    self.table(&group.else_members, written),
-                ],
-            ),
-            MemberDecl::MatchArmDeclGroup(group) => (
-                None,
-                None,
-                DeclaredType::None,
+            MemberDecl::Maximize(objective) => {
+                WrittenMember::unnamed(objective.where_clause.is_some(), DeclaredType::None)
+            }
+            MemberDecl::GuardedGroup(group) => WrittenMember::group(vec![
+                self.table(&group.members, written),
+                self.table(&group.else_members, written),
+            ]),
+            MemberDecl::MatchArmDeclGroup(group) => WrittenMember::group(
                 group
                     .arms
                     .iter()
                     .map(|arm| self.table(std::slice::from_ref(arm.member.as_ref()), written))
                     .collect(),
             ),
-            MemberDecl::AssociatedType(associated) => (
-                Some(associated.name.as_str()),
-                None,
-                DeclaredType::None,
-                Vec::new(),
-            ),
-            MemberDecl::Fn(function) => (
-                Some(function.name.as_str()),
-                None,
-                DeclaredType::None,
-                Vec::new(),
-            ),
-            MemberDecl::Port(port) => (
-                Some(port.name.as_str()),
-                port.where_clause.as_ref(),
+            MemberDecl::AssociatedType(associated) => {
+                WrittenMember::named(&associated.name, false, DeclaredType::None)
+            }
+            MemberDecl::Fn(function) => {
+                WrittenMember::named(&function.name, false, DeclaredType::None)
+            }
+            MemberDecl::Port(port) => WrittenMember::named(
+                &port.name,
+                port.where_clause.is_some(),
                 DeclaredType::Written(identifier(&port.type_name)),
-                Vec::new(),
             ),
-            MemberDecl::Sketch(sketch) => (
-                Some(sketch.name.as_str()),
-                None,
-                DeclaredType::None,
-                Vec::new(),
-            ),
+            MemberDecl::Sketch(sketch) => {
+                WrittenMember::named(&sketch.name, false, DeclaredType::None)
+            }
             MemberDecl::Connect(_)
             | MemberDecl::Chain(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::ForallConnect(_)
             | MemberDecl::ForallConstraint(_)
-            | MemberDecl::Relate(_) => (None, None, DeclaredType::None, Vec::new()),
-        };
-        let kind = match decl {
-            MemberDecl::Param(_) | MemberDecl::Let(_) => {
-                let table_type = match &declared_type {
-                    DeclaredType::Value(ty) => Some(ty),
-                    _ => None,
-                };
-                let existing_type = name.and_then(|n| template_cell_type(self.template, n));
-                member_kind::cell_kind(table_type.into_iter().chain(existing_type))
-            }
-            _ => member_kind::form_kind(decl),
-        };
-        Member {
-            name: name.map(identifier),
-            kind,
-            declared_type,
-            origin: written.origin.clone(),
-            guarded: guard.is_some(),
-            branches,
+            | MemberDecl::Relate(_) => WrittenMember::unnamed(false, DeclaredType::None),
         }
     }
 
@@ -345,22 +348,24 @@ impl Lowering<'_, '_> {
         .result_type
     }
 
-    /// The definition the sub `name` instantiates, written `element` in a
-    /// body of the module `names`.
-    fn sub_definition(
-        &mut self,
-        name: &str,
-        element: &str,
-        span: SourceSpan,
-        names: &ModuleContext<'_>,
-    ) -> DeclaredType {
+    /// The definition `sub`, written in a body of the module `names`,
+    /// instantiates: a keyed sub's element, else its written target.
+    fn sub_definition(&mut self, sub: &SubDecl, names: &ModuleContext<'_>) -> DeclaredType {
+        let element = if sub.keyed_members.is_empty() {
+            sub.structure_name.as_str()
+        } else {
+            keyed_element(sub).unwrap_or(sub.structure_name.as_str())
+        };
         match names.sub_target(element) {
             Some(target) => DeclaredType::Definition(target.name),
             None => {
                 self.report(
                     DiagnosticCode::UnknownSubStructure,
-                    format!("the sub `{name}` names `{element}`, which is no definition"),
-                    span,
+                    format!(
+                        "the sub `{}` names `{element}`, which is no definition",
+                        sub.name
+                    ),
+                    sub.span,
                 );
                 DeclaredType::None
             }
