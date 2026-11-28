@@ -9,12 +9,12 @@
 //! reads alone.
 //!
 //! What each helper promises:
-//! - `read`: the outcome at a ref, typed, as the core gives it;
 //! - `need`: the value at a ref, or what the body answers instead: absent
 //!   where the ref names nothing, blocked by the ref where it failed;
+//! - `optional`: the value at a ref, or none where the ref names nothing;
+//!   blocked by the ref where it failed;
 //! - `value` and `passed_on`: the body answers a value it made, or one it
 //!   read, unchanged;
-//! - `absent` and `blocked`: the body answers absent, or blocked by a ref;
 //! - `failed`: the body answers this crate's own failure, described.
 
 use std::sync::Arc;
@@ -23,15 +23,23 @@ use reify_eval_core::{Cx, Description, Failure, KindId, Outcome, Produced, Ref, 
 
 use crate::failure::InstanceFailure;
 
-pub(crate) async fn read<T: Value>(cx: &Cx, at: &Ref) -> Outcome<T> {
-    cx.read::<T>(at).await
+pub(crate) async fn need<T: Value, Out: Value>(cx: &Cx, at: &Ref) -> Result<Arc<T>, Produced<Out>> {
+    match optional::<T, Out>(cx, at).await? {
+        Some(value) => Ok(value),
+        None => Err(Produced::Outcome(Outcome::Absent)),
+    }
 }
 
-pub(crate) async fn need<T: Value, Out: Value>(cx: &Cx, at: &Ref) -> Result<Arc<T>, Produced<Out>> {
+pub(crate) async fn optional<T: Value, Out: Value>(
+    cx: &Cx,
+    at: &Ref,
+) -> Result<Option<Arc<T>>, Produced<Out>> {
     match cx.read::<T>(at).await {
-        Outcome::Value(value) => Ok(value),
-        Outcome::Absent => Err(absent()),
-        Outcome::Failure(_) => Err(blocked(at.clone())),
+        Outcome::Value(value) => Ok(Some(value)),
+        Outcome::Absent => Ok(None),
+        Outcome::Failure(_) => Err(Produced::Outcome(Outcome::Failure(Failure::BlockedBy {
+            at: at.clone(),
+        }))),
     }
 }
 
@@ -41,14 +49,6 @@ pub(crate) fn value<T: Value>(value: T) -> Produced<T> {
 
 pub(crate) fn passed_on<T: Value>(value: Arc<T>) -> Produced<T> {
     Produced::Outcome(Outcome::Value(value))
-}
-
-pub(crate) fn absent<T: Value>() -> Produced<T> {
-    Produced::Outcome(Outcome::Absent)
-}
-
-pub(crate) fn blocked<T: Value>(at: Ref) -> Produced<T> {
-    Produced::Outcome(Outcome::Failure(Failure::BlockedBy { at }))
 }
 
 pub(crate) fn failed<T: Value>(kind: KindId, failure: &InstanceFailure) -> Produced<T> {

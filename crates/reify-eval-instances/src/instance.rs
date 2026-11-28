@@ -11,10 +11,8 @@
 //! with no name gets no child here: its steps belong to the kind that
 //! evaluates it. A root also declares `defs`, the definition table.
 
-use std::sync::Arc;
-
 use reify_core::{DefinitionName, PathName};
-use reify_eval_core::{Cx, Declaration, Hash128, Kind, KindId, Outcome, Produced, Ref, Step};
+use reify_eval_core::{Cx, Declaration, Hash128, Kind, KindId, Produced, Ref, Step};
 use reify_eval_source::{DeclaredType, Member, MemberTable};
 
 use crate::content::content_of;
@@ -100,36 +98,18 @@ impl DeclaredMember {
     }
 }
 
-/// The instance the body reads, or what it answers instead.
+/// The instance the body reads, or what it answers instead. It is a root
+/// where its declaration binds the root marker, which only a root's does.
 async fn instance(cx: &Cx) -> Result<PresentInstance, Produced<PresentInstance>> {
-    let at_root = is_root(cx).await?;
+    let at_root = core_seam::optional::<AtRoot, _>(cx, &Ref::binding(AT_ROOT))
+        .await?
+        .is_some();
     let table = core_seam::need::<MemberTable, _>(cx, &Ref::binding(TABLE)).await?;
-    let member_kinds = member_kinds(cx).await?;
+    let member_kinds = core_seam::need::<MemberKinds, _>(cx, &Ref::binding(MEMBER_KINDS)).await?;
     Ok(PresentInstance {
         at_root,
         members: declared_members(&table, &member_kinds),
     })
-}
-
-/// Whether the instance is a root: its declaration alone binds the root
-/// marker.
-async fn is_root(cx: &Cx) -> Result<bool, Produced<PresentInstance>> {
-    let marker = Ref::binding(AT_ROOT);
-    match core_seam::read::<AtRoot>(cx, &marker).await {
-        Outcome::Value(_) => Ok(true),
-        Outcome::Absent => Ok(false),
-        Outcome::Failure(_) => Err(core_seam::blocked(marker)),
-    }
-}
-
-/// The table of member kinds; with none bound, the empty one.
-async fn member_kinds(cx: &Cx) -> Result<Arc<MemberKinds>, Produced<PresentInstance>> {
-    let at = Ref::binding(MEMBER_KINDS);
-    match core_seam::read::<MemberKinds>(cx, &at).await {
-        Outcome::Value(member_kinds) => Ok(member_kinds),
-        Outcome::Absent => Ok(Arc::new(MemberKinds::empty())),
-        Outcome::Failure(_) => Err(core_seam::blocked(at)),
-    }
 }
 
 /// Every declaration of one name, in table order, each with whether it is
