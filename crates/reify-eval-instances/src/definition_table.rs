@@ -56,3 +56,26 @@ impl Kind for DefinitionTableKind {
         out.0.iter().map(step_map::definition)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use reify_eval_core::Kind;
+
+    use super::{DefinitionNames, DefinitionTableKind};
+    use crate::step_map;
+    use crate::test_support::{compiled, declared_steps, in_entry};
+
+    #[test]
+    fn its_steps_are_the_definitions_of_the_list_each_once() {
+        let definitions = compiled("structure def A {}\nstructure def B {}\n");
+        let names = DefinitionNames::of(&definitions);
+        let steps = declared_steps::<DefinitionTableKind>(&names);
+
+        assert_eq!(steps.len(), definitions.iter().count());
+        for name in ["A", "B"] {
+            assert!(steps.contains(&step_map::definition(&in_entry(name))));
+        }
+        let undefined = step_map::definition(&in_entry("Nope"));
+        assert!(DefinitionTableKind::declares(&names, &undefined).is_none());
+    }
+}

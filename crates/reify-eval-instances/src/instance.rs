@@ -181,3 +181,59 @@ fn no_kind_supplied(member: &Member, under_guard: bool) -> Evaluation {
         under_guard,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use reify_core::PathName;
+    use reify_eval_core::{Kind, Step};
+
+    use super::{InstanceKind, PresentInstance, declared_members};
+    use crate::member_kinds::MemberKinds;
+    use crate::step_map;
+    use crate::test_support::{compiled, declared_steps, in_entry};
+
+    /// A cell, a sub, a name declared in both branches of a group, a member
+    /// with no name, and a geometry member.
+    const SOURCE: &str = "structure def P {}\nstructure def A { param w : Length = 1mm  sub p : P  \
+                          constraint w > 0mm  where w > 1mm { param g : Length = 1mm } else \
+                          { param g : Length = 2mm }  let body = box(w, w, w) }\n";
+
+    fn instance_of_a(at_root: bool) -> PresentInstance {
+        let definitions = compiled(SOURCE);
+        let a = definitions.get(&in_entry("A")).expect("SOURCE defines A");
+        PresentInstance {
+            at_root,
+            members: declared_members(&a.members, &MemberKinds::built()),
+        }
+    }
+
+    fn member(name: &str) -> Step {
+        step_map::member(&PathName::new(name).expect("an identifier"))
+    }
+
+    #[test]
+    fn a_root_steps_through_defs_then_each_named_member_once() {
+        let root = instance_of_a(true);
+        assert_eq!(
+            declared_steps::<InstanceKind>(&root),
+            [
+                step_map::defs(),
+                member("w"),
+                member("p"),
+                member("g"),
+                member("body")
+            ]
+        );
+        assert!(InstanceKind::declares(&root, &member("nothing")).is_none());
+    }
+
+    #[test]
+    fn an_instance_below_a_root_steps_through_its_named_members_alone() {
+        let below = instance_of_a(false);
+        assert_eq!(
+            declared_steps::<InstanceKind>(&below),
+            [member("w"), member("p"), member("g"), member("body")]
+        );
+        assert!(InstanceKind::declares(&below, &step_map::defs()).is_none());
+    }
+}

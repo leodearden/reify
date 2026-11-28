@@ -12,6 +12,8 @@ mod kind_ids;
 mod member_kinds;
 mod member_table;
 mod step_map;
+#[cfg(test)]
+mod test_support;
 mod unsupplied;
 
 pub use failure::InstanceFailure;

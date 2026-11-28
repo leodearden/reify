@@ -87,13 +87,11 @@ fn hash_origin<H: Hasher>(origin: &MemberOrigin, state: &mut H) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use reify_core::{DefinitionName, PathName};
-    use reify_eval_source::{MemberTable, compile_entry};
+    use reify_eval_source::MemberTable;
 
     use super::{content_of, member_table_content};
     use crate::member_kinds::MemberKinds;
+    use crate::test_support::{compiled, in_entry};
 
     const BASE: &str = "structure def A { param t : Length = 1mm }";
 
@@ -129,10 +127,8 @@ mod tests {
 
     /// The member table of definition `A` in `source`.
     fn members_of_a(source: &str) -> MemberTable {
-        let output = compile_entry(Path::new("/nonexistent/content.ri"), source)
-            .unwrap_or_else(|refusal| panic!("the second output lowers {source:?}: {refusal:?}"));
-        let a = DefinitionName::new(None, PathName::new("A").expect("an identifier"));
-        let definition = output.definitions.get(&a);
+        let definitions = compiled(source);
+        let definition = definitions.get(&in_entry("A"));
         let definition = definition.unwrap_or_else(|| panic!("{source:?} defines A"));
         definition.members.clone()
     }
