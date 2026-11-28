@@ -1,3 +1,103 @@
+//! The one map between a typed path's steps and the core's steps
+//! (docs/prds/instances-on-the-core.md section 15 item 2), both ways.
+//!
+//! The spaces: a member by its name in space `member`; an instance's fixed
+//! children by their word in space `fixed`; a definition's member table
+//! below `defs` in space `definition`, keyed by the definition's path text.
+//! So a typed `/defs[Name]` is two core steps, `fixed:defs` then
+//! `definition:Name`. A kind reads a core step back to a typed name here,
+//! never by matching its text.
+//!
+//! Only the steps a kind of this crate declares are mapped. A leaf that
+//! declares another kind of step adds its space and its arm of
+//! `core_steps` here.
+
+use std::str::FromStr;
+
+use reify_core::{DefinitionName, InstancePath, PathName, PathStep};
+use reify_eval_core::{Root, Space, Step, StepKey};
+
+const MEMBER: Space = Space::Named("member");
+const FIXED: Space = Space::Named("fixed");
+const DEFINITION: Space = Space::Named("definition");
+
+/// The fixed child holding the definition table, by the word a typed path
+/// prints for it.
+const DEFS_WORD: &str = "defs";
+
+/// The member called `name`.
+pub(crate) fn member(name: &PathName) -> Step {
+    Step::new(MEMBER, StepKey::Name(name.as_str().into()))
+}
+
+/// The member name `step` is the step of; none for a step of another space.
+pub(crate) fn member_name(step: &Step) -> Option<PathName> {
+    match (step.space(), step.key()) {
+        (MEMBER, StepKey::Name(text)) => PathName::new(&**text).ok(),
+        _ => None,
+    }
+}
+
+/// The fixed child holding the definition table.
+pub(crate) fn defs() -> Step {
+    Step::new(FIXED, StepKey::Name(DEFS_WORD.into()))
+}
+
+/// The member table of `definition`, below `defs`.
+pub(crate) fn definition(definition: &DefinitionName) -> Step {
+    Step::new(
+        DEFINITION,
+        StepKey::Name(definition_text(definition).into()),
+    )
+}
+
+/// The definition `step` is the step of; none for a step of another space.
+pub(crate) fn definition_name(step: &Step) -> Option<DefinitionName> {
+    match (step.space(), step.key()) {
+        (DEFINITION, StepKey::Name(text)) => InstancePath::from_str(text)
+            .ok()
+            .filter(|path| path.steps().is_empty())
+            .map(|path| path.root().clone()),
+        _ => None,
+    }
+}
+
+/// A definition's text: the path text of the definition alone, which
+/// `definition_name` parses back.
+pub(crate) fn definition_text(definition: &DefinitionName) -> String {
+    InstancePath::new(definition.clone()).to_string()
+}
+
+/// The core root of the instance of `definition`.
+pub(crate) fn root(definition: &DefinitionName) -> Root {
+    Root::named(definition_text(definition))
+}
+
+/// The core steps of a typed step; none where no kind of this crate
+/// declares a child at such a step.
+pub(crate) fn core_steps(step: &PathStep) -> Option<Vec<Step>> {
+    match step {
+        PathStep::Member(name) => Some(vec![member(name)]),
+        PathStep::Defs(d) => Some(vec![defs(), definition(d)]),
+        PathStep::Element(_)
+        | PathStep::Summary
+        | PathStep::AsValue
+        | PathStep::Constraint(_)
+        | PathStep::Braces
+        | PathStep::Purpose(_)
+        | PathStep::Arguments
+        | PathStep::Guard(_)
+        | PathStep::Count(_)
+        | PathStep::At(_)
+        | PathStep::Auto(_)
+        | PathStep::MadeList
+        | PathStep::Made(_)
+        | PathStep::Open(_)
+        | PathStep::Problem
+        | PathStep::Solves => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::{DefinitionName, InstancePath, ModuleName, PathName, PathStep};
@@ -13,8 +113,8 @@ mod tests {
     }
 
     fn qualified() -> DefinitionName {
-        let module = ModuleName::new(vec![name("std"), name("units")])
-            .expect("a module of two segments");
+        let module =
+            ModuleName::new(vec![name("std"), name("units")]).expect("a module of two segments");
         DefinitionName::new(Some(module), name("Plate"))
     }
 
