@@ -221,6 +221,37 @@ fn an_import_the_program_could_not_compile_is_refused() {
     }
 }
 
+/// A program compile follows a `std.*` import and compiles it from the
+/// embedded stdlib, so the import is compiled even though no file backs it.
+#[test]
+fn a_std_import_the_program_compiled_is_not_refused() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let source = "import std.si_units\nstructure def A { param p : Pressure = 200GPa }\n";
+    let output = accepted(&dir.path().join("stiff.ri"), source);
+    assert!(
+        names(&output.definitions).contains(&entry_definition("A")),
+        "the entry's definition is listed"
+    );
+}
+
+#[test]
+fn a_std_import_naming_no_std_module_is_refused() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let source = "import std.no_such_module\nstructure def A { param t : Length = 1mm }\n";
+    let refusal = compile_entry(&dir.path().join("needs.ri"), source)
+        .expect_err("a std import the program did not compile is refused");
+    match refusal {
+        SourceRefusal::ImportNotCompiled { module, import } => {
+            assert_eq!(module, ModulePath::single("needs"));
+            assert_eq!(
+                import,
+                ModulePath::from_dotted("std.no_such_module").expect("a dotted path")
+            );
+        }
+        other => panic!("expected ImportNotCompiled, got {other:?}"),
+    }
+}
+
 #[test]
 fn tables_are_send_and_sync() {
     fn check<T: Send + Sync>() {}
