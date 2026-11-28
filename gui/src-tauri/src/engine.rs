@@ -8256,9 +8256,9 @@ pub(crate) fn unit_hint_from_default_literal(default_slice: &str) -> Option<&str
 /// prevent (see [`EngineSession::apply_param_to_source`]), so it gets the same
 /// answer: REFUSE, with a discriminated message δ can surface, rather than
 /// canonicalize behind the user's back. Compound unit expressions (`kN*m`,
-/// `kg/m^3`) are refused for the same reason plus a second one — the emitter's
-/// ladder covers no compound dimension at all, so they could only ever be
-/// rejected one phase later with a much vaguer message.
+/// `g/cm^3`) are refused for the same reason: the emitter spells a compound
+/// dimension in SI base symbols only and never consults the hint there, so
+/// `5g/cm^3` would come back as `5000kg/m^3`.
 ///
 /// This is a LIMITATION of the emitter, not a policy: the day
 /// `value_to_ri_literal_with_unit` can resolve a hint through the compiled

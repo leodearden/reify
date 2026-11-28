@@ -131,10 +131,7 @@ pub use ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolve
 pub use structure_registry::{StructureMeta, StructureRegistry};
 pub use structure_type_id::StructureTypeId;
 pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
-pub use ri_literal::{
-    RiLiteralError, UnitScope, value_to_ri_literal, value_to_ri_literal_in_scope,
-    value_to_ri_literal_with_unit,
-};
+pub use ri_literal::{RiLiteralError, value_to_ri_literal, value_to_ri_literal_with_unit};
 pub use value::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     KeyedMember, MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation, MemberKey, RegionRef,
