@@ -27,7 +27,11 @@
 //! serializer emits is a built-in, bare (`80mm`) or as a compound factor
 //! (`7850kg/m^3`), and the compiler falls back to the built-in table for both
 //! (for a compound atom via `lookup_unit_atom`, task #5503), so a rewritten
-//! literal must parse in a module that imports nothing.
+//! literal must parse in a module that imports nothing. Every case is spliced
+//! as a structure param, a position whose compile scope always carries a
+//! (here empty) `UnitRegistry`. A compound literal needs one, and
+//! `compound_literals_do_not_compile_in_a_fn_body_or_fn_param_default` pins
+//! the fn positions that have none.
 //!
 //! That is the *unshadowed* case, and it is the weaker half of what a real
 //! caller needs. γ's edit path splices into user modules, which usually DO
@@ -999,7 +1003,11 @@ fn compound_cases() -> Vec<Case> {
 /// The serializer's compound literals compile with NO unit registry seeded and
 /// no import, and re-parse BIT-EXACTLY: every atom is a factor-1.0 built-in,
 /// and the compiler resolves a compound atom registry-first, then the built-in
-/// table (task #5503). This is the "round-trips in any module" claim.
+/// table (task #5503). "No registry seeded" means none SEEDED: the structure
+/// scope still carries an empty `UnitRegistry`, which the compound path needs.
+/// This is the "round-trips in a module that imports nothing" claim, at a
+/// structure-param position; the fn positions, which carry no registry, are
+/// pinned by `compound_literals_do_not_compile_in_a_fn_body_or_fn_param_default`.
 ///
 /// This tier is the only one that can prove it, because it is the only one that
 /// runs the real parser and `resolve_unit_expr`. `reify-core` can pin the

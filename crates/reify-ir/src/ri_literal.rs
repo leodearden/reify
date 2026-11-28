@@ -56,15 +56,33 @@
 //! outside the guarantee.
 //!
 //! **3. Compound emission covers exactly the dimensions spelled from
-//! built-in symbols.** A dimension with no bare built-in symbol is written as
-//! a compound `UnitExpr` (`2.5m^2`, `7850kg/m^3`, `60s^-1`) when every atom of
-//! its spelling is a factor-1.0 built-in (`m`/`kg`/`s`/`A`/`K`/`mol`/`cd`/
-//! `rad`); `reify_core::units::ri_builtin_compound_unit_expr` gives that
-//! spelling. Like a bare one, the compound guarantee holds in a module that
-//! imports nothing: `resolve_unit_expr` (reify-compiler `units.rs`) resolves
-//! each compound atom registry-first, then the built-in table
-//! (`lookup_unit_atom`, task #5503). It carries qualification 2's shadowing
-//! caveat too. A module that imports `std.units` resolves those atoms through
+//! built-in symbols, and needs a unit registry at the splice position.** A
+//! dimension with no bare built-in symbol is written as a compound `UnitExpr`
+//! (`2.5m^2`, `7850kg/m^3`, `60s^-1`) when every atom of its spelling is a
+//! factor-1.0 built-in (`m`/`kg`/`s`/`A`/`K`/`mol`/`cd`/`rad`);
+//! `reify_core::units::ri_builtin_compound_unit_expr` gives that spelling.
+//!
+//! Such a literal needs no import: `resolve_unit_expr` (reify-compiler
+//! `units.rs`) resolves each compound atom registry-first, then the built-in
+//! table (`lookup_unit_atom`, task #5503). Unlike a bare one, though, it has a
+//! precondition on WHERE it is spliced, because reify-compiler's `expr.rs`
+//! takes the compound path only when the compile scope carries a
+//! `UnitRegistry` at all. So the guarantee for a compound literal reads in
+//! full:
+//!
+//! > …provided the compile scope at the splice position carries a
+//! > `UnitRegistry`.
+//!
+//! Structure, purpose and file-scope params, lets and constraints always
+//! carry one: an empty one in a module that imports nothing. A fn body and a
+//! fn param default carry none, and there reify-compiler answers "compound
+//! unit expression requires a unit registry in scope" whatever the module
+//! imports. A bare literal has no such precondition. Pinned by
+//! `ri_literal_roundtrip.rs`'s
+//! `compound_literals_do_not_compile_in_a_fn_body_or_fn_param_default`.
+//!
+//! A compound literal carries qualification 2's shadowing caveat too. A
+//! module that imports `std.units` resolves those atoms through
 //! its registry, which agrees at factor exactly 1.0, as
 //! `ri_literal_roundtrip.rs`'s
 //! `si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry` cross-guards.
@@ -261,8 +279,10 @@ fn format_f64_shortest(x: f64, force_decimal_point: bool) -> String {
 /// different variant — an un-suffixed `.ri` number literal has no other
 /// reading), the bit-exactness holds unless the target module's
 /// `UnitRegistry` shadows an emitted symbol with a different factor, a
-/// dimension whose spelling needs an import is refused, and a
-/// `Value::Direction` round-trips only while no user `fn dir` is in scope.
+/// dimension whose spelling needs an import is refused, a compound literal
+/// re-parses only at a position whose compile scope carries a unit registry
+/// (not a fn body or fn param default), and a `Value::Direction` round-trips
+/// only while no user `fn dir` is in scope.
 pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
     value_to_ri_literal_with_unit(value, None)
 }
@@ -289,7 +309,9 @@ pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
 /// A dimension with NO bare built-in symbol is written as a compound unit
 /// expression built from factor-1.0 built-in symbols (`2.5m^2`, `7850kg/m^3`),
 /// or refused when its spelling needs an import (`Pa`, `sr`, `USD`) — the
-/// module doc's qualification 3. `reify_core::units::ri_compound_unit_expr`
+/// module doc's qualification 3, which also states where such a literal may be
+/// spliced: only at a position whose compile scope carries a unit registry.
+/// `reify_core::units::ri_compound_unit_expr`
 /// explains why bit-exactness on that path is structural rather than measured.
 /// The compound attempt is made in exactly one place — inside the
 /// empty-bare-ladder branch — so a dimension that HAS a bare ladder can never
@@ -979,7 +1001,8 @@ mod tests {
     // `UnitExpr` when every atom of its spelling is a factor-1.0 built-in
     // (`m`/`kg`/`s`/`A`/`K`/`mol`/`cd`/`rad`). The compiler resolves each
     // compound atom registry-first, then the built-in table (task #5503), so
-    // such a literal compiles in any module, with no import. A spelling that
+    // such a literal needs no import, and compiles wherever the compile scope
+    // carries a unit registry (module doc, qualification 3). A spelling that
     // needs an imported symbol is refused instead (see
     // `dimensions_whose_spelling_needs_an_import_are_rejected`).
 

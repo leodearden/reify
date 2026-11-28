@@ -260,7 +260,9 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
 /// mis-labelling a slot.
 ///
 /// Each compound atom resolves against the compiler's `UnitRegistry` first,
-/// then [`BUILTIN_UNITS`] (reify-compiler `lookup_unit_atom`, task #5503). A
+/// then [`BUILTIN_UNITS`] (reify-compiler `lookup_unit_atom`, task #5503),
+/// though only in a compile scope that carries a registry at all; fn bodies
+/// and fn param defaults carry none. A
 /// slot is `Some` only if its bare symbol is seeded in the stdlib registry at
 /// factor exactly `1.0` — see [`ri_compound_unit_expr`] for what that identity
 /// buys. All ten slots are today: nine bases are declared in `stdlib/units.ri`,
@@ -360,9 +362,12 @@ fn ri_unit_factor(symbol: &str, exponent: Rational) -> String {
 /// concern: it is pure and total over the dimensions it can spell. A compound
 /// `UnitExpr` goes through `resolve_unit_expr` (reify-compiler `units.rs`),
 /// which resolves each atom registry-first, then [`BUILTIN_UNITS`]
-/// (`lookup_unit_atom`, task #5503). So a built-in atom resolves anywhere,
+/// (`lookup_unit_atom`, task #5503). So a built-in atom needs no import,
 /// while `N`/`Pa`/`J`/`W`/`sr`/`USD` resolve only where their std module is
-/// imported.
+/// imported. Either way the compound path runs only in a compile scope that
+/// carries a `UnitRegistry`: a fn body or fn param default has none and
+/// rejects a compound literal outright, while a bare symbol still resolves
+/// there.
 ///
 /// # Exactness is structural, not measured
 ///
@@ -415,14 +420,17 @@ pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
         .or_else(|| ri_base_symbol_unit_expr(dim, &RI_COMPOUND_BASE_SYMBOLS))
 }
 
-/// [`ri_compound_unit_expr`]'s spelling restricted to symbols every module
-/// resolves with no import: `Some(s)` implies `s == ri_compound_unit_expr(dim)`,
-/// and every atom of `s` is a factor-1.0 [`BUILTIN_UNITS`] entry (task #10778).
+/// [`ri_compound_unit_expr`]'s spelling restricted to symbols that need no
+/// import: `Some(s)` implies `s == ri_compound_unit_expr(dim)`, and every atom
+/// of `s` is a factor-1.0 [`BUILTIN_UNITS`] entry (task #10778).
 ///
 /// reify-compiler's `resolve_unit_expr` resolves each compound atom
 /// registry-first, then [`BUILTIN_UNITS`] (`lookup_unit_atom`, task #5503), so
-/// a literal spelled this way compiles in any module, and `reify_ir::ri_literal`
-/// writes it unconditionally. Its value is exact for the reasons
+/// a literal spelled this way compiles in a module that imports nothing, at
+/// any position whose compile scope carries a `UnitRegistry` (not a fn body or
+/// fn param default); see `reify_ir::ri_literal`'s qualification 3.
+/// `reify_ir::ri_literal` writes it unconditionally. Its value is exact for
+/// the reasons
 /// [`ri_compound_unit_expr`] gives.
 ///
 /// Returns `None` wherever [`ri_compound_unit_expr`] does, and also for:
@@ -884,7 +892,8 @@ mod tests {
     // symbols". Its built-in-only restriction, `ri_builtin_compound_unit_expr`
     // (task #10778), is what `reify_ir::ri_literal` writes: the compiler
     // resolves each compound atom registry-first, then `BUILTIN_UNITS`, so only
-    // that restriction compiles in a module that imports nothing.
+    // that restriction compiles in a module that imports nothing (at a
+    // position whose scope carries a unit registry).
 
     /// A `DimensionVector` with a single slot set — the escape hatch for
     /// exponents the named constants cannot express.
@@ -1144,7 +1153,8 @@ mod tests {
     }
 
     /// The import-free compound spellings: every atom is a factor-1.0 built-in,
-    /// so the literal resolves in a module that imports nothing.
+    /// so the literal resolves in a module that imports nothing (at a position
+    /// whose scope carries a unit registry).
     #[test]
     fn ri_builtin_compound_unit_expr_writes_builtin_only_spellings() {
         let cases: &[(DimensionVector, &str)] = &[
