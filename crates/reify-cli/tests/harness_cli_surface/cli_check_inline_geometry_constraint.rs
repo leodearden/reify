@@ -29,7 +29,7 @@ fn check_decides_a_constraint_over_an_inline_geometry_query() {
 
     let ok = check_module(
         "geo2",
-        "structure def Part2 {\n    param w : Length = 10mm\n    \
+        "import std.si_units\n\nstructure def Part2 {\n    param w : Length = 10mm\n    \
          constraint volume(box(w, w, w)) > 1mm^3\n}",
     );
     let ok_stdout = String::from_utf8_lossy(&ok.stdout);
@@ -46,7 +46,7 @@ fn check_decides_a_constraint_over_an_inline_geometry_query() {
 
     let big = check_module(
         "geo3",
-        "structure def Part3 {\n    param w : Length = 10mm\n    \
+        "import std.units\n\nstructure def Part3 {\n    param w : Length = 10mm\n    \
          constraint volume(box(w, w, w)) > 1m^3\n}",
     );
     let big_stdout = String::from_utf8_lossy(&big.stdout);
