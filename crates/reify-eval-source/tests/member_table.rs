@@ -1,6 +1,7 @@
 //! The member tables of the second output (docs/prds/instances-on-the-core.md
 //! section 5.2), seen through its one entry, `compile_entry`.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use reify_core::{
@@ -606,5 +607,93 @@ structure def Odd : Nonsuch + Sized { param t : Length = 1mm }
         error_codes(&output).contains(&Some(DiagnosticCode::UnresolvedTrait)),
         "a bound naming no trait is an UnresolvedTrait error: {:#?}",
         output.diagnostics
+    );
+}
+
+#[test]
+fn a_trait_member_the_definition_writes_is_listed_once_as_its_own() {
+    let output = accepted(
+        "
+trait Weighted { param mass : Mass = 1kg   constraint mass > 0kg }
+trait Toleranced { param tolerance : Length   param grade : Int = 7 }
+structure def Plank : Weighted + Toleranced {
+    param mass : Mass = 2kg
+    param tolerance : Length = 1mm
+    param t : Length = 1mm
+}
+",
+    );
+    let plank = table(&output, "Plank");
+    assert_eq!(
+        provenance(plank),
+        vec![
+            (
+                None,
+                MemberKind::Constraint,
+                inherited_from(entry_definition("Weighted"))
+            ),
+            (
+                Some("grade"),
+                MemberKind::Cell,
+                inherited_from(entry_definition("Toleranced"))
+            ),
+            (Some("mass"), MemberKind::Cell, MemberOrigin::Own),
+            (Some("tolerance"), MemberKind::Cell, MemberOrigin::Own),
+            (Some("t"), MemberKind::Cell, MemberOrigin::Own),
+        ],
+        "an overridden default and a met requirement are listed once, as the definition's \
+         own, in its own place; a trait's constraint and a default the definition does not \
+         write are still inherited"
+    );
+    assert_eq!(
+        member(plank, "mass").declared_type,
+        DeclaredType::Value(Type::Scalar {
+            dimension: DimensionVector::MASS
+        })
+    );
+    assert_eq!(
+        error_codes(&output),
+        Vec::new(),
+        "overriding a default and meeting a requirement are not errors: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn no_standard_library_table_lists_a_name_twice() {
+    let output = accepted("structure def Empty { param x : Real = 1.0 }\n");
+    let mut repeated: Vec<(&DefinitionName, &str)> = Vec::new();
+    for definition in output.definitions.iter() {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for name in definition.members.iter().filter_map(|m| m.name.as_ref()) {
+            *counts.entry(name.as_str()).or_default() += 1;
+        }
+        repeated.extend(
+            counts
+                .into_iter()
+                .filter(|&(_, count)| count > 1)
+                .map(|(name, _)| (&definition.name, name)),
+        );
+    }
+    assert_eq!(
+        repeated,
+        Vec::new(),
+        "no table lists one top-level name twice"
+    );
+
+    let flatness = &output
+        .definitions
+        .get(&module_definition("std.tolerancing", "Flatness"))
+        .expect("the standard library's Flatness is listed")
+        .members;
+    let tolerance_value: Vec<&MemberOrigin> = flatness
+        .iter()
+        .filter(|m| m.name.as_ref().is_some_and(|n| n.as_str() == "tolerance_value"))
+        .map(|m| &m.origin)
+        .collect();
+    assert_eq!(
+        tolerance_value,
+        vec![&MemberOrigin::Own],
+        "Flatness meets GeometricTolerance's `tolerance_value` with its own: {flatness:#?}"
     );
 }
