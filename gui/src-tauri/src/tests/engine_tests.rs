@@ -167,7 +167,7 @@ fn load_from_source_resolves_stdlib_enum_access_without_inline_redecl() {
     // Minimal synthetic source — references stdlib enum `CorrosionClass.C5` only,
     // no inline redecl, no stdlib trait bounds (keeps the test focused on the
     // parser-disambiguation contract, not on full conformance plumbing).
-    let source = "structure Sample {\n  let chosen_class = CorrosionClass.C5\n}\n";
+    let source = "import std.materials.chemical\nstructure Sample {\n  let chosen_class = CorrosionClass.C5\n}\n";
 
     let result = session.load_from_source(source, "sample");
 
@@ -2909,7 +2909,8 @@ const BARE_NUMBER_GATE_SRC: &str = r#"structure def GateScope {
 /// is what lets the covered and uncovered rules be shown DISCRIMINATED in one
 /// session, the way `preview_parameter_still_accepts_a_bare_number_for_an_undimensioned_cell`
 /// already does for the dimensionless axis.
-const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
+const BARE_NUMBER_COVERAGE_SRC: &str = r#"import std.units
+structure def MoneyScope {
     param cost : Money = 5USD
     param width : Length = 80mm
     let body = box(width, width, width)
@@ -2919,7 +2920,8 @@ const BARE_NUMBER_COVERAGE_SRC: &str = r#"structure def MoneyScope {
 /// report: an `Option<Length>` holding `none` (value-side dimension empty), a
 /// plain `Length`, a named-but-unladdered `Money`, a dimensionless `Real`, and
 /// a non-scalar `let`.
-const DECLARED_DIMENSION_SRC: &str = r#"structure def DeclaredScope {
+const DECLARED_DIMENSION_SRC: &str = r#"import std.units
+structure def DeclaredScope {
     param gap : Option<Length> = none
     param width : Length = 80mm
     param cost : Money = 5USD
@@ -11303,6 +11305,7 @@ structure Kinematic {
 
 /// `bind(y_axis, 5kg/m^3)` — a COMPOUND unit expression (`UnitExpr::Div`).
 const SNAPSHOT_COMPOUND_DIV_BIND_SOURCE: &str = r#"
+import std.units
 structure Kinematic {
     let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
@@ -11313,6 +11316,7 @@ structure Kinematic {
 
 /// `bind(y_axis, 5m^2)` — a COMPOUND unit expression (`UnitExpr::Pow`).
 const SNAPSHOT_COMPOUND_POW_BIND_SOURCE: &str = r#"
+import std.units
 structure Kinematic {
     let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
@@ -11389,6 +11393,7 @@ fn literal_bind_still_defers_compound_unit_expressions_to_task_3803() {
 /// compiler's own registry resolves (`si_units.rs` generates `Pa` with the
 /// `k`/`M`/`G` prefixes), but NOT a `BUILTIN_UNITS` symbol.
 const SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE: &str = r#"
+import std.si_units
 structure Kinematic {
     let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
@@ -11535,7 +11540,11 @@ fn get_mechanism_descriptors_literal_then_param_bind_promotes_to_param_bound() {
 /// fires via Path A when `bind(j_f, p)` is typechecked — producing a compile-time
 /// `E_MECHANISM_NONDRIVING_JOINT` error because `Fixed : Joint` but not
 /// `Fixed : DrivingJoint`.  The source never reaches eval.
+///
+/// The check reads `Fixed`'s bounds from the module's scope, so the source
+/// imports std.kinematic, which declares `Fixed`.
 const SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE: &str = r#"
+import std.kinematic
 structure Kinematic {
     param p: Length = 10mm
     let j_f = fixed()
@@ -11580,6 +11589,7 @@ fn get_mechanism_descriptors_bind_on_fixed_joint_does_not_promote_binding() {
 /// 3 struts (cross-members [0,3],[1,4],[2,5]) then 3 cables (perimeter [0,1],[1,2],[2,0]).
 fn t_prism_source() -> &'static str {
     r#"
+import std.tensegrity
 structure def TPrism {
     let prism = Tensegrity(
         nodes: [
@@ -11690,6 +11700,7 @@ fn build_gui_state_yields_empty_wires_for_non_tensegrity_module() {
 /// struct — which `build_tensegrity_wires` must actively filter out.
 fn tensegrity_struct_no_wires_source() -> &'static str {
     r#"
+import std.tensegrity
 structure def TOnly {
     let prism = Tensegrity(
         nodes: [
@@ -13962,7 +13973,11 @@ fn get_entity_tree_aux_realization_default_visible_false() {
 /// (`default_visible: !(aux_ancestor || real.is_aux)`), so all four are true.
 #[test]
 fn get_entity_tree_consumed_realizations_default_visible_false() {
-    let source = r#"structure def Flange : Rigid {
+    let source = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def Flange : Rigid {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     let body = cylinder(60mm, 12mm)
@@ -14032,7 +14047,11 @@ fn get_entity_tree_consumed_realizations_default_visible_false() {
 /// — this test is independent of the consumed-downstream rule.
 #[test]
 fn get_entity_tree_realization_trait_geometry_propagates() {
-    let source = r#"structure def Widget : Physical {
+    let source = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def Widget : Physical {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     param geometry : Solid = box(10mm, 10mm, 10mm)
@@ -14102,7 +14121,11 @@ fn get_entity_tree_realization_trait_geometry_propagates() {
 /// non-trait `let helper` pins that nothing unrelated is swept in.
 #[test]
 fn get_entity_tree_trait_geometry_follows_refinement_chain() {
-    let source = r#"structure def Flange : Rigid {
+    let source = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def Flange : Rigid {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     param geometry : Solid = box(10mm, 10mm, 10mm)
@@ -14164,7 +14187,11 @@ fn get_entity_tree_trait_geometry_follows_refinement_chain() {
 /// deliberately NOT what this test reads — it would pass either way.
 #[test]
 fn get_entity_tree_trait_geometry_follows_refinement_chain_in_sub_component() {
-    let source = r#"structure def Flange : Rigid {
+    let source = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def Flange : Rigid {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     param geometry : Solid = box(10mm, 10mm, 10mm)
@@ -14511,7 +14538,11 @@ fn get_entity_tree_container_typed_binding_consumes_its_siblings() {
 /// templates with no `geometry` terminal at all.
 #[test]
 fn get_entity_tree_terminal_geometry_survives_a_derived_consumer() {
-    let source = r#"structure def Derived : Physical {
+    let source = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def Derived : Physical {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     let body = box(20mm, 20mm, 20mm)
@@ -16075,6 +16106,7 @@ fn gui_auto_type_resolution_no_op_contract() {
 /// 2 triangles: [0,1,2] (bottom-right) and [0,2,3] (top-left).
 fn membrane_patch_source() -> &'static str {
     r#"
+import std.tensegrity
 structure def MembranePatch {
     let patch = Tensegrity(
         nodes: [
@@ -16240,6 +16272,7 @@ fn build_tensegrity_surfaces_filters_non_tensegrity_surface_struct_instances() {
 
     // Re-use the tensegrity-only source that has no tensegrity_surfaces() call.
     let source = r#"
+import std.tensegrity
 structure def TOnly {
     let patch = Tensegrity(
         nodes: [
@@ -16911,6 +16944,7 @@ structure Tank {
 #[test]
 fn build_values_surfaces_dimension_and_si_value_through_option_some_wrapper() {
     const SRC: &str = r#"
+import std.si_units
 structure Part {
     param yield_stress : Option<Pressure> = some(250MPa)
 }
@@ -17302,7 +17336,8 @@ fn gui_state_deserialises_without_display_panes_field() {
 /// Four DisplayOutput subs over three box geometries:
 ///   da → pane 0, db → pane 1, dc → pane 1, dd → pane 0 (default).
 fn multi_pane_source() -> &'static str {
-    r#"structure def MultiPane {
+    r#"import std.io
+structure def MultiPane {
     let a = box(10mm, 10mm, 10mm)
     let b = box(20mm, 5mm, 5mm)
     let c = box(5mm, 5mm, 30mm)
@@ -17389,7 +17424,8 @@ fn build_gui_state_extracts_display_routing_happy_path() {
 /// produces len==2 and fails.
 #[test]
 fn build_gui_state_display_only_gate_excludes_stl_output() {
-    let source = r#"structure def Gated {
+    let source = r#"import std.io
+structure def Gated {
     let part = box(10mm, 20mm, 5mm)
 
     sub stl  = STLOutput(subject: part, path: "o.stl")
@@ -17468,7 +17504,8 @@ fn build_gui_state_drops_display_output_with_unresolved_subject() {
     // evaluator writes `Value::Undef` for it (no default_expr → Undef path
     // in engine_eval.rs).  `DisplayOutput` explicitly has no
     // `constraint determined(subject)` (stdlib io.ri:156) so this is valid DSL.
-    let source = r#"structure def Partial {
+    let source = r#"import std.io
+structure def Partial {
     let a = box(10mm, 10mm, 10mm)
     param b : Solid
     sub da = DisplayOutput(subject: a, pane: 0)
@@ -17529,7 +17566,9 @@ fn build_gui_state_drops_display_output_with_unresolved_subject() {
 /// RED: `display_appearance` is still `Vec::new()` (step-7 impl populates it).
 #[test]
 fn build_gui_state_extracts_display_appearance_happy_path() {
-    let source = r#"structure def Styled {
+    let source = r#"import std.io
+import std.materials.appearance
+structure def Styled {
     let a = box(10mm, 10mm, 10mm)
     sub d = DisplayOutput(subject: a, style: DisplayStyle(color: Color(r: 0.96, g: 0.95, b: 0.88), finish: Finish.Gloss, opacity: 0.5, wireframe: true))
 }"#;
@@ -17592,7 +17631,9 @@ fn build_gui_state_extracts_display_appearance_happy_path() {
 /// RED: `display_appearance` is still `Vec::new()`.
 #[test]
 fn build_gui_state_drops_dangling_appearance_directive() {
-    let source = r#"structure def Partial {
+    let source = r#"import std.io
+import std.materials.appearance
+structure def Partial {
     let a = box(10mm, 10mm, 10mm)
     param b : Solid
     sub da = DisplayOutput(subject: a, style: DisplayStyle(color: Color(r: 1.0, g: 0.0, b: 0.0), finish: Finish.Matte, opacity: 1.0, wireframe: false))
@@ -17652,7 +17693,8 @@ fn build_gui_state_drops_dangling_appearance_directive() {
 #[test]
 fn build_gui_state_display_appearance_empty_when_style_defaulted() {
     // (a) Two DisplayOutputs with no explicit style — both have realized subjects.
-    let source = r#"structure def NoStyleOutput {
+    let source = r#"import std.io
+structure def NoStyleOutput {
     let a = box(10mm, 10mm, 10mm)
     sub d1 = DisplayOutput(subject: a)
     sub d2 = DisplayOutput(subject: a, pane: 1)
@@ -17925,7 +17967,11 @@ fn project_appearance_default_appearance_satin() {
 /// Defines a material-bearing Physical body (SteelPart) and a material-less box (RawBox).
 #[cfg(test)]
 fn appearance_wiring_source() -> &'static str {
-    r#"structure def SteelPart : Physical {
+    r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def SteelPart : Physical {
     param geometry : Solid = box(10mm, 10mm, 10mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }
@@ -19218,7 +19264,12 @@ fn fea_convergence_emitter_fires_on_preview_parameter() {
 /// including std.surface_finish.
 #[cfg(test)]
 fn surface_finish_wiring_source() -> &'static str {
-    r#"structure def PolishedSteel : Physical {
+    r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+import std.surface_finish
+structure def PolishedSteel : Physical {
     param geometry : Solid = box(10mm, 10mm, 10mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
     param finish_process : FinishProcess = FinishProcess.Polished

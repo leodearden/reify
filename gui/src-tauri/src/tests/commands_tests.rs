@@ -1282,7 +1282,11 @@ fn mesh_stats_json_emits_populated_element_kind_histogram() {
 /// (#5195) beside an `aux` blank (T6) — the shapes whose engine verdict is
 /// hidden-by-default. Material literal as in engine_tests'
 /// `get_entity_tree_consumed_realizations_default_visible_false`.
-const AUX_AND_CONSUMED_FLANGE_SRC: &str = r#"structure def Flange : Rigid {
+const AUX_AND_CONSUMED_FLANGE_SRC: &str = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def Flange : Rigid {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
     let body = cylinder(60mm, 12mm)
@@ -3357,7 +3361,11 @@ fn rigid_mass_props_determined_across_all_gui_load_paths() {
 /// one fixture serves all three consumers; an earlier round carried a second,
 /// literal-armed copy of this source on a constant-cone premise that hoisting does
 /// not in fact disturb.
-const RIGID_TWO_BODY_SRC: &str = r#"structure def RigidBodyA : Rigid {
+const RIGID_TWO_BODY_SRC: &str = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def RigidBodyA : Rigid {
     param depth : Length = 300mm
     param geometry : Solid = box(100mm, 100mm, depth)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
@@ -3372,7 +3380,11 @@ structure def RigidBodyB : Rigid {
 /// `SELECTIVE_MULTIBODY_SRC`): `geometry` realizes as `#realization[0]`, the
 /// extra `let` box as `#realization[1]`. Hiding just `[1]` is the PARTIAL hide
 /// the entity-granular prune deliberately does not catch.
-const RIGID_TWO_REALIZATION_SRC: &str = r#"structure def RigidTwoRealizations : Rigid {
+const RIGID_TWO_REALIZATION_SRC: &str = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def RigidTwoRealizations : Rigid {
     param geometry : Solid = box(100mm, 100mm, 300mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
     let aux = box(50mm, 50mm, 50mm)
@@ -3663,7 +3675,11 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
 /// At load `density_scale = 1.0`, so the density is bits-exact `7850.0` — which is
 /// what `with_inertia_tensor_result` keys on (test_helpers.rs) — and the cold load
 /// resolves normally.
-const RIGID_DENSITY_SCALE_SRC: &str = r#"structure def RigidDensityScale : Rigid {
+const RIGID_DENSITY_SCALE_SRC: &str = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def RigidDensityScale : Rigid {
     param depth : Length = 300mm
     param density_scale : Real = 1.0
     param geometry : Solid = box(100mm, 100mm, depth)
@@ -3838,7 +3854,11 @@ fn warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props() {
 ///
 /// The placement mirrors `get_entity_tree_aux_sub_inherits_default_visible_false`
 /// (engine_tests.rs), the existing composed-path fixture.
-const RIGID_CONTAINED_SUB_SRC: &str = r#"structure def RigidPart : Rigid {
+const RIGID_CONTAINED_SUB_SRC: &str = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def RigidPart : Rigid {
     param geometry : Solid = box(100mm, 100mm, 300mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }
@@ -3985,7 +4005,11 @@ fn contained_rigid_sub_part_retention_works_once_the_demand_key_resolves() {
 /// Module A's `Body : Rigid`: density 7850kg/m^3, the value
 /// `with_inertia_tensor_result` is seeded on (test_helpers.rs), so ALL FOUR
 /// mass-prop cells resolve and enter the retention cache.
-const COLLIDING_BODY_SRC_A: &str = r#"structure def Body : Rigid {
+const COLLIDING_BODY_SRC_A: &str = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def Body : Rigid {
     param geometry : Solid = box(100mm, 100mm, 300mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }"#;
@@ -3998,7 +4022,11 @@ const COLLIDING_BODY_SRC_A: &str = r#"structure def Body : Rigid {
 ///
 /// Both halves matter: the first catches a stale `mass` value being replayed, the
 /// second catches a stale tensor being served where module B has no value at all.
-const COLLIDING_BODY_SRC_B: &str = r#"structure def Body : Rigid {
+const COLLIDING_BODY_SRC_B: &str = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+structure def Body : Rigid {
     param geometry : Solid = box(50mm, 50mm, 50mm)
     param material : Material = Material(name: "alu", density: 3925kg/m^3, youngs_modulus: 70GPa)
 }"#;
