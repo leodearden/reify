@@ -4573,6 +4573,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-reify",
  "workspace-feature-union",
+ "xxhash-rust",
 ]
 
 [[package]]

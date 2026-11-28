@@ -13,6 +13,7 @@ reify-ir.workspace = true
 reify-core.workspace = true
 reify-syntax.workspace = true
 reify-eval-source.workspace = true
+xxhash-rust.workspace = true
 
 [dev-dependencies]
 toml.workspace = true

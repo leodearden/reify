@@ -2,15 +2,13 @@
 //! section 5.8): its entry file is compiled by the second output, and the
 //! outcome is compared with the entry's compile rows.
 
-use std::path::PathBuf;
-
 use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_eval_source::compile_entry;
 
-use crate::bookkeeping::{Built, Disputed, EntryState};
-use crate::corpus_tree::{self, EntryId, EntrySources, LoadedEntry, Problem, SourceFile};
-use crate::entry::EntryRecord;
+use crate::corpus_tree::{self, LoadedEntry, Problem, SourceFile};
 use crate::expectation::Form;
+use crate::ready::ready_entries;
+use crate::seeded::seeded;
 
 /// Every way `entry`'s compile outcome differs from what its compile rows
 /// expect, each naming the entry. The rows that decide are those about the
@@ -113,26 +111,6 @@ fn rendered(errors: &[&Diagnostic]) -> String {
         .map(|error| format!("{} {:?}", rendered_code(&error.code), error.message))
         .collect();
     format!("errors {}", each.join("; "))
-}
-
-/// A one-file entry in theme `other`, from its expectations and its source.
-fn seeded(name: &str, expectations: &str, source: &str) -> LoadedEntry {
-    let record = EntryRecord::from_toml(expectations)
-        .unwrap_or_else(|error| panic!("the seeded entry `{name}` loads: {error}"));
-    LoadedEntry {
-        id: EntryId {
-            theme: "other".to_string(),
-            name: name.to_string(),
-        },
-        record,
-        sources: EntrySources {
-            files: vec![SourceFile {
-                name: "seeded.ri".to_string(),
-                text: source.to_string(),
-            }],
-            import_root: PathBuf::from("/nonexistent/seeded-corpus-entry"),
-        },
-    }
 }
 
 const EXPECTS_PRIVATE_LET_ERROR: &str = r#"tests = "seeded"
@@ -282,47 +260,18 @@ fn scenario_c5() {
 
 #[test]
 fn every_ready_entry_compiles_as_it_expects() {
-    let root = corpus_tree::corpus_root();
-    let mut problems = Vec::new();
-    let (built, found) = Built::parse(&corpus_tree::bookkeeping_text(
-        &root,
-        corpus_tree::BUILT,
-        &mut problems,
-    ));
-    problems.extend(found);
-    let (disputed, found) = Disputed::parse(&corpus_tree::bookkeeping_text(
-        &root,
-        corpus_tree::DISPUTED,
-        &mut problems,
-    ));
-    problems.extend(found);
-    let (entries, found) = corpus_tree::load_corpus(&root);
-    problems.extend(found);
-
-    let ready: Vec<&LoadedEntry> = entries
-        .iter()
-        .filter(|entry| {
-            matches!(
-                EntryState::of(&entry.record.needs, &built, disputed.lists(&entry.id)),
-                EntryState::Ready
-            )
-        })
-        .collect();
+    let (ready, mut problems) = ready_entries();
     for entry in &ready {
         problems.extend(compile_problems(entry));
     }
-    println!(
-        "compiled {} ready entries of {} in the corpus",
-        ready.len(),
-        entries.len()
-    );
+    println!("compiled {} ready entries of the corpus", ready.len());
 
     let listed: Vec<String> = problems.iter().map(ToString::to_string).collect();
     assert!(
         problems.is_empty(),
         "{} compile problems in the corpus at {}:\n{}",
         problems.len(),
-        root.display(),
+        corpus_tree::corpus_root().display(),
         listed.join("\n")
     );
 }
