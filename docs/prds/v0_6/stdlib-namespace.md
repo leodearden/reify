@@ -454,7 +454,9 @@ decompose (its β/θ carry the interim-seeding + units-flip-compile-side clauses
    *Decided in κ (#5503):* disallowed. A followed bare `import std`, in the entry or in any
    import unit at any depth, is a coded `E_BARE_STD_IMPORT` Error (`DiagnosticCode::BareStdImport`)
    whose message points at `import std.prelude` and whose `candidates` are `["std.prelude"]`;
-   the module's own declarations still compile. An alias would be a second spelling of
+   an entry's own declarations still compile, while an import unit that declares a bare
+   `import std` fails as a whole, as any failed import does, so its definitions are absent
+   from the entry's tier. An alias would be a second spelling of
    `std.prelude`. A cfg-gated-out `import std` is inert.
 4. **Build-time stdlib precompilation trigger.** If startup profiling ever attributes
    user-noticeable latency to the per-process stdlib compile, revisit D-5's rejection
