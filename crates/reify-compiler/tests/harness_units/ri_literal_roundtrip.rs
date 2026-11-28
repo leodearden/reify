@@ -1233,27 +1233,19 @@ fn the_ieee_fold_of_factor_one_atoms_is_exactly_one() {
     }
 }
 
-/// NEGATIVE PIN — `UnitScope` is NECESSARY, not decorative.
+/// POSITIVE PIN: a compound SI-base literal compiles with NO seeded registry.
 ///
-/// A literal emitted under `SiBaseUnitsSeeded` must genuinely FAIL to compile
-/// in a module with no seeded registry. Without this, the opt-in is a claim in
-/// prose: nothing else in the suite demonstrates that `BareBuiltinsOnly` is
-/// protecting against a real failure rather than being conservative for its own
-/// sake.
-///
-/// Written against error DIAGNOSTICS rather than `eval_source`, which asserts
-/// the ABSENCE of errors and would simply panic — a panic proves nothing about
-/// which error fired, or that one fired for the right reason.
-///
-/// The `Area` type name resolves with no import (it is in `NAMED_DIMENSIONS`),
-/// so the failure observed here is the UNIT resolution, not the type.
-///
-/// If `resolve_unit_expr` ever grows a `unit_to_scalar` fallback, this test
-/// fires — and at that point the opt-in can be retired and
-/// `value_to_ri_literal` widened unconditionally. That is the intended way to
-/// discover it.
+/// This test used to be the negative pin for `UnitScope::SiBaseUnitsSeeded`: a
+/// literal like `2.5m^2` failed with `unknown unit: m` in a module with no unit
+/// registry, because `resolve_unit_expr` read the registry only. Under strict
+/// stdlib visibility (task #5503, NS-V1) a compound unit's factors fall back to
+/// the builtin unit table exactly as a bare unit does, and every SI base symbol
+/// the emitter writes (`m`, `kg`, `s`, `K`, `A`, `mol`, `cd`) is a builtin. So
+/// the literal now compiles anywhere, and the opt-in no longer guards a real
+/// failure. Retiring it in favour of widening `value_to_ri_literal`
+/// unconditionally is the follow-up the old pin named.
 #[test]
-fn a_compound_literal_does_not_compile_without_a_seeded_registry() {
+fn a_compound_si_base_literal_compiles_without_a_seeded_registry() {
     let area = Value::Scalar {
         si_value: 2.5,
         dimension: DimensionVector::AREA,
@@ -1262,7 +1254,6 @@ fn a_compound_literal_does_not_compile_without_a_seeded_registry() {
         .expect("AREA must be emittable under SiBaseUnitsSeeded");
     assert_eq!(literal, "2.5m^2");
 
-    // Same value, same splice site, no prelude.
     let source = format!("structure def S {{\n  param x : Area = {literal}\n}}\n");
     let compiled = reify_test_support::compile_source_allow_parse_errors(&source);
     let errors: Vec<&reify_core::Diagnostic> = compiled
@@ -1271,50 +1262,9 @@ fn a_compound_literal_does_not_compile_without_a_seeded_registry() {
         .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
     assert!(
-        !errors.is_empty(),
-        "compound literal {literal:?} COMPILED with no seeded unit registry. \
-         `resolve_unit_expr` must have gained a built-in fallback — if so, \
-         UnitScope::SiBaseUnitsSeeded is no longer a real precondition and the \
-         opt-in can be retired in favour of widening value_to_ri_literal \
-         unconditionally. Source:\n{source}"
-    );
-    println!("no-prelude compound rejection: {errors:?}");
-    // Assert the REASON, not just that something failed. Measured: the first
-    // diagnostic is `unknown unit: m` — `resolve_unit_expr` cannot resolve even
-    // the most basic base symbol without a registry, which is the asymmetry
-    // this whole opt-in exists for. Without this, the test would still pass if
-    // `Area` stopped resolving as a type name, or if the splice broke — i.e. it
-    // could go green for a reason that says nothing about unit scoping.
-    //
-    // (The run also emits a follow-on `declared Scalar[m^2] but ... evaluates to
-    // Real` cascade, which incidentally confirms the type name DID resolve.)
-    assert!(
-        errors
-            .iter()
-            .any(|d| d.message.contains("unknown unit")),
-        "expected an `unknown unit` diagnostic — that is the specific failure \
-         `UnitScope::SiBaseUnitsSeeded` guards against. Got: {errors:?}"
-    );
-
-    // …and the bare form of the SAME contract still compiles there, so the
-    // failure above is specific to the compound path and not a broken splice.
-    let bare = value_to_ri_literal_in_scope(
-        &Value::length(0.08),
-        None,
-        UnitScope::SiBaseUnitsSeeded,
-    )
-    .expect("a Length is emittable in either scope");
-    let bare_source = format!("structure def S {{\n  param x : Length = {bare}\n}}\n");
-    let bare_compiled = reify_test_support::compile_source_allow_parse_errors(&bare_source);
-    let bare_errors: Vec<&reify_core::Diagnostic> = bare_compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_core::Severity::Error)
-        .collect();
-    assert!(
-        bare_errors.is_empty(),
-        "the bare literal {bare:?} must still compile with no prelude — the \
-         built-in table is an unconditional fallback. Got: {bare_errors:?}"
+        errors.is_empty(),
+        "compound literal {literal:?} must compile with no seeded unit registry: \
+         its factors are builtin units. Got: {errors:?}\nSource:\n{source}"
     );
 }
 

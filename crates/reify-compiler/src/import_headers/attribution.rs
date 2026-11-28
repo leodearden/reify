@@ -94,14 +94,9 @@ fn role_rule(role: NameRole) -> RoleRule {
             is_builtin: no_builtin,
             shadowed_by: None,
         },
-        NameRole::BareUnit => RoleRule {
+        NameRole::BareUnit | NameRole::UnitFactor => RoleRule {
             searches: &[ExportKind::Unit],
             is_builtin: is_builtin_unit_symbol,
-            shadowed_by: None,
-        },
-        NameRole::UnitFactor => RoleRule {
-            searches: &[ExportKind::Unit],
-            is_builtin: no_builtin,
             shadowed_by: None,
         },
     }
@@ -114,8 +109,9 @@ fn is_builtin_type_name(name: &str) -> bool {
     resolve_type_name(name).is_some() || is_parameterized_builtin_name(name)
 }
 
-/// A bare quantity unit missing from the unit registry falls back to the
-/// builtin unit table, so `2mm` resolves with no unit module at all.
+/// A unit missing from the unit registry, bare or a compound factor, falls
+/// back to the builtin unit table (`units::lookup_unit_atom`), so `2mm` and
+/// `1kg/m^3` resolve with no unit module at all.
 fn is_builtin_unit_symbol(name: &str) -> bool {
     unit_symbol_to_si(name).is_some()
 }

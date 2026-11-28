@@ -1137,8 +1137,8 @@ impl Collector {
         }
     }
 
-    /// A bare unit falls back to the builtin unit table; the factors of a
-    /// compound unit resolve through the unit registry only.
+    /// A bare unit and each factor of a compound unit resolve through the
+    /// unit registry, then the builtin unit table.
     fn quantity_unit(&mut self, unit: &UnitExpr) {
         match unit {
             UnitExpr::Unit(name) => self.use_name(name, NameRole::BareUnit),

@@ -18,7 +18,6 @@ module std.structural.physical
 
 import std.materials.mechanical
 import std.si_units
-import std.units
 
 // ── Physical body trait ─────────────────────────────────────────────────────
 

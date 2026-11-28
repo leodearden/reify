@@ -387,6 +387,51 @@ fn builtin_dimensions_and_units_need_no_import_in_a_program() {
     assert!(std_name_fixits(program.entry()).is_empty());
 }
 
+/// A compound unit's factors fall back to the builtin unit table exactly as a
+/// bare quantity unit does, so a density, an area or a velocity written in
+/// builtin units compiles clean with no import (NS-V1; esc-5503-2's premise
+/// that `mm` and `kg` are builtin units).
+#[test]
+fn builtin_units_compose_into_compound_units_with_no_import_in_a_program() {
+    for (decl, value) in [
+        ("param d : Density = 7850kg/m^3", 7850.0),
+        ("param a : Area = 1mm^2", 1e-6),
+        ("param v : Velocity = 3m/s", 3.0),
+    ] {
+        let program = compile_main(
+            &format!("module main\n\nstructure def S {{\n    {decl}\n}}\n"),
+            &linux(),
+        );
+        let entry = program.entry();
+        assert!(
+            error_diagnostics(entry).is_empty(),
+            "`{decl}`: {:#?}",
+            entry.diagnostics
+        );
+        assert!(std_name_fixits(entry).is_empty(), "`{decl}`");
+        let default = entry
+            .templates
+            .iter()
+            .find(|t| t.name == "S")
+            .and_then(|t| t.value_cells.first())
+            .and_then(|cell| cell.default_expr.as_ref())
+            .unwrap_or_else(|| panic!("`{decl}` must keep its compiled default"));
+        match &default.kind {
+            CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => assert!(
+                (si_value - value).abs() <= 1e-9 * value,
+                "`{decl}`: si_value {si_value}, expected {value}"
+            ),
+            other => panic!("`{decl}`: default is not a scalar literal: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn builtin_unit_factors_of_a_compound_unit_need_no_import() {
+    let source = "structure def S {\n    param d : Density = 7850kg/m^3\n    param a : Area = 1mm^2\n}\n";
+    assert_no_fixit(&fixits(source, &[]), "builtin compound-unit factors");
+}
+
 #[test]
 fn a_gated_unit_import_counts_only_under_the_cfg_that_satisfies_it() {
     let source = "module main\n\n#cfg(target = \"wasm\")\nimport std.si_units\n\n\

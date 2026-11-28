@@ -454,14 +454,21 @@ fn a_bare_builtin_table_unit_needs_no_import() {
 }
 
 #[test]
-fn a_compound_unit_factor_resolves_through_the_registry_only() {
+fn a_builtin_table_compound_unit_factor_needs_no_import() {
     let universe = compile_universe(&[UNITS]);
-    let source = "structure def S { let v = 1mm/s }\n";
+    let plan = derive("structure def S { let v = 1mm/s }\n", &universe);
+    assert!(plan.modules().is_empty(), "{:?}", dotted_modules(&plan));
+}
+
+#[test]
+fn a_non_builtin_compound_unit_factor_needs_the_unit_module() {
+    let universe = compile_universe(&[UNITS]);
+    let source = "structure def S { let v = 1furlong/s }\n";
     let plan = derive(source, &universe);
     assert_needs(
         &plan,
         "std.fake.units",
-        &[name_use("mm", NameRole::UnitFactor)],
+        &[name_use("furlong", NameRole::UnitFactor)],
         source,
     );
 }

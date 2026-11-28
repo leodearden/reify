@@ -1861,19 +1861,50 @@ pub(crate) fn unit_resolve_error_to_diagnostic(err: &UnitResolveError) -> Diagno
     }
 }
 
+/// One unit atom's SI conversion: `si_value = value * factor + offset.unwrap_or(0.0)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct UnitAtom {
+    pub(crate) factor: f64,
+    pub(crate) dimension: DimensionVector,
+    pub(crate) offset: Option<f64>,
+}
+
+/// Resolve one unit name the way a bare quantity literal does: the module's
+/// unit registry first, then the builtin unit table, which every module sees
+/// with no import (NS-V1). A compound unit's factors resolve by this same rule,
+/// so `7850kg/m^3` needs no unit module just as `2kg` needs none.
+pub(crate) fn lookup_unit_atom(registry: &UnitRegistry, name: &str) -> Option<UnitAtom> {
+    registry
+        .lookup(name)
+        .map(|entry| UnitAtom {
+            factor: entry.factor,
+            dimension: entry.dimension,
+            offset: entry.offset,
+        })
+        .or_else(|| {
+            reify_core::units::unit_symbol_to_si(name).map(|(factor, dimension)| UnitAtom {
+                factor,
+                dimension,
+                offset: None,
+            })
+        })
+}
+
 /// Fold a `UnitExpr` AST node against `registry`, returning the combined
 /// SI conversion factor and [`DimensionVector`] for the expression.
 ///
 /// # Parameters
 /// - `expr`     — the unit expression to evaluate (no spans stored in AST nodes)
-/// - `registry` — the registry to look up atom names in
+/// - `registry` — the registry to look up atom names in, before the builtin
+///   unit table (see [`lookup_unit_atom`])
 /// - `span`     — the use-site source span (stamped into any error)
 ///
 /// # Returns
 /// `Ok((factor, dimension))` where `si_value = numeric_value * factor`.
 ///
 /// # Errors
-/// - [`UnitResolveError::UnknownUnit`]          — atom name not in registry
+/// - [`UnitResolveError::UnknownUnit`]          — atom name neither in the
+///   registry nor a builtin unit
 /// - [`UnitResolveError::AffineUnitInCompound`] — affine unit in compound context
 /// - [`UnitResolveError::ExponentOutOfRange`]   — `Pow` exponent outside
 ///   [`reify_core::unit_exponent_in_range`]
@@ -1889,20 +1920,18 @@ pub fn resolve_unit_expr(
     span: SourceSpan,
 ) -> Result<(f64, DimensionVector), UnitResolveError> {
     match expr {
-        reify_ast::UnitExpr::Unit(name) => match registry.lookup(name) {
+        reify_ast::UnitExpr::Unit(name) => match lookup_unit_atom(registry, name) {
             None => Err(UnitResolveError::UnknownUnit {
                 name: name.clone(),
                 span,
             }),
-            Some(entry) => {
-                if entry.offset.is_some() {
-                    return Err(UnitResolveError::AffineUnitInCompound {
-                        name: name.clone(),
-                        span,
-                    });
-                }
-                Ok((entry.factor, entry.dimension))
-            }
+            Some(UnitAtom { offset: Some(_), .. }) => Err(UnitResolveError::AffineUnitInCompound {
+                name: name.clone(),
+                span,
+            }),
+            Some(UnitAtom {
+                factor, dimension, ..
+            }) => Ok((factor, dimension)),
         },
         reify_ast::UnitExpr::Mul(a, b) => {
             let (fa, da) = resolve_unit_expr(a, registry, span)?;
