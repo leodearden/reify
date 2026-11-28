@@ -1925,7 +1925,9 @@ pub fn resolve_unit_expr(
                 name: name.clone(),
                 span,
             }),
-            Some(UnitAtom { offset: Some(_), .. }) => Err(UnitResolveError::AffineUnitInCompound {
+            Some(UnitAtom {
+                offset: Some(_), ..
+            }) => Err(UnitResolveError::AffineUnitInCompound {
                 name: name.clone(),
                 span,
             }),
