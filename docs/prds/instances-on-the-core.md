@@ -110,6 +110,8 @@ Files are small, one concept each, and a file imports only from layers below it.
 | 4. The kinds | `definition_table` `member_table` `instance` `cell` `unknown` `constraint` `arguments_verdict` `collection` `forall_block` `as_value` `made_list` `problem_node` `summary` `unsupplied` | one kind to a file; `unsupplied` is the node of a member no kind evaluates |
 | 5. The host's helpers | `host/core_calls` `host/load` `host/demand` `host/answer` | the one file that calls the core's host interface; compiler output to snapshot inputs; path text to demand; an answer in a form no engine type leaks into |
 
+**As built (ε₁, #10644).** A kind's result type lives beside its kind until a layer-1 file of the table above owns it: `PresentInstance` in `instance`, `DefinitionNames` in `definition_table` and `Unanswerable` in `unsupplied`. So `host/answer` imports `instance` and `host/load` imports `definition_table`; both imports go downward.
+
 A purpose instance is the instance kind over a purpose's member table, so it has no file of its own. A guard's condition, a count and a placement are cells.
 
 ### 5.2 The compiler's second output

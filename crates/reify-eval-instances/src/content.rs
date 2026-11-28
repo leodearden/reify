@@ -95,8 +95,11 @@ mod tests {
 
     const BASE: &str = "structure def A { param t : Length = 1mm }";
 
-    /// Each source differs from `BASE` in one thing a reader of A's member
-    /// table can see, named beside it.
+    /// Each source differs from `BASE` in the thing a reader of A's member
+    /// table can see that is named beside it. The kind rows and the branches
+    /// row change more than that one thing: a member of another kind is
+    /// written with its own declared type, and a group stands in the table
+    /// where the member it now holds stood.
     const VARIANTS: [(&str, &str); 7] = [
         ("name", "structure def A { param u : Length = 1mm }"),
         (
