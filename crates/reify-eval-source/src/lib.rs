@@ -37,6 +37,7 @@ pub struct SourceOutput {
 
 /// Lower the program rooted at `entry_path`, whose text is `entry_source`
 /// (`entry_path` need not exist; imports resolve from its directory).
+// G-allow: the instance kind (ε₁, #10644) and the session layer (#10551) call this; the corpus runner exercises it until then
 pub fn compile_entry(entry_path: &Path, entry_source: &str) -> Result<SourceOutput, SourceRefusal> {
     let program = program_modules::ProgramModules::compile(entry_path, entry_source)?;
     let mut diagnostics = Vec::new();
