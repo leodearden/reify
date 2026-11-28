@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use reify_ast::{Declaration, ParsedModule, TraitDecl};
-use reify_compiler::name_env::{self, Origin};
+use reify_compiler::name_env::{self, Origin, Tier};
 use reify_compiler::{CompiledModule, CompiledTrait, EntityKind, TopologyTemplate};
 use reify_core::{DefinitionName, ModuleName, ModulePath, PathName};
 use reify_ir::{CompiledFunction, EnumDef};
@@ -16,8 +16,9 @@ pub(crate) struct ModuleContext<'m> {
     name: Option<ModuleName>,
     parsed: &'m ParsedModule,
     compiled: &'m CompiledModule,
-    /// Where the definition each name binds to is declared.
-    definitions: HashMap<&'m str, Origin<'m>>,
+    /// What a sub's written target can bind to, any kind: the module's own
+    /// templates, each import's `pub` ones, then every stdlib one.
+    sub_targets: HashMap<&'m str, (&'m TopologyTemplate, Origin<'m>)>,
     /// The trait each name binds to, and where it is declared.
     traits: HashMap<&'m str, (&'m CompiledTrait, Origin<'m>)>,
     /// The templates an expression's constructor call or sub read can name:
@@ -41,13 +42,24 @@ impl<'m> ModuleContext<'m> {
         } else {
             tier
         };
+        let (imports, stdlib): (Vec<&CompiledModule>, Vec<&CompiledModule>) = prelude
+            .iter()
+            .copied()
+            .partition(|module| Origin::Module(&module.path).tier() == Tier::Import);
+        let sub_targets = name_env::bind_scopes::<TopologyTemplate, _, _, _>(
+            &compiled.templates,
+            imports.iter().copied(),
+            stdlib.iter().copied(),
+        )
+        .winning_candidates()
+        .iter()
+        .map(|candidate| {
+            let target = candidate.definition;
+            (target.name.as_str(), (target, candidate.origin))
+        })
+        .collect();
         let bound =
             name_env::bind::<TopologyTemplate, _>(&compiled.templates, prelude.iter().copied());
-        let definitions = bound
-            .winning_candidates()
-            .iter()
-            .map(|candidate| (candidate.definition.name.as_str(), candidate.origin))
-            .collect();
         let templates = bound
             .winning_candidates()
             .iter()
@@ -79,7 +91,7 @@ impl<'m> ModuleContext<'m> {
             name,
             parsed,
             compiled,
-            definitions,
+            sub_targets,
             traits,
             templates,
             enums,
@@ -119,12 +131,15 @@ impl<'m> ModuleContext<'m> {
         self.compiled.templates.iter().find(|t| t.name == name)
     }
 
-    /// The structure or occurrence definition `written` names in this module,
-    /// bound as the existing compile binds it: this module's own, then its
-    /// imports', then the standard library's.
-    pub(crate) fn definition_named(&self, written: &str) -> Option<DefinitionName> {
-        let origin = self.definitions.get(written)?;
-        Some(self.qualified(*origin, written))
+    /// The definition a sub's written target binds to, as the existing
+    /// compile checks it: this module's own, then each import's `pub` ones,
+    /// then the standard library's.
+    pub(crate) fn sub_target(&self, written: &str) -> Option<SubTarget<'m>> {
+        let (template, origin) = *self.sub_targets.get(written)?;
+        Some(SubTarget {
+            name: self.qualified(origin, written),
+            template,
+        })
     }
 
     /// The qualified name of the definition `name` declared at `origin`, as
@@ -144,6 +159,13 @@ impl<'m> ModuleContext<'m> {
             _ => None,
         })
     }
+}
+
+/// The definition a sub's written target binds to, and its existing-compile
+/// template.
+pub(crate) struct SubTarget<'m> {
+    pub(crate) name: DefinitionName,
+    pub(crate) template: &'m TopologyTemplate,
 }
 
 /// Every module a program's names can bind into: its user modules and the

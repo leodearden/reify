@@ -353,8 +353,8 @@ impl Lowering<'_, '_> {
         span: SourceSpan,
         names: &ModuleContext<'_>,
     ) -> DeclaredType {
-        match names.definition_named(element) {
-            Some(definition) => DeclaredType::Definition(definition),
+        match names.sub_target(element) {
+            Some(target) => DeclaredType::Definition(target.name),
             None => {
                 self.report(
                     DiagnosticCode::UnknownSubStructure,
