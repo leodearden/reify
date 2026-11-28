@@ -94,9 +94,14 @@ use reify_core::primitives::{
 };
 
 // ── units ────────────────────────────────────────────────────────────────────
-use reify_core::{BUILTIN_UNITS, ri_compound_unit_expr, ri_emittable_units, unit_symbol_to_si};
+use reify_core::{
+    BUILTIN_UNITS, ri_builtin_compound_unit_expr, ri_compound_unit_expr, ri_emittable_units,
+    unit_symbol_to_si,
+};
 use reify_core::units::{
-    BUILTIN_UNITS as BUILTIN_UNITS_MOD, ri_compound_unit_expr as ri_compound_unit_expr_mod,
+    BUILTIN_UNITS as BUILTIN_UNITS_MOD,
+    ri_builtin_compound_unit_expr as ri_builtin_compound_unit_expr_mod,
+    ri_compound_unit_expr as ri_compound_unit_expr_mod,
     ri_emittable_units as ri_emittable_units_mod, unit_symbol_to_si as unit_symbol_to_si_mod,
 };
 
@@ -392,15 +397,16 @@ fn units_flat_and_module_path() {
     assert!(!table.is_empty(), "the built-in unit table must be reachable");
     assert_eq!(BUILTIN_UNITS_MOD, table);
 
-    // The COMPOUND emission builder, in both spellings (task #6400).
-    // `reify-ir`'s `value_to_ri_literal_in_scope` depends on this surface under
-    // `UnitScope::SiBaseUnitsSeeded`, so pin it at compile time.
+    // The two COMPOUND emission builders, each in both spellings (tasks #6400,
+    // #10778). `reify-compiler`'s conformance migration hint reads
+    // `ri_compound_unit_expr`, and `reify-ir`'s `value_to_ri_literal` reads
+    // `ri_builtin_compound_unit_expr`, so pin both at compile time.
     //
     // Same remit boundary as the ladder above: this pins reachability and the
-    // SIGNATURE — the `fn(&DimensionVector) -> Option<String>` annotation below
-    // is load-bearing, failing to compile if the return type moves to a
+    // SIGNATURE — the `fn(&DimensionVector) -> Option<String>` annotations below
+    // are load-bearing, failing to compile if a return type moves to a
     // borrowed or infallible form. The expected emission STRINGS stay in
-    // `units.rs`, where the builder and its shape/rejection guards live;
+    // `units.rs`, where the builders and their shape/rejection guards live;
     // duplicating `"m^2"` here would add a third edit site for a deliberate
     // change and no coverage.
     let compound: fn(&DimensionVector) -> Option<String> = ri_compound_unit_expr;
@@ -408,6 +414,17 @@ fn units_flat_and_module_path() {
     assert!(area.is_some(), "AREA must have a compound unit expression");
     assert_eq!(ri_compound_unit_expr_mod(&DimensionVector::AREA), area);
     assert_eq!(ri_compound_unit_expr(&DimensionVector::DIMENSIONLESS), None);
+
+    let builtin: fn(&DimensionVector) -> Option<String> = ri_builtin_compound_unit_expr;
+    let builtin_area = builtin(&DimensionVector::AREA);
+    assert!(
+        builtin_area.is_some(),
+        "AREA must have a builtin-only compound unit expression"
+    );
+    assert_eq!(
+        ri_builtin_compound_unit_expr_mod(&DimensionVector::AREA),
+        builtin_area
+    );
 }
 
 #[test]

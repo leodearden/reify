@@ -1094,6 +1094,130 @@ mod tests {
         );
     }
 
+    /// The import-free compound spellings: every atom is a factor-1.0 built-in,
+    /// so the literal resolves in a module that imports nothing.
+    #[test]
+    fn ri_builtin_compound_unit_expr_writes_builtin_only_spellings() {
+        let cases: &[(DimensionVector, &str)] = &[
+            (DimensionVector::AREA, "m^2"),
+            (DimensionVector::VOLUME, "m^3"),
+            (DimensionVector::MASS_DENSITY, "kg/m^3"),
+            (DimensionVector::DYNAMIC_VISCOSITY, "kg/m/s"),
+            (DimensionVector::VOLTAGE, "m^2*kg/s^3/A"),
+            (DimensionVector::CHARGE, "s*A"),
+            (DimensionVector::FREQUENCY, "s^-1"),
+            (DimensionVector::FRACTURE_TOUGHNESS, "kg/m^1/2/s^2"),
+            (
+                DimensionVector::AMOUNT_OF_SUBSTANCE.div(&DimensionVector::VOLUME),
+                "mol/m^3",
+            ),
+            (DimensionVector::ANGLE.div(&DimensionVector::TIME), "rad/s"),
+            (DimensionVector::LENGTH, "m"),
+        ];
+        for &(dim, expected) in cases {
+            assert_eq!(
+                ri_builtin_compound_unit_expr(&dim).as_deref(),
+                Some(expected),
+                "builtin-only compound emission for {:?} drifted",
+                dim.canonical_name()
+            );
+        }
+    }
+
+    /// Refusals: a named derived dimension is never re-spelled in base symbols,
+    /// and a slot whose symbol is not a built-in (`sr`, `USD`) is unwritable.
+    #[test]
+    fn ri_builtin_compound_unit_expr_refuses_spellings_that_need_an_import() {
+        for &(sym, dim) in RI_NAMED_DERIVED_SYMBOLS {
+            assert_eq!(
+                ri_builtin_compound_unit_expr(&dim),
+                None,
+                "{:?} is spelled {sym:?}, which needs an import; it must be refused, \
+                 not re-spelled in base symbols",
+                dim.canonical_name()
+            );
+        }
+        for dim in [
+            DimensionVector::SOLID_ANGLE,
+            DimensionVector::MONEY,
+            DimensionVector::ILLUMINANCE,
+        ] {
+            assert_eq!(
+                ri_builtin_compound_unit_expr(&dim),
+                None,
+                "{:?} needs `sr` or `USD`, neither of which is a built-in",
+                dim.canonical_name()
+            );
+        }
+        assert_eq!(
+            ri_builtin_compound_unit_expr(&DimensionVector::DIMENSIONLESS),
+            None
+        );
+        assert_eq!(
+            ri_builtin_compound_unit_expr(&one_slot(0, crate::Rational::new(200, 1))),
+            None,
+            "an exponent outside i8 is what `resolve_unit_expr` rejects"
+        );
+    }
+
+    /// The builtin-only spelling is `ri_compound_unit_expr`'s spelling, restricted
+    /// to dimensions every atom of which is a factor-1.0 built-in — so the
+    /// serializer and the conformance migration hint never disagree on a
+    /// dimension the serializer writes.
+    #[test]
+    fn ri_builtin_compound_unit_expr_is_the_compound_spelling_restricted_to_builtins() {
+        let is_named_row =
+            |dim: &DimensionVector| RI_NAMED_DERIVED_SYMBOLS.iter().any(|(_, d)| d == dim);
+        let atoms = |expr: &str| -> Vec<String> {
+            expr.split(|c: char| !c.is_alphabetic())
+                .filter(|atom| !atom.is_empty())
+                .map(str::to_owned)
+                .collect()
+        };
+        let (mut written, mut refused) = (0usize, 0usize);
+        for &(dim, name) in crate::NAMED_DIMENSIONS {
+            if dim.is_dimensionless() {
+                continue;
+            }
+            match ri_builtin_compound_unit_expr(&dim) {
+                Some(s) => {
+                    assert_eq!(
+                        Some(s.as_str()),
+                        ri_compound_unit_expr(&dim).as_deref(),
+                        "{name}: the builtin-only spelling must equal the compound one"
+                    );
+                    for atom in atoms(&s) {
+                        let (factor, _) = unit_symbol_to_si(&atom).unwrap_or_else(|| {
+                            panic!("{name}: {s:?} names {atom:?}, which is not a built-in")
+                        });
+                        assert_eq!(
+                            factor.to_bits(),
+                            1.0f64.to_bits(),
+                            "{name}: {s:?} names {atom:?}, whose built-in factor is not 1.0"
+                        );
+                    }
+                    written += 1;
+                }
+                None => {
+                    let t = ri_compound_unit_expr(&dim)
+                        .unwrap_or_else(|| panic!("{name} has no compound spelling at all"));
+                    assert!(
+                        is_named_row(&dim)
+                            || atoms(&t).iter().any(|a| unit_symbol_to_si(a).is_none()),
+                        "{name}: refused, yet its compound spelling {t:?} is a \
+                         non-named, built-in-only expression"
+                    );
+                    refused += 1;
+                }
+            }
+        }
+        assert!(
+            written >= 10,
+            "only {written} rows written — vacuous sweep?"
+        );
+        assert!(refused >= 7, "only {refused} rows refused — vacuous sweep?");
+    }
+
     /// The one bound on a unit-expression exponent: numerator and denominator
     /// each fit `i8`. For an integer exponent that is exactly the
     /// `i8::try_from` bound `resolve_unit_expr` has always enforced; a rational
