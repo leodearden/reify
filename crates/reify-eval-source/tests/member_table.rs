@@ -274,6 +274,73 @@ fn a_sub_naming_no_definition_is_reported() {
     );
 }
 
+/// The output of compiling `main.ri` of a program whose other file is
+/// `lib.ri`, both written to a fresh directory.
+fn accepted_with_lib(main_source: &str, lib_source: &str) -> SourceOutput {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let main = dir.path().join("main.ri");
+    std::fs::write(&main, main_source).expect("main.ri written");
+    std::fs::write(dir.path().join("lib.ri"), lib_source).expect("lib.ri written");
+    compile_entry(&main, main_source)
+        .unwrap_or_else(|refusal| panic!("the program was refused: {refusal:?}\n{main_source}"))
+}
+
+#[test]
+fn a_sub_naming_an_imports_private_definition_is_reported() {
+    let output = accepted_with_lib(
+        "module main\nimport lib\nstructure def Main { sub h : Hidden  sub m : Motor }\n",
+        "module lib\npub structure def Motor { param p : Real = 1 }\n\
+         structure def Hidden { param q : Real = 2 }\n",
+    );
+    let main = table(&output, "Main");
+    assert_eq!(
+        shape(main),
+        vec![(MemberKind::Sub, Some("h")), (MemberKind::Sub, Some("m"))],
+        "the member is kept"
+    );
+    assert_eq!(member(main, "h").declared_type, DeclaredType::None);
+    assert_eq!(
+        member(main, "m").declared_type,
+        DeclaredType::Definition(module_definition("lib", "Motor"))
+    );
+    let unknown: Vec<&str> = output
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::UnknownSubStructure)
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        unknown.len(),
+        1,
+        "one UnknownSubStructure error: {:#?}",
+        output.diagnostics
+    );
+    assert!(
+        unknown[0].contains("`h`"),
+        "the error is the one for `h`: {unknown:?}"
+    );
+}
+
+#[test]
+fn an_imports_private_definition_never_shadows_a_visible_one() {
+    let output = accepted_with_lib(
+        "module main\nimport lib\nstructure def Main { sub t : DimensionalTolerance }\n",
+        "module lib\nstructure def DimensionalTolerance { param q : Length = 1mm }\n",
+    );
+    assert_eq!(
+        member(table(&output, "Main"), "t").declared_type,
+        DeclaredType::Definition(module_definition("std.tolerancing", "DimensionalTolerance")),
+        "an import's private definition is skipped and the standard library's binds"
+    );
+    assert!(
+        !error_codes(&output).contains(&Some(DiagnosticCode::UnknownSubStructure)),
+        "the sub names a visible definition: {:#?}",
+        output.diagnostics
+    );
+}
+
 #[test]
 fn an_unresolved_written_type_is_reported() {
     let output = accepted("structure def A { param x : Nonsuch }\n");
