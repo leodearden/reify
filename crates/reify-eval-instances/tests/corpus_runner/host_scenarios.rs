@@ -103,3 +103,18 @@ fn guarded_member_answers_no_kind_supplied() {
         Ok(no_kind_supplied(MemberKind::Sub, true))
     );
 }
+
+/// A sub whose definition did not resolve is in the table with no
+/// definition, and no instance can be made of it, so it answers
+/// no-kind-supplied: it is not dropped as absent (C6).
+#[test]
+fn a_sub_of_no_definition_answers_no_kind_supplied() {
+    let definitions = compiled("structure def Block { sub p : Nope }\n");
+    let mut host = Host::new();
+    let loaded = host.load(&definitions, &MemberKinds::built(), &[in_entry("Block")]);
+
+    assert_eq!(
+        host.answer(&loaded, &path("Block.p")),
+        Ok(no_kind_supplied(MemberKind::Sub, false))
+    );
+}

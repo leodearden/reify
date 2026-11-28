@@ -153,28 +153,31 @@ fn collect_written<'t>(table: &'t MemberTable, in_branch: bool, written: &mut Ve
     }
 }
 
-/// How a name with `declarations` is evaluated.
+/// How a name with `declarations` is evaluated. A sub whose definition did
+/// not resolve has no table to make an instance of, so no kind evaluates it.
 fn evaluation(declarations: &[(&Member, bool)], member_kinds: &MemberKinds) -> Evaluation {
     if let Some((guarded, _)) = declarations.iter().find(|(_, under_guard)| *under_guard) {
-        return Evaluation::Failure(InstanceFailure::NoKindSupplied {
-            member: guarded.kind,
-            under_guard: true,
-        });
+        return no_kind_supplied(guarded, true);
     }
     let (deciding, _) = declarations
         .last()
         .expect("a written name has a declaration");
-    match member_kinds.recipe(deciding.kind) {
-        Some(kind) => Evaluation::Kind {
-            kind,
-            definition: match &deciding.declared_type {
-                DeclaredType::Definition(definition) => Some(definition.clone()),
-                DeclaredType::None | DeclaredType::Value(_) | DeclaredType::Written(_) => None,
-            },
-        },
-        None => Evaluation::Failure(InstanceFailure::NoKindSupplied {
-            member: deciding.kind,
-            under_guard: false,
-        }),
+    let Some(kind) = member_kinds.recipe(deciding.kind) else {
+        return no_kind_supplied(deciding, false);
+    };
+    let definition = match &deciding.declared_type {
+        DeclaredType::Definition(definition) => Some(definition.clone()),
+        DeclaredType::None | DeclaredType::Value(_) | DeclaredType::Written(_) => None,
+    };
+    if kind == kind_ids::INSTANCE && definition.is_none() {
+        return no_kind_supplied(deciding, false);
     }
+    Evaluation::Kind { kind, definition }
+}
+
+fn no_kind_supplied(member: &Member, under_guard: bool) -> Evaluation {
+    Evaluation::Failure(InstanceFailure::NoKindSupplied {
+        member: member.kind,
+        under_guard,
+    })
 }
