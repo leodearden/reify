@@ -27,6 +27,7 @@ pub use name_uses::{NameRole, NameUse};
 pub use placement::PlacementDefect;
 
 use crate::cfg::CfgSet;
+use crate::re_exports::ReExports;
 use crate::types::CompiledModule;
 
 /// One std module a module needs, with the written names that need it.
@@ -99,14 +100,16 @@ impl<'u> ImportPlan<'u> {
     }
 
     /// The required imports `parsed` does not yet satisfy, each narrowed to
-    /// the names its imports in effect under `cfg` leave uncovered.
+    /// the names its imports in effect under `cfg` leave uncovered, directly
+    /// or through what the plan's universe re-exports.
     ///
     /// # Panics
     ///
     /// If `parsed` declares an import whose path is not a module path, which
     /// only a module with parse errors can.
     pub fn missing_from(&self, parsed: &ParsedModule, cfg: &CfgSet) -> Vec<RequiredImport> {
-        let coverage = coverage::ImportCoverage::of(parsed, cfg);
+        let re_exports = ReExports::of_compiled(self.universe.iter().copied());
+        let coverage = coverage::ImportCoverage::of(parsed, cfg, &re_exports);
         self.required
             .iter()
             .filter_map(|required| {
@@ -243,7 +246,8 @@ pub fn cfg_unsatisfied_imports(parsed: &ParsedModule, cfg: &CfgSet) -> Vec<Modul
 }
 
 /// What the imports `parsed` declares whose `#cfg` predicates `cfg` does not
-/// satisfy would bind, were those predicates satisfied.
+/// satisfy would bind, were those predicates satisfied, directly or through
+/// what the `universe` modules re-export.
 pub struct GatedOffImports<'p> {
     coverage: coverage::ImportCoverage<'p>,
 }
@@ -253,9 +257,10 @@ impl<'p> GatedOffImports<'p> {
     ///
     /// If `parsed` declares an import whose path is not a module path, which
     /// only a module with parse errors can.
-    pub fn of(parsed: &'p ParsedModule, cfg: &CfgSet) -> Self {
+    pub fn of(parsed: &'p ParsedModule, cfg: &CfgSet, universe: &[&CompiledModule]) -> Self {
+        let re_exports = ReExports::of_compiled(universe.iter().copied());
         Self {
-            coverage: coverage::ImportCoverage::of_gated_off(parsed, cfg),
+            coverage: coverage::ImportCoverage::of_gated_off(parsed, cfg, &re_exports),
         }
     }
 

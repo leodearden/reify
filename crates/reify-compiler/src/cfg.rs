@@ -60,6 +60,16 @@ pub fn cfg_satisfied(pragma: &reify_ast::Pragma, active: &CfgSet) -> bool {
     pragma.args.iter().all(|arg| arg_satisfied(arg, active))
 }
 
+/// Returns `true` iff all `#cfg(...)` predicates on `import` are satisfied by `cfg`.
+///
+/// An import with no `cfg_predicates` is vacuously satisfied (always followed).
+/// Stacked `#cfg` pragmas are ANDed: all must be satisfied (PRD D-1).
+///
+/// This is the canonical import-gating predicate.
+pub(crate) fn import_cfg_satisfied(import: &reify_ast::ImportDecl, cfg: &CfgSet) -> bool {
+    import.cfg_predicates.iter().all(|p| cfg_satisfied(p, cfg))
+}
+
 /// Evaluates a single pragma arg against `active`.
 ///
 /// **Satisfiable shapes** (v1):

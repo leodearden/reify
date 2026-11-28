@@ -64,6 +64,7 @@ mod port_path;
 pub mod prelude_context;
 pub mod program;
 pub mod program_scope;
+mod re_exports;
 pub(crate) mod recursion_guard;
 mod rejected_param_defaults;
 pub mod relation_signatures;

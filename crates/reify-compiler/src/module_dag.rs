@@ -11,8 +11,9 @@ use indexmap::IndexSet;
 use reify_core::{Diagnostic, DiagnosticCode, ModulePathParseError};
 
 use crate::CompiledModule;
-use crate::cfg::{CfgSet, cfg_satisfied};
+use crate::cfg::{CfgSet, import_cfg_satisfied};
 use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
+use crate::re_exports::ReExports;
 
 /// Resolves import dot-paths to filesystem paths.
 ///
@@ -185,24 +186,11 @@ pub struct ModuleDag {
     /// How the stdlib becomes visible to the units this DAG compiles.
     stdlib: StdlibVisibility,
     /// Each module's re-export edges (resolution-unification D-7), keyed like
-    /// `modules`: its `pub import` targets in declaration order, one per path.
-    /// For a file-compiled module, the targets its walk followed (a
-    /// cfg-gated-out import, or a `std.*` one this DAG does not walk, is never
-    /// an edge); for a module the embedded-stdlib fallback inserts, every
-    /// `pub import` it was built with. Both go through [`re_export_edges`].
-    re_exports: HashMap<String, Vec<String>>,
-}
-
-/// A module's re-export edges from its `pub import` target paths in
-/// declaration order: one edge per path, at its first occurrence.
-fn re_export_edges<'a>(pub_targets: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let mut edges: Vec<String> = Vec::new();
-    for target in pub_targets {
-        if !edges.iter().any(|edge| edge == target) {
-            edges.push(target.to_string());
-        }
-    }
-    edges
+    /// `modules`. For a file-compiled module, the `pub import` targets its
+    /// walk followed (a cfg-gated-out import, or a `std.*` one this DAG does
+    /// not walk, is never an edge); for a module the embedded-stdlib fallback
+    /// inserts, every `pub import` it was built with.
+    re_exports: ReExports,
 }
 
 /// Build an "invalid module path" [`Diagnostic`] vec.
@@ -338,7 +326,7 @@ impl ModuleDag {
             cfg: CfgSet::default(),
             sources: HashMap::new(),
             stdlib: StdlibVisibility::Imported,
-            re_exports: HashMap::new(),
+            re_exports: ReExports::default(),
         }
     }
 
@@ -383,20 +371,9 @@ impl ModuleDag {
     pub(crate) fn visible_imports(&self, direct: &[&str]) -> Vec<String> {
         let mut tier = IndexSet::new();
         for path in direct {
-            self.extend_with_re_exports(path, &mut tier);
+            self.re_exports.extend_closure(path, &mut tier);
         }
         tier.into_iter().collect()
-    }
-
-    /// Append `path` and then, depth-first, its re-export closure to `tier`,
-    /// skipping every module `tier` already holds.
-    fn extend_with_re_exports(&self, path: &str, tier: &mut IndexSet<String>) {
-        if !tier.insert(path.to_string()) {
-            return;
-        }
-        for target in self.re_exports.get(path).into_iter().flatten() {
-            self.extend_with_re_exports(target, tier);
-        }
     }
 
     /// Compile a module and all its transitive dependencies.
@@ -556,13 +533,7 @@ impl ModuleDag {
                         .unwrap_or(0);
                     for embedded in &stdlib[start..=idx] {
                         let dotted = embedded.path.0.join(".");
-                        let pub_targets = embedded
-                            .imports
-                            .iter()
-                            .filter(|import| import.is_pub)
-                            .map(|import| import.path.as_str());
-                        self.re_exports
-                            .insert(dotted.clone(), re_export_edges(pub_targets));
+                        self.re_exports.record_compiled(embedded);
                         self.topo_order.push(dotted.clone());
                         self.modules.insert(dotted, embedded.clone());
                     }
@@ -613,7 +584,7 @@ impl ModuleDag {
         self.in_progress.insert(module_path.to_string());
 
         // Use inner closure to guarantee in_progress cleanup on all exit paths
-        let result = (|| -> Result<(CompiledModule, Vec<String>), Vec<Diagnostic>> {
+        let result = (|| -> Result<(CompiledModule, Vec<&str>), Vec<Diagnostic>> {
             // Single pass: compile each import dependency and collect its path,
             // and the path of each `pub import` as a re-export edge.
             // Imports with unsatisfied `#cfg(...)` predicates are skipped entirely.
@@ -631,7 +602,6 @@ impl ModuleDag {
                     }
                 }
             }
-            let re_export_paths = re_export_edges(pub_targets);
 
             // Block-scope the shared borrows of self.modules so they are
             // dropped before the later self.modules.insert call.
@@ -651,7 +621,7 @@ impl ModuleDag {
                     .collect();
                 self.stdlib.compile_unit(&parsed, &preludes)
             };
-            Ok((compiled, re_export_paths))
+            Ok((compiled, pub_targets))
         })();
 
         // Always remove from in-progress, whether the inner block succeeded or failed.
@@ -660,7 +630,7 @@ impl ModuleDag {
         self.in_progress.shift_remove(module_path);
 
         // Propagate error after cleanup
-        let (mut compiled, re_export_paths) = result?;
+        let (mut compiled, pub_targets) = result?;
 
         // Commit filesystem mode now that the module has compiled successfully.
         // Deferred from the Ok-and-std match arm above so that a parse/compile
@@ -702,8 +672,7 @@ impl ModuleDag {
                 source,
             },
         );
-        self.re_exports
-            .insert(module_path.to_string(), re_export_paths);
+        self.re_exports.record(module_path.to_string(), pub_targets);
 
         Ok(())
     }
@@ -795,16 +764,6 @@ mod tests {
             "invalid module path while resolving import 'some.path': module path must not be empty",
         );
     }
-}
-
-/// Returns `true` iff all `#cfg(...)` predicates on `import` are satisfied by `cfg`.
-///
-/// An import with no `cfg_predicates` is vacuously satisfied (always followed).
-/// Stacked `#cfg` pragmas are ANDed: all must be satisfied (PRD D-1).
-///
-/// This is the canonical import-gating predicate.
-pub(crate) fn import_cfg_satisfied(import: &reify_ast::ImportDecl, cfg: &CfgSet) -> bool {
-    import.cfg_predicates.iter().all(|p| cfg_satisfied(p, cfg))
 }
 
 /// Compile a project starting from an entry file.
