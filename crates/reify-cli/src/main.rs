@@ -152,10 +152,8 @@ pub(crate) fn module_path_for_file(path: &str) -> ModulePath {
 /// its `#cfg(...)`-satisfied user-import DAG under the active [`CfgSet`], via
 /// [`reify_compiler::program::compile_program_with_parsed_entry`].
 ///
-/// It preserves single-file behavior — the full stdlib prelude is still
-/// seeded, so every single-file input keeps resolving stdlib names — while
-/// additionally following the entry's cfg-satisfied user imports, so
-/// `--cfg target=...` selects which platform modules resolve.
+/// The program compile follows the entry's cfg-satisfied imports, `std.*`
+/// included, so `--cfg target=...` selects which platform modules resolve.
 ///
 /// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
 /// *inside* the program compile (via `attach_module_path_diag`), so this
@@ -183,10 +181,9 @@ fn parse_and_compile_program(
 
     // Resolve sibling user imports relative to the entry file's parent dir.
     //
-    // `stdlib_root` is INERT on this code path: the program compile skips every
-    // `std.*` import (the full stdlib is seeded into the prelude via the cached
-    // stdlib context instead), so the resolver's stdlib_root is never
-    // consulted. We still pass the GUI/LSP-heuristic path
+    // `stdlib_root` is INERT on this code path: the program compile resolves
+    // every `std.*` import from the embedded stdlib, so the resolver's
+    // stdlib_root is never consulted. We still pass the GUI/LSP-heuristic path
     // (parent/crates/reify-compiler/stdlib) rather than a bogus sentinel so the
     // resolver is constructed identically to that bridge; its value has no
     // observable effect here.

@@ -590,29 +590,27 @@ fn a_prelude_binds_user_import_tier_before_std_tier() {
         .enum_def(tier_enum("ImportOnly"))
         .build();
 
-    let ext = PreludeContext::new(&[&std_mod, &imp]);
+    let std_first = PreludeContext::new(&[&std_mod, &imp]);
+    let import_first = PreludeContext::new(&[&imp, &std_mod]);
 
     assert_eq!(
-        alias_shapes(&ext),
+        alias_shapes(&std_first),
         vec![("Shared".to_string(), scalar(DimensionVector::LENGTH), true)],
         "exactly one `Shared`, the user import's"
     );
     assert_eq!(
-        ext.resolution_enums(),
+        std_first.resolution_enums(),
         [tier_enum("ImportOnly")].as_slice(),
         "exactly one `ETier`, the user import's"
     );
-
-    for (label, flat) in [("new(import ++ std)", PreludeContext::new(&[&imp, &std_mod]))] {
-        assert_eq!(
-            alias_shapes(&ext),
-            alias_shapes(&flat),
-            "aliases vs {label}"
-        );
-        assert_eq!(
-            ext.resolution_enums(),
-            flat.resolution_enums(),
-            "enums vs {label}"
-        );
-    }
+    assert_eq!(
+        alias_shapes(&std_first),
+        alias_shapes(&import_first),
+        "aliases do not depend on slice order across tiers"
+    );
+    assert_eq!(
+        std_first.resolution_enums(),
+        import_first.resolution_enums(),
+        "enums do not depend on slice order across tiers"
+    );
 }
