@@ -187,16 +187,18 @@ fn identifier(text: &str) -> PathName {
     PathName::new(text).unwrap_or_else(|e| panic!("`{text}` is an identifier: {e:?}"))
 }
 
-/// The problems of one covered file of `entry`, lowered as `output`.
+/// The problems of one covered file of `entry`, lowered as `output`, and how
+/// many of its definitions' tables were compared with their bodies.
 fn file_problems(
     entry: &LoadedEntry,
     file: &SourceFile,
     is_entry: bool,
     output: &SourceOutput,
-) -> Vec<Problem> {
+) -> (Vec<Problem>, usize) {
     let parsed = reify_syntax::parse(&file.text, ModulePath::single("corpus_entry"));
     let module = listed_module(file, is_entry, parsed.declared_module_path.as_ref());
     let mut problems = Vec::new();
+    let mut compared = 0;
     for declaration in &parsed.declarations {
         let (written_definition, members) = match declaration {
             Declaration::Structure(def) => (&def.name, &def.members),
@@ -210,14 +212,17 @@ fn file_problems(
                 &subject,
                 format!("{name:?} is not in the list"),
             )),
-            Some(definition) => problems.extend(
-                table_problems(members, &definition.members)
-                    .into_iter()
-                    .map(|what| Problem::new(&subject, what)),
-            ),
+            Some(definition) => {
+                compared += 1;
+                problems.extend(
+                    table_problems(members, &definition.members)
+                        .into_iter()
+                        .map(|what| Problem::new(&subject, what)),
+                );
+            }
         }
     }
-    problems
+    (problems, compared)
 }
 
 #[test]
@@ -225,7 +230,7 @@ fn scenario_c6_member_in_table() {
     let root = corpus_tree::corpus_root();
     let (entries, mut problems) = corpus_tree::load_corpus(&root);
     let mut parsing = 0usize;
-    let mut covered = 0usize;
+    let mut compared = 0usize;
     for entry in &entries {
         let parses: Vec<&SourceFile> = entry
             .sources
@@ -257,16 +262,12 @@ fn scenario_c6_member_in_table() {
             }
         };
         for file in parses {
-            problems.extend(file_problems(
-                entry,
-                file,
-                file.name == compiled.name,
-                &output,
-            ));
-            covered += 1;
+            let (found, tables) = file_problems(entry, file, file.name == compiled.name, &output);
+            problems.extend(found);
+            compared += tables;
         }
     }
-    println!("C6: {covered} corpus files covered of {parsing} that parse");
+    println!("C6: {compared} definition tables compared, in {parsing} corpus files that parse");
 
     let listed: Vec<String> = problems.iter().map(ToString::to_string).collect();
     assert!(
@@ -276,6 +277,8 @@ fn scenario_c6_member_in_table() {
         root.display(),
         listed.join("\n")
     );
-    assert!(parsing > 0, "some corpus file parses");
-    assert_eq!(covered, parsing, "every corpus file that parses is covered");
+    assert!(
+        compared > 0,
+        "some written definition's table is compared with its body"
+    );
 }

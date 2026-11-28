@@ -49,6 +49,14 @@ fn theme_problem(theme: &str) -> Option<String> {
     })
 }
 
+/// A bookkeeping file's text; an unreadable file is a problem, read as empty.
+pub fn bookkeeping_text(root: &Path, file: &str, problems: &mut Vec<Problem>) -> String {
+    fs::read_to_string(root.join(file)).unwrap_or_else(|error| {
+        problems.push(Problem::new(file, format!("unreadable: {error}")));
+        String::new()
+    })
+}
+
 /// `tests/corpus/` of this crate, in the tree the running test belongs to.
 pub fn corpus_root() -> PathBuf {
     reify_test_support::workspace_root::workspace_root()

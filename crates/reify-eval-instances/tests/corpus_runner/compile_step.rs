@@ -167,8 +167,20 @@ answer_basis = "seeded"
 compile = "ok"
 "#;
 
+/// An uncoded row loads only beside a need owned outside the PRD.
+const EXPECTS_UNCODED_ERROR: &str = r#"tests = "seeded"
+rule = "seeded"
+provenance = "scenario C5"
+needs = ["compile-error", "indexed-subs"]
+answer_basis = "seeded"
+
+[[expect]]
+compile_error = "any error at all"
+"#;
+
 const ACCEPTED_SOURCE: &str = "structure def A { param t : Length = 1mm }\n";
 const UNKNOWN_SUB_SOURCE: &str = "structure def A { sub p : Nope }\n";
+const UNPARSED_SOURCE: &str = "structure def A { param t : Length = }\n";
 
 /// The one problem `entry` gives, as text.
 fn sole_problem(entry: &LoadedEntry) -> String {
@@ -239,24 +251,53 @@ fn scenario_c5() {
         "an error over a source expected to be accepted names the entry and the code reported: \
          {problem}"
     );
+
+    let uncoded = seeded(
+        "seeded-uncoded-error-expected-error-reported",
+        EXPECTS_UNCODED_ERROR,
+        UNKNOWN_SUB_SOURCE,
+    );
+    let problems: Vec<String> = compile_problems(&uncoded)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        problems.is_empty(),
+        "a compile_error row with no code is met by an error of any code: {problems:#?}"
+    );
+
+    let refused = seeded(
+        "seeded-acceptance-expected-source-refused",
+        EXPECTS_ACCEPTANCE,
+        UNPARSED_SOURCE,
+    );
+    let problem = sole_problem(&refused);
+    assert!(
+        problem.contains(&refused.id.to_string())
+            && problem.contains("refused")
+            && problem.contains("NotParsed"),
+        "a source the second output refuses names the entry and the refusal: {problem}"
+    );
 }
 
 #[test]
 fn every_ready_entry_compiles_as_it_expects() {
     let root = corpus_tree::corpus_root();
     let mut problems = Vec::new();
-    let mut bookkeeping = |file: &str| {
-        std::fs::read_to_string(root.join(file)).unwrap_or_else(|error| {
-            problems.push(Problem::new(file, format!("unreadable: {error}")));
-            String::new()
-        })
-    };
-    let (built, built_problems) = Built::parse(&bookkeeping(corpus_tree::BUILT));
-    let (disputed, disputed_problems) = Disputed::parse(&bookkeeping(corpus_tree::DISPUTED));
-    let (entries, load_problems) = corpus_tree::load_corpus(&root);
-    problems.extend(built_problems);
-    problems.extend(disputed_problems);
-    problems.extend(load_problems);
+    let (built, found) = Built::parse(&corpus_tree::bookkeeping_text(
+        &root,
+        corpus_tree::BUILT,
+        &mut problems,
+    ));
+    problems.extend(found);
+    let (disputed, found) = Disputed::parse(&corpus_tree::bookkeeping_text(
+        &root,
+        corpus_tree::DISPUTED,
+        &mut problems,
+    ));
+    problems.extend(found);
+    let (entries, found) = corpus_tree::load_corpus(&root);
+    problems.extend(found);
 
     let ready: Vec<&LoadedEntry> = entries
         .iter()

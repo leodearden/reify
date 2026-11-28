@@ -6,8 +6,12 @@ use std::path::Path;
 use reify_ast::Declaration;
 use reify_compiler::parse_with_stdlib;
 use reify_compiler::stdlib_loader::stdlib_sources;
-use reify_core::{DefinitionName, ModuleName, ModulePath, PathName, Severity};
-use reify_eval_source::{DeclaredType, DefinitionList, SourceOutput, SourceRefusal, compile_entry};
+use reify_core::{
+    DefinitionName, DimensionVector, ModuleName, ModulePath, PathName, Severity, Type,
+};
+use reify_eval_source::{
+    DeclaredType, DefinitionList, MemberKind, SourceOutput, SourceRefusal, compile_entry,
+};
 
 fn name(text: &str) -> PathName {
     PathName::new(text).unwrap_or_else(|e| panic!("`{text}` is not a name: {e:?}"))
@@ -78,18 +82,48 @@ fn the_list_holds_the_entry_files_definitions_by_qualified_name() {
             "`{not_a_definition}` is not a definition of the list"
         );
     }
-    let event = output
-        .definitions
-        .get(&entry_definition("Event"))
-        .expect("the occurrence def is listed");
-    let plate = output
-        .definitions
-        .get(&entry_definition("Plate"))
-        .expect("the structure def is listed");
+}
+
+#[test]
+fn an_occurrence_def_is_lowered_exactly_as_a_structure_def() {
+    let body = "{\n    param t : Length = 3mm\n    let area = t * t\n    constraint t > 0mm\n}\n";
+    let source = format!("structure def Plate {body}occurrence def Event {body}");
+    let output = accepted(Path::new("same_body.ri"), &source);
+    let table = |definition: &str| {
+        &output
+            .definitions
+            .get(&entry_definition(definition))
+            .unwrap_or_else(|| panic!("`{definition}` is listed"))
+            .members
+    };
+    let shape: Vec<(Option<&str>, MemberKind, &DeclaredType)> = table("Plate")
+        .iter()
+        .map(|member| {
+            (
+                member.name.as_ref().map(PathName::as_str),
+                member.kind,
+                &member.declared_type,
+            )
+        })
+        .collect();
+    let length = DeclaredType::Value(Type::length());
+    let area = DeclaredType::Value(Type::Scalar {
+        dimension: DimensionVector::AREA,
+    });
     assert_eq!(
-        event.members.len(),
-        plate.members.len(),
-        "an occurrence def is lowered exactly as a structure def"
+        shape,
+        vec![
+            (Some("t"), MemberKind::Cell, &length),
+            (Some("area"), MemberKind::Cell, &area),
+            (None, MemberKind::Constraint, &DeclaredType::None),
+        ],
+        "the structure def's table lowers its body"
+    );
+    assert_eq!(
+        table("Event"),
+        table("Plate"),
+        "an occurrence def with the same body has the same table: names, kinds, declared \
+         types, origins and branches"
     );
 }
 
