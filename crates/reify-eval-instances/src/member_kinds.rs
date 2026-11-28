@@ -20,6 +20,7 @@ pub struct MemberKinds {
 
 impl MemberKinds {
     /// The rows this crate builds.
+    // G-allow: the table Host::load is given; the session layer (#10551) loads it in production, and the corpus runner does until then
     pub fn built() -> Self {
         Self {
             rows: vec![(MemberKind::Sub, kind_ids::INSTANCE)],
@@ -27,6 +28,7 @@ impl MemberKinds {
     }
 
     /// No row filled: no member is evaluated.
+    // G-allow: the table's other public value beside built(), with no row filled; the corpus runner loads it to show the table is an input
     pub fn empty() -> Self {
         Self { rows: Vec::new() }
     }

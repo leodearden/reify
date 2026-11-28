@@ -25,6 +25,7 @@ pub struct Host {
 pub struct Loaded(Snapshot);
 
 impl Host {
+    // G-allow: the host's interface; its production caller is the session layer (#10551), and the corpus runner exercises it until then
     pub fn new() -> Self {
         Self {
             on_core: OnCore::new(),
@@ -33,6 +34,7 @@ impl Host {
 
     /// The program of `definitions`, its members evaluated by
     /// `member_kinds`, with an instance at each of `roots` it defines.
+    // G-allow: the host's interface; its production caller is the session layer (#10551), and the corpus runner exercises it until then
     pub fn load(
         &mut self,
         definitions: &DefinitionList,
@@ -46,6 +48,7 @@ impl Host {
     }
 
     /// The answer at `path` of the program `loaded`.
+    // G-allow: the host's interface; its production caller is the session layer (#10551), and the corpus runner exercises it until then
     pub fn answer(
         &mut self,
         loaded: &Loaded,
