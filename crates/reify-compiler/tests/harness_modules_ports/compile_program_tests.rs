@@ -1437,7 +1437,7 @@ fn imported_enum_access_resolves_inside_a_transitive_import_unit() {
 /// cfg-satisfied import counts, `std.*` included (κ #5503), whether or not it
 /// resolves.
 #[test]
-fn entry_follows_imports_only_for_a_followed_user_import() {
+fn entry_follows_imports_for_every_cfg_satisfied_import_std_included() {
     let cfg = CfgSet {
         target: Some("linux".to_string()),
         ..Default::default()
