@@ -880,30 +880,41 @@ fn each_import_tier_collision_has_exactly_one_reporter() {
     }
 }
 
-/// A shadowed STD definition is not the collision report's: the entry's own
-/// compile reports entry-vs-std as `StdlibNameShadowed`, and the import's own
-/// compile reports import-vs-std the same way. The entry carries exactly one
-/// `DefinitionCollision`, for main-vs-a.
+/// A shadowed STD definition is not the collision report's, though both
+/// modules import the std module declaring it, so it is one of the program's
+/// import units: the entry's own compile reports entry-vs-std as
+/// `StdlibNameShadowed`, and the import's own compile reports import-vs-std
+/// the same way. The entry carries exactly one `DefinitionCollision`, for
+/// main-vs-a.
 #[test]
 fn a_shadowed_stdlib_definition_is_not_in_the_collision_report() {
     const STD_NAME: &str = "Color";
-    stdlib_module_declaring(STD_NAME);
+    let std_module = stdlib_module_declaring(STD_NAME).path.to_dotted();
     let dir = tempfile::tempdir().unwrap();
     let declare =
         |marker: u32| format!("structure def {STD_NAME} {{\n    param zz : Real = {marker}\n}}\n");
     let program = compile_in(
         dir.path(),
-        &[("a", &format!("module a\npub {}", declare(1)))],
-        &format!("module main\nimport a\n{}", declare(2)),
-    );
-    assert_eq!(
-        errors_of(&program),
-        Vec::<&str>::new(),
-        "precondition: no Error"
+        &[(
+            "a",
+            &format!("module a\nimport {std_module}\npub {}", declare(1)),
+        )],
+        &format!("module main\nimport a\nimport {std_module}\n{}", declare(2)),
     );
     let is_shadow = |d: &&Diagnostic| {
         d.code == Some(DiagnosticCode::StdlibNameShadowed) && d.message.contains(STD_NAME)
     };
+    let other_errors: Vec<&Diagnostic> = program
+        .entry()
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && !is_shadow(d))
+        .collect();
+    assert!(
+        other_errors.is_empty(),
+        "precondition: no Error but the shadowings of a declared std import \
+         (D-2 stage 2), got {other_errors:#?}"
+    );
     assert!(
         program.entry_own_diagnostics().any(|d| is_shadow(&d)),
         "the entry's own compile reports entry-vs-std, got {:#?}",

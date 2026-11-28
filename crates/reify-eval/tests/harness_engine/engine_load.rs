@@ -345,6 +345,8 @@ fn compile_kit(dir: &Path) -> Arc<CompiledProgram> {
         &[(
             "parts",
             "module parts\n\
+             import std.io\n\
+             import std.units\n\
              pub trait Supplied : Buy {}\n\
              pub structure def Bolt : Supplied {\n\
              \x20   param supplier : String = \"Fastenal\"\n\
@@ -353,7 +355,7 @@ fn compile_kit(dir: &Path) -> Arc<CompiledProgram> {
              \x20   param lead_time : Time = 24h\n\
              }\n",
         )],
-        "module main\nimport parts\n\
+        "module main\nimport parts\nimport std.io\n\
          structure def Kit {\n\
          \x20   sub bolt = Bolt()\n\
          \x20   let bought = filter(self.descendants, Buy)\n\
