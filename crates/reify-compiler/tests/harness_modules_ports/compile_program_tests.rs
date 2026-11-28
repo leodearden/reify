@@ -493,7 +493,8 @@ fn compile_program_unit_collision_between_imports_is_first_wins() {
 /// import's definition (resolution-unification D-6) on the entry, once, coded
 /// `DefinitionCollision`: import-vs-import (`twice`) and entry-vs-import
 /// (`Pick`). The report follows the re-homed copies of the imports' own
-/// diagnostics (`b`'s `SignalKind` shadows the stdlib's).
+/// diagnostics (`b`'s `SignalKind` shadows that of the `std.ports.electrical`
+/// it imports, an Error under stdlib-namespace D-2 stage 2).
 #[test]
 fn the_program_compile_reports_each_import_tier_collision_on_the_entry() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -508,6 +509,7 @@ fn the_program_compile_reports_each_import_tier_collision_on_the_entry() {
         dir.path(),
         "b.ri",
         "module b\n\
+         import std.ports.electrical\n\
          pub fn twice(x: Real) -> Real { x + x }\n\
          pub enum SignalKind { Foo, Bar }\n",
     );

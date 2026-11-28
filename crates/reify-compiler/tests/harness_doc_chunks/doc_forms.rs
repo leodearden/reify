@@ -261,18 +261,21 @@ pub(crate) fn parse_or_panic(source: &str, label: &str) -> ParsedModule {
 /// deterministic output. A named argument counts one, exactly as a documented
 /// form counts it.
 ///
-/// `source` must be `structure def`s whose members are `let`, `param` or
-/// `constraint` declarations — the shape of the signature fixtures, the
-/// chunks' ```` ```reify ```` fences and the cited examples. A `param`
-/// default and every member's `where` guard are walked too. Any other
-/// declaration or member kind PANICS rather than being skipped, so growing a
-/// source a new kind is a loud "extend the walker", never a silent coverage
-/// hole.
+/// `source` must be `import`s and `structure def`s whose members are `let`,
+/// `param` or `constraint` declarations — the shape of the signature
+/// fixtures, the chunks' ```` ```reify ```` fences and the cited examples. An
+/// `import` holds no call. A `param` default and every member's `where` guard
+/// are walked too. Any other declaration or member kind PANICS rather than
+/// being skipped, so growing a source a new kind is a loud "extend the
+/// walker", never a silent coverage hole.
 pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
     let parsed = parse_or_panic(source, label);
 
     let mut forms = Vec::new();
     for decl in &parsed.declarations {
+        if let Declaration::Import(_) = decl {
+            continue;
+        }
         let Declaration::Structure(structure) = decl else {
             panic!(
                 "{label}: `call_forms` only walks `structure def` declarations, but this source \

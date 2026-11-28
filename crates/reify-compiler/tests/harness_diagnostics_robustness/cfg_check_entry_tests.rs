@@ -1,18 +1,15 @@
 //! Tests for `program::compile_program_with_parsed_entry` — the `reify check`
 //! compiler entry point, handed the entry's parse as the CLI hands it — which
-//! seeds the full stdlib prelude AND walks a `#cfg(...)`-gated user-import DAG
-//! (Task δ / Slice D; promoted to the program compile by #5516).
-//!
-//! This is the bridge that neither of the other entry points provides alone:
-//! - `compile_with_stdlib` seeds the stdlib prelude but has no user-import DAG.
-//! - `compile_project_with_entry_source_cfg` gates imports by cfg but does NOT
-//!   seed the stdlib prelude.
+//! walks a `#cfg(...)`-gated import DAG, its declared `std.*` imports included
+//! (Task δ / Slice D; promoted to the program compile by #5516; strict stdlib
+//! visibility since stdlib-namespace κ #5503).
 //!
 //! The user-observable signal: an entity referencing a pub name defined ONLY in
 //! `platform_linux` resolves under `target = "linux"` (import followed) and
 //! fails to resolve under `target = "wasm"` (import gated out). A stdlib symbol
-//! referenced by the same entry resolves under BOTH targets, proving the stdlib
-//! prelude is always seeded regardless of the active target.
+//! referenced by the same entry, whose `import std.io` carries no `#cfg`,
+//! resolves under BOTH targets, proving an ungated std import is followed
+//! regardless of the active target.
 
 use std::fs;
 use std::path::Path;
@@ -56,8 +53,8 @@ fn dump_diags(module: &reify_compiler::CompiledModule) -> Vec<String> {
 /// - `main.ri`: gated linux/wasm imports; the entry references `LinuxOnly` in
 ///   **type position** (`param marker : LinuxOnly`) — a pub structure defined
 ///   ONLY in `platform_linux`, so the name resolves at compile time iff that
-///   import is followed. It also instantiates `DisplayStyle` (a stdlib-only
-///   structure, present iff the stdlib prelude is seeded).
+///   import is followed. It also instantiates `DisplayStyle` (a structure only
+///   `std.io` defines, present iff its ungated `import std.io` is followed).
 /// - `platform_linux.ri` / `platform_wasm.ri`: each exports one pub structure.
 ///
 /// A type-position reference is used (not `sub style = LinuxOnly(...)`) because
@@ -67,10 +64,11 @@ fn dump_diags(module: &reify_compiler::CompiledModule) -> Vec<String> {
 /// error would collide with the cfg-import-gating signal).  The type-position
 /// `param marker : LinuxOnly` still gives the `unresolved type` compile error
 /// this test keys on.  The existing `sub style = DisplayStyle(...)` is accepted
-/// because `DisplayStyle` resolves via the always-seeded stdlib prelude.
+/// because `DisplayStyle` resolves via the ungated `import std.io`.
 fn write_entry_fixtures(dir: &Path) {
     let entry_src = "#cfg(target = \"linux\")\nimport platform_linux\n\
                      #cfg(target = \"wasm\")\nimport platform_wasm\n\
+                     import std.io\n\
                      \n\
                      structure def Entry {\n\
                      \x20   sub style = DisplayStyle(opacity: 0.5, wireframe: true)\n\
@@ -120,7 +118,7 @@ fn compile_main_program(dir: &Path, cfg: &CfgSet) -> CompiledProgram {
 
 /// Under `target = "linux"`, the gated linux import is followed: `LinuxOnly`
 /// resolves (no error), and the stdlib symbol `DisplayStyle` resolves too
-/// (stdlib prelude seeded).
+/// (its ungated `import std.io` followed).
 #[test]
 fn entry_target_linux_resolves_linux_import_and_stdlib() {
     let tmp = tempfile::tempdir().unwrap();
@@ -137,15 +135,15 @@ fn entry_target_linux_resolves_linux_import_and_stdlib() {
     );
     assert!(
         !has_error_containing(&compiled, "DisplayStyle"),
-        "the stdlib prelude must be seeded, so 'DisplayStyle' must resolve with no \
-         Error; diagnostics: {:?}",
+        "the ungated `import std.io` must be followed, so 'DisplayStyle' must \
+         resolve with no Error; diagnostics: {:?}",
         dump_diags(&compiled)
     );
 }
 
 /// Under `target = "wasm"`, the linux import is gated out: `LinuxOnly` no longer
 /// resolves (an Error references it). The stdlib symbol `DisplayStyle` still
-/// resolves — stdlib seeding is independent of the active target.
+/// resolves — an ungated std import is followed under every target.
 #[test]
 fn entry_target_wasm_gates_out_linux_import_but_keeps_stdlib() {
     let tmp = tempfile::tempdir().unwrap();
@@ -162,8 +160,8 @@ fn entry_target_wasm_gates_out_linux_import_but_keeps_stdlib() {
     );
     assert!(
         !has_error_containing(&compiled, "DisplayStyle"),
-        "the stdlib prelude is seeded regardless of target, so 'DisplayStyle' must \
-         still resolve under target=wasm; diagnostics: {:?}",
+        "an ungated `import std.io` is followed regardless of target, so \
+         'DisplayStyle' must still resolve under target=wasm; diagnostics: {:?}",
         dump_diags(&compiled)
     );
 }
