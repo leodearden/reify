@@ -7,6 +7,7 @@ mod corpus_tree;
 mod entry;
 mod expectation;
 mod expected_value;
+mod host_scenarios;
 mod loader_refusal;
 mod member_table_coverage;
 mod needs;
