@@ -9455,6 +9455,13 @@ entries:
     manifested_phase: unknown
     note: The digest shows a `sleep 60` chained with `cat` of a background task's output file, which the sandbox guard blocks. This is the anti-chaining guard blocking a sleep+poll chain for background task output.
     evidence_quote: 'Blocked: sleep 60 followed by: cat /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-18/43506180-5d90-4d27-9e76-9cea2e0d177d/tasks/bn6zuz6dw.output. To wait for a condition, use Monitor with an until-loop'
+  - date: '2026-11-27'
+    project: reify
+    session: 20f9c2fb-f7f9-48fd-9223-76980d5d7090
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The agent chained sleep 30 with a tail poll of a log file, and the anti-chaining guard blocked it. The digest shows the same sleep+poll chain tripping the guard that the entry names.
+    evidence_quote: 'Blocked: sleep 30 followed by: tail -3 /tmp/10639-step6-full.log cut -c1-200. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -10511,6 +10518,13 @@ entries:
     manifested_phase: unknown
     note: The agent called a tool name that does not exist in its toolset, which the harness rejected. This is the hallucinated-tool-name mechanism the entry names. Phases are not supportable from the digest.
     evidence_quote: 'clever_Bash_placeholder({}) -> <tool_use_error>Error: No such tool available: clever_Bash_placeholder</tool_use_error>'
+  - date: '2026-11-27'
+    project: reify
+    session: dda81530-9110-43ae-8e06-9fa7553ebcc2/subagents/agent-af97d0773af7f2570
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The agent called a nonexistent tool name, 'what_ToolSearch', instead of the harness's ToolSearch tool. This is the hallucinated-tool-name mechanism the entry names. The digest gives no PRD phase evidence, so both phases are unknown.
+    evidence_quote: 'Error: No such tool available: what_ToolSearch'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
