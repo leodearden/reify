@@ -1260,6 +1260,12 @@ tasks:
     delivered_check:
       kind: manual
       reason: 'entry added by this leaf: the leaf adds the entry to the corpus tree in the same change (PRD section 12.5), so its name is not known before the leaf writes it; the merge gate runs it, and it fails if the source is accepted'
+  - name: purpose-read-of-private-let-through-structure-subject-rejected
+    binding: 'built here: a purpose whose subject is typed `Structure` or a trait reads a `let` without `pub` of the subject it is applied to: a compile error at the application line, naming the line of the purpose that makes the read (decision D13 item 14, and PRD section 12.5, confirmed by Leo on 2026-11-28); its entry is `purpose-read-of-private-let-through-structure-subject-rejected` and needs `compile-error`, `purpose` and `grammar-purpose`. The catalogue pins only the case of a subject typed with a definition: this leaf adds the entry to the corpus tree in the same change'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'entry added by this leaf: the leaf adds the entry to the corpus tree in the same change (PRD section 12.5), so its name is not known before the leaf writes it; the merge gate runs it, and it fails if the source is accepted'
   - name: unknown-purpose-parameter-rejected
     binding: 'built here: an argument to a parameter the purpose does not declare is a compile error (decision D9, the kept form of the typed activation errors). The catalogue has no entry for it: this leaf adds one to the corpus tree in the same change, with the source and the expected error code taken from the PRD''s table (PRD section 12.5)'
     verdict: PASS
