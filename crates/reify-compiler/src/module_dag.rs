@@ -351,6 +351,22 @@ impl ModuleDag {
         import_cfg_satisfied(import, &self.cfg)
     }
 
+    /// Follow the stdlib import `module_path` without the filesystem: a bare
+    /// `std` is refused with a coded [`DiagnosticCode::BareStdImport`] Error,
+    /// and a `std.*` path is inserted from the embedded stdlib, or refused
+    /// with a coded [`DiagnosticCode::UnknownStdModule`] Error when it has no
+    /// such module. Needs no resolver, so a compile with no file can call it.
+    pub(crate) fn follow_std(&mut self, module_path: &str) -> Result<(), Vec<Diagnostic>> {
+        if module_path == "std" {
+            return Err(vec![bare_std_import_diag(self.in_progress.last())]);
+        }
+        if self.insert_embedded_std(module_path)? {
+            Ok(())
+        } else {
+            Err(vec![unknown_std_module_diag(module_path)])
+        }
+    }
+
     /// Insert the embedded stdlib module `module_path`, with every module
     /// before it in the stdlib's topological order (its import closure among
     /// them) and their re-export edges, unless already present. `false` when
@@ -468,17 +484,10 @@ impl ModuleDag {
             ))]);
         }
 
-        if module_path == "std" {
-            return Err(vec![bare_std_import_diag(self.in_progress.last())]);
-        }
-
+        // A bare `std` is refused in both regimes, by `follow_std`'s gate.
         let is_std_path = is_std_import_path(module_path);
-        if is_std_path && self.stdlib == StdlibVisibility::EmbeddedStd {
-            return if self.insert_embedded_std(module_path)? {
-                Ok(())
-            } else {
-                Err(vec![unknown_std_module_diag(module_path)])
-            };
+        if module_path == "std" || (is_std_path && self.stdlib == StdlibVisibility::EmbeddedStd) {
+            return self.follow_std(module_path);
         }
 
         // Imported regime: the filesystem lookup is tried first and the
@@ -908,7 +917,7 @@ pub(crate) fn entry_module_name(entry_path: &Path) -> &str {
 
 /// `true` iff `path` addresses the standard library (`std` or `std.*`), which
 /// resolves through the stdlib rather than the resolver's project root.
-fn is_std_import_path(path: &str) -> bool {
+pub(crate) fn is_std_import_path(path: &str) -> bool {
     path == "std" || path.starts_with("std.")
 }
 

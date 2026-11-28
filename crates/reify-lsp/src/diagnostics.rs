@@ -130,15 +130,17 @@ pub struct DiagnosticsResult {
 ///
 /// ## Compile-time checker: real `SimpleConstraintChecker`, not a stub (task #6798)
 ///
-/// The compile stage below compiles via `document_compile::compile_document`:
-/// a program compile (`program::compile_program_with_parsed_entry`) for a
-/// file-backed entry that follows an import, the single-file
-/// `reify_compiler::compile_with_stdlib_checked` otherwise, with the same real
-/// `SimpleConstraintChecker` either way. That matches `reify check`'s compile
-/// path (`parse_and_compile` / `program::compile_program_with_parsed_entry` in
-/// `crates/reify-cli/src/main.rs`) and the GUI
-/// (`compile_single_file_with_stdlib` in `gui/src-tauri/src/engine.rs`)
-/// instead of the compile-time `CompileTimeIndeterminateChecker` stub. So
+/// The compile stage below compiles via `document_compile::compile_document`
+/// under strict stdlib visibility: a program compile
+/// (`program::compile_program_with_parsed_entry`) for a file-backed entry that
+/// follows an import, `program::compile_single_file` for a file-backed one
+/// that follows none, and `program::compile_detached_entry` for a document
+/// with no file, with the same real `SimpleConstraintChecker` every way. That
+/// matches `reify check`'s compile path (`parse_and_compile` /
+/// `program::compile_program_with_parsed_entry` in
+/// `crates/reify-cli/src/main.rs`) and the GUI (`compile_buffer` in
+/// `gui/src-tauri/src/engine.rs`) instead of the compile-time
+/// `CompileTimeIndeterminateChecker` stub. So
 /// `auto:` candidate feasibility now sees the same constraint verdicts the
 /// CLI does: the LSP no longer reports `E_AUTO_TYPE_PARAM_AMBIGUOUS` on a
 /// constant constraint that the CLI resolves to
@@ -633,10 +635,11 @@ mod tests {
     };
 
     /// Compile `parsed` exactly the way the LSP's SINGLE-FILE route compiles
-    /// it — `reify_compiler::compile_with_stdlib_checked(parsed,
-    /// &SimpleConstraintChecker)` (task #6798, PRD leaf pi) — rather than
-    /// the compile-time `CompileTimeIndeterminateChecker` stub: the route of
-    /// every document that follows no import.
+    /// it — `program::compile_single_file(parsed, &CfgSet::host_default(),
+    /// &SimpleConstraintChecker)`, strict stdlib visibility with the real
+    /// checker (task #6798, PRD leaf pi) — rather than the compile-time
+    /// `CompileTimeIndeterminateChecker` stub: the route of every file-backed
+    /// document that follows no import.
     ///
     /// The canonical production compile is `document_compile::compile_document`,
     /// the call `compute_diagnostics_with_state` itself makes; this helper is
@@ -653,7 +656,11 @@ mod tests {
     /// ([`assert_bt8_fixture_still_diverges`]), which intentionally compile
     /// both ways to prove the stub and the real checker still diverge.
     fn compile_like_production(parsed: &reify_ast::ParsedModule) -> reify_compiler::CompiledModule {
-        reify_compiler::compile_with_stdlib_checked(parsed, &SimpleConstraintChecker)
+        reify_compiler::program::compile_single_file(
+            parsed,
+            &reify_compiler::cfg::CfgSet::host_default(),
+            &SimpleConstraintChecker,
+        )
     }
 
     /// Minimal source that references two stdlib symbols (Rigid trait, Material struct).

@@ -23,7 +23,9 @@ use reify_ir::ConstraintChecker;
 use crate::CompiledModule;
 use crate::cfg::CfgSet;
 use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
-use crate::module_dag::{ModuleDag, ModuleResolver, ModuleSource, entry_module_name};
+use crate::module_dag::{
+    ModuleDag, ModuleResolver, ModuleSource, entry_module_name, is_std_import_path,
+};
 
 /// One module of a program entry's import tier, compiled.
 #[derive(Debug, Clone)]
@@ -59,8 +61,10 @@ pub struct CompiledProgram {
     /// followed depth-first by the units it re-exports through `pub import`
     /// edges. Std modules are listed like user ones, with no origin.
     pub imports: Vec<CompiledImportUnit>,
-    /// The source of every user module compiled into the program, in
-    /// topological order (dependencies first), entry last.
+    /// The source of every user module compiled into the program from a
+    /// file, in topological order (dependencies first), the entry last. A
+    /// detached entry ([`compile_detached_entry`]) has no file and follows no
+    /// user import, so its program lists none.
     pub sources: Vec<ModuleSource>,
     /// Where among [`Self::entry`]'s diagnostics the re-homed copies of the
     /// compiled user modules' own diagnostics sit.
@@ -217,12 +221,90 @@ pub fn compile_program_with_parsed_entry(
     cfg: &CfgSet,
     checker: &dyn ConstraintChecker,
 ) -> CompiledProgram {
+    let site = EntrySite::File {
+        path: entry_path,
+        source: entry_source,
+        resolver,
+    };
+    compile_entry(parsed, site, cfg, checker)
+}
+
+/// Compile `parsed`, a buffer with no file, as a program entry under `cfg`.
+///
+/// It follows the entry's cfg-satisfied `std.*` imports from the embedded
+/// stdlib, exactly as [`compile_program`] does, and never a user import: with
+/// no file there is no directory to resolve one from
+/// ([`detached_unfollowed_imports`] names those). There is no file location
+/// for a module header to be checked against, so none is. Otherwise the
+/// entry compiles as [`compile_program`] compiles it.
+pub fn compile_detached_entry(
+    parsed: &reify_ast::ParsedModule,
+    cfg: &CfgSet,
+    checker: &dyn ConstraintChecker,
+) -> CompiledProgram {
+    compile_entry(parsed, EntrySite::Detached, cfg, checker)
+}
+
+/// Compile `parsed`, an entry that follows no import under `cfg`, on its own:
+/// against builtins only, with its NS-V2 fix-its and no module-header check.
+///
+/// It is [`compile_detached_entry`]'s entry, so a [`compile_program`] of the
+/// same import-free entry differs from it only by that header check (I1).
+pub fn compile_single_file(
+    parsed: &reify_ast::ParsedModule,
+    cfg: &CfgSet,
+    checker: &dyn ConstraintChecker,
+) -> CompiledModule {
+    compile_detached_entry(parsed, cfg, checker).into_entry()
+}
+
+/// Where a program entry came from, which decides what it can follow.
+#[derive(Clone, Copy)]
+enum EntrySite<'a> {
+    /// The file `path`, compiled from the text `source`: every cfg-satisfied
+    /// import is followed, user ones through `resolver`.
+    File {
+        path: &'a Path,
+        source: &'a str,
+        resolver: &'a ModuleResolver,
+    },
+    /// A buffer with no file: only its `std.*` imports are followed.
+    Detached,
+}
+
+impl EntrySite<'_> {
+    /// `true` iff an entry from this site follows `import`, one its DAG
+    /// follows.
+    fn follows(self, import: &reify_ast::ImportDecl) -> bool {
+        match self {
+            Self::File { .. } => true,
+            Self::Detached => is_std_import_path(&import.path),
+        }
+    }
+
+    fn compile_import(self, dag: &mut ModuleDag, import_path: &str) -> Result<(), Vec<Diagnostic>> {
+        match self {
+            Self::File { resolver, .. } => dag.compile_module(import_path, resolver),
+            Self::Detached => dag.follow_std(import_path),
+        }
+    }
+}
+
+/// The one entry compile [`compile_program_with_parsed_entry`] and
+/// [`compile_detached_entry`] share.
+fn compile_entry(
+    parsed: &reify_ast::ParsedModule,
+    site: EntrySite<'_>,
+    cfg: &CfgSet,
+    checker: &dyn ConstraintChecker,
+) -> CompiledProgram {
     let mut dag = ModuleDag::with_embedded_std(cfg.clone());
 
     // Computed once and shared by the compile loop, the prelude and the
     // returned units, so they cannot drift.
     let followed: Vec<&str> = followed_direct_imports(parsed, &dag)
         .into_iter()
+        .filter(|import| site.follows(import))
         .map(|import| import.path.as_str())
         .collect();
 
@@ -230,7 +312,7 @@ pub fn compile_program_with_parsed_entry(
     // lets the entry compile, with the failure attached below.
     let mut import_error_diags: Vec<Diagnostic> = Vec::new();
     for import_path in &followed {
-        if let Err(diags) = dag.compile_module(import_path, resolver) {
+        if let Err(diags) = site.compile_import(&mut dag, import_path) {
             push_unreported(&mut import_error_diags, diags);
         }
     }
@@ -248,7 +330,9 @@ pub fn compile_program_with_parsed_entry(
     let fixits = crate::import_headers::std_import_fixits(parsed, &entry, &import_refs, cfg);
     entry.diagnostics.extend(fixits);
 
-    attach_module_path_diag(&mut entry, parsed, ExpectedPathOrigin::FileLocation);
+    if let EntrySite::File { .. } = site {
+        attach_module_path_diag(&mut entry, parsed, ExpectedPathOrigin::FileLocation);
+    }
     entry.diagnostics.extend(import_error_diags);
     let rehomed = rehome_unit_diagnostics(&dag, &mut entry.diagnostics);
 
@@ -257,11 +341,13 @@ pub fn compile_program_with_parsed_entry(
         .iter()
         .filter_map(|key| dag.source(key).cloned())
         .collect();
-    sources.push(ModuleSource {
-        module_key: parsed.path.0.join("."),
-        path: entry_path.to_path_buf(),
-        source: entry_source.to_string(),
-    });
+    if let EntrySite::File { path, source, .. } = site {
+        sources.push(ModuleSource {
+            module_key: parsed.path.0.join("."),
+            path: path.to_path_buf(),
+            source: source.to_string(),
+        });
+    }
 
     let imports: Vec<CompiledImportUnit> = visible
         .into_iter()
@@ -300,6 +386,19 @@ pub fn followed_imports<'p>(
     cfg: &CfgSet,
 ) -> Vec<&'p reify_ast::ImportDecl> {
     followed_direct_imports(parsed, &ModuleDag::with_embedded_std(cfg.clone()))
+}
+
+/// The imports [`compile_program`] would follow under `cfg` that
+/// [`compile_detached_entry`] cannot: the user ones, which need a file to
+/// resolve from. In declaration order, one per path.
+pub fn detached_unfollowed_imports<'p>(
+    parsed: &'p reify_ast::ParsedModule,
+    cfg: &CfgSet,
+) -> Vec<&'p reify_ast::ImportDecl> {
+    followed_imports(parsed, cfg)
+        .into_iter()
+        .filter(|import| !EntrySite::Detached.follows(import))
+        .collect()
 }
 
 /// The resolver a program compile of the entry file `entry_path` takes: user

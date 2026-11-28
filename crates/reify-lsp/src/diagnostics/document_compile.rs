@@ -1,5 +1,8 @@
-//! Compile one LSP document: as a program when it is a file-backed entry that
-//! follows an import, otherwise exactly as the single-file stdlib compile.
+//! Compile one LSP document under strict stdlib visibility (stdlib-namespace
+//! NS-V1, κ #5503), as the CLI and the GUI compile it: a file-backed entry
+//! that follows an import as a program, a file-backed one that follows none
+//! single-file, and a document with no file as a detached entry, which
+//! follows its `std.*` imports and no user import.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -35,6 +38,16 @@ impl CompiledDocument {
             declared_templates: module.templates.len(),
             module: Arc::new(module),
             program: None,
+        }
+    }
+
+    fn program(parsed: &ParsedModule, program: CompiledProgram) -> Self {
+        let loaded = LoadedProgram::new(program);
+        Self {
+            eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), loaded.program()),
+            declared_templates: loaded.program().entry().templates.len(),
+            module: Arc::clone(loaded.evaluated()),
+            program: Some(loaded),
         }
     }
 
@@ -86,26 +99,26 @@ pub(super) fn compile_document(
     cfg: &CfgSet,
 ) -> CompiledDocument {
     match uri.to_file_path() {
-        Ok(entry_path) if program::entry_follows_imports(parsed, cfg) => {
-            let loaded = LoadedProgram::new(program::compile_program_with_parsed_entry(
+        Ok(entry_path) if program::entry_follows_imports(parsed, cfg) => CompiledDocument::program(
+            parsed,
+            program::compile_program_with_parsed_entry(
                 &entry_path,
                 source,
                 parsed,
                 &entry_dir_resolver(&entry_path),
                 cfg,
                 &SimpleConstraintChecker,
-            ));
-            CompiledDocument {
-                eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), loaded.program()),
-                declared_templates: loaded.program().entry().templates.len(),
-                module: Arc::clone(loaded.evaluated()),
-                program: Some(loaded),
-            }
-        }
-        _ => CompiledDocument::single_file(reify_compiler::compile_with_stdlib_checked(
+            ),
+        ),
+        Ok(_) => CompiledDocument::single_file(program::compile_single_file(
             parsed,
+            cfg,
             &SimpleConstraintChecker,
         )),
+        Err(()) => CompiledDocument::program(
+            parsed,
+            program::compile_detached_entry(parsed, cfg, &SimpleConstraintChecker),
+        ),
     }
 }
 

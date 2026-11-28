@@ -1013,16 +1013,17 @@ fn gui_cfg() -> reify_compiler::cfg::CfgSet {
     reify_compiler::cfg::CfgSet::host_default()
 }
 
-/// Compile a buffer the way its anchor and imports call for.
+/// Compile a buffer the way its anchor and imports call for, under strict
+/// stdlib visibility (stdlib-namespace NS-V1, κ #5503).
 ///
 /// A buffer anchored to a file whose entry follows an import compiles as a
-/// program ([`compile_entry_program`]); any other anchored buffer compiles
-/// single-file ([`compile_single_file_with_stdlib`]), and a buffer with no
-/// anchor compiles single-file with its imports explained
-/// ([`compile_unanchored`]). The anchored routing is reify-lsp's
-/// `document_compile::compile_document`, over the same
+/// program ([`compile_entry_program`]); any other anchored buffer compiles on
+/// its own against builtins ([`compile_import_free_buffer`]), and a buffer
+/// with no anchor compiles detached, following its `std.*` imports and no
+/// user import, with those explained ([`compile_unanchored`]). The routing is
+/// reify-lsp's `document_compile::compile_document`, over the same
 /// `program::entry_follows_imports` predicate, so the GUI's own compile and
-/// the LSP it hosts agree on every file.
+/// the LSP it hosts agree on every buffer.
 fn compile_buffer(
     anchor: Option<&Path>,
     source: &str,
@@ -1033,28 +1034,36 @@ fn compile_buffer(
         Some(entry_path) if reify_compiler::program::entry_follows_imports(&parsed, &gui_cfg()) => {
             compile_entry_program(entry_path, source, parsed, module_name)
         }
-        Some(_) => compile_single_file_with_stdlib(&parsed, source, module_name)
+        Some(_) => compile_import_free_buffer(&parsed, source, module_name)
             .map(|module| CompiledSource::of_module(parsed, module)),
         None => compile_unanchored(parsed, source, module_name),
     }
 }
 
-/// Compile `parsed`, the parse of a buffer with no file anchor, single-file.
+/// Compile `parsed`, the parse of a buffer with no file anchor, as a detached
+/// entry (`program::compile_detached_entry`): its `std.*` imports are
+/// followed, its user imports cannot be.
 ///
-/// It cannot resolve the imports a file-backed compile would follow, so it
-/// carries [`unanchored_import_warning`] (D-10): on an accepted compile among
-/// its diagnostics, on a rejection after the errors it explains.
+/// It carries [`unanchored_import_warning`] (D-10) for those user imports: on
+/// an accepted compile among its diagnostics, on a rejection after the errors
+/// it explains.
 fn compile_unanchored(
     parsed: reify_ast::ParsedModule,
     source: &str,
     module_name: &str,
 ) -> Result<CompiledSource, CompileRejection> {
-    let warning = unanchored_import_warning(&reify_compiler::program::followed_imports(
-        &parsed,
-        &gui_cfg(),
+    let cfg = gui_cfg();
+    let warning = unanchored_import_warning(&reify_compiler::program::detached_unfollowed_imports(
+        &parsed, &cfg,
     ));
-    match compile_single_file_with_stdlib(&parsed, source, module_name) {
-        Ok(mut module) => {
+    let mut module = reify_compiler::program::compile_detached_entry(
+        &parsed,
+        &cfg,
+        &reify_constraints::SimpleConstraintChecker,
+    )
+    .into_entry();
+    match reject_compile_errors(&module.diagnostics, module_name, source) {
+        Ok(()) => {
             module.diagnostics.extend(warning);
             Ok(CompiledSource::of_module(parsed, module))
         }
@@ -1064,12 +1073,12 @@ fn compile_unanchored(
     }
 }
 
-/// The D-10 Warning for a buffer with no file anchor that contains `followed`,
-/// the imports a file-backed compile would resolve: one Warning naming them
-/// all, located at the first. `None` when there are none.
-fn unanchored_import_warning(followed: &[&reify_ast::ImportDecl]) -> Option<Diagnostic> {
-    let first = followed.first()?;
-    let names: Vec<String> = followed
+/// The D-10 Warning for a buffer with no file anchor that contains
+/// `unfollowed`, the user imports only a file-backed compile resolves: one
+/// Warning naming them all, located at the first. `None` when there are none.
+fn unanchored_import_warning(unfollowed: &[&reify_ast::ImportDecl]) -> Option<Diagnostic> {
+    let first = unfollowed.first()?;
+    let names: Vec<String> = unfollowed
         .iter()
         .map(|import| format!("\"{}\"", import.path))
         .collect();
@@ -1087,8 +1096,9 @@ fn unanchored_import_warning(followed: &[&reify_ast::ImportDecl]) -> Option<Diag
     )
 }
 
-/// Compile `parsed`, the parse of `source`, single-file against the stdlib
-/// prelude.
+/// Compile `parsed`, the parse of `source`, an anchored buffer that follows no
+/// import, on its own: against builtins only, with the NS-V2 fix-it for every
+/// std name it writes (`program::compile_single_file`).
 ///
 /// Returns the compiled module on success, or a [`CompileRejection`]
 /// whose message preserves the `"Compile errors: …"` format (so existing
@@ -1097,15 +1107,16 @@ fn unanchored_import_warning(followed: &[&reify_ast::ImportDecl]) -> Option<Diag
 /// `EngineSession::compile_failure` (via `record_compile_failure`) so
 /// `build_gui_state` can surface the failure in the diagnostics panel.
 ///
-/// The single-file counterpart to [`compile_entry_program`]; [`compile_buffer`]
+/// The import-free counterpart to [`compile_entry_program`]; [`compile_buffer`]
 /// routes between them.
-fn compile_single_file_with_stdlib(
+fn compile_import_free_buffer(
     parsed: &reify_ast::ParsedModule,
     source: &str,
     module_name: &str,
 ) -> Result<CompiledModule, CompileRejection> {
-    let compiled = reify_compiler::compile_with_stdlib_checked(
+    let compiled = reify_compiler::program::compile_single_file(
         parsed,
+        &gui_cfg(),
         &reify_constraints::SimpleConstraintChecker,
     );
     reject_compile_errors(&compiled.diagnostics, module_name, source)?;

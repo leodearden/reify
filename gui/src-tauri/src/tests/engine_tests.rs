@@ -8348,7 +8348,7 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 ///
 /// A "fresh session" means no prior `load_file` or `load_from_source` call, so
 /// `self.file_path` is `None`.  In this state `update_source` must route through
-/// the single-file branch (`compile_single_file_with_stdlib`) and successfully
+/// the unanchored branch (`compile_unanchored`) and successfully
 /// compile valid self-contained source.
 ///
 /// The phantom path `/nonexistent/dir/solo.ri` documents the single-file
@@ -8772,7 +8772,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
     let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Fresh session — no load_file or load_from_source, so self.file_path is None.
-    // update_source takes the single-file branch (compile_single_file_with_stdlib).
+    // update_source takes the unanchored branch (compile_unanchored).
     let err = session
         .update_source("foo.ri", UNPARSEABLE_SRC)
         .expect_err("invalid source should return Err");
@@ -9202,7 +9202,7 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_load_from_source_w
 /// so `self.file_path` is `None`) must surface the live compile failure in
 /// `build_gui_state`'s `compile_diagnostics`.
 ///
-/// Exercises `update_source`'s single-file branch (`compile_single_file_with_stdlib`).
+/// Exercises `update_source`'s unanchored branch (`compile_unanchored`).
 /// Pins the invariant introduced in task 3386: live compile failures on the single-file
 /// path are stored as `CompileFailureKind::LiveEdit` and surfaced via `build_gui_state`.
 #[test]
@@ -16005,7 +16005,7 @@ fn gui_fixture_multi_case_bracket_produces_three_case_result() {
 /// No-op-contract pin for the GUI single-file compile path (β-inject step-7).
 ///
 /// Loads an `auto:` source through `EngineSession::load_from_source` (which
-/// routes to `compile_single_file_with_stdlib`) and asserts that:
+/// routes to `compile_unanchored`) and asserts that:
 /// 1. `auto_type_substitution` is non-empty — `auto:` resolution ran and
 ///    produced a result.
 /// 2. The single type-param `T` was resolved to `ORingSeal` — the sole
@@ -16971,7 +16971,7 @@ structure Part {
 // ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
 
 /// GUI-binary engine-path injection smoke: proves that the GUI binary's compile
-/// seam (`compile_single_file_with_stdlib` at `engine.rs:730`, which hardcodes
+/// seam (`compile_unanchored` in `engine.rs`, which hardcodes
 /// `SimpleConstraintChecker`) selects the unique constraint-satisfying survivor
 /// under the real checker rather than emitting `AutoTypeParamAmbiguous`.
 ///
