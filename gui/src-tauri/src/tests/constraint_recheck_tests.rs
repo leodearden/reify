@@ -15,7 +15,6 @@ const RIGID_GEOMETRIC_CONFORMS_SRC: &str = r#"
 import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 import std.tolerancing
 structure def GdtRigidProbe : Rigid {
     param depth : Length = 300mm
@@ -33,7 +32,6 @@ const RIGID_WITH_OPEN_INPUT_SRC: &str = r#"
 import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def RigidGhostProbe : Rigid {
     param depth : Length = 300mm
     param geometry : Solid = box(100mm, 100mm, depth)

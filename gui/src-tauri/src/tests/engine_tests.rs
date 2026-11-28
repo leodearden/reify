@@ -11305,7 +11305,6 @@ structure Kinematic {
 
 /// `bind(y_axis, 5kg/m^3)` — a COMPOUND unit expression (`UnitExpr::Div`).
 const SNAPSHOT_COMPOUND_DIV_BIND_SOURCE: &str = r#"
-import std.units
 structure Kinematic {
     let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
@@ -11316,7 +11315,6 @@ structure Kinematic {
 
 /// `bind(y_axis, 5m^2)` — a COMPOUND unit expression (`UnitExpr::Pow`).
 const SNAPSHOT_COMPOUND_POW_BIND_SOURCE: &str = r#"
-import std.units
 structure Kinematic {
     let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
@@ -13976,7 +13974,6 @@ fn get_entity_tree_consumed_realizations_default_visible_false() {
     let source = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def Flange : Rigid {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
@@ -14050,7 +14047,6 @@ fn get_entity_tree_realization_trait_geometry_propagates() {
     let source = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def Widget : Physical {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
@@ -14124,7 +14120,6 @@ fn get_entity_tree_trait_geometry_follows_refinement_chain() {
     let source = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def Flange : Rigid {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
@@ -14190,7 +14185,6 @@ fn get_entity_tree_trait_geometry_follows_refinement_chain_in_sub_component() {
     let source = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def Flange : Rigid {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
@@ -14541,7 +14535,6 @@ fn get_entity_tree_terminal_geometry_survives_a_derived_consumer() {
     let source = r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def Derived : Physical {
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 
@@ -17970,7 +17963,6 @@ fn appearance_wiring_source() -> &'static str {
     r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 structure def SteelPart : Physical {
     param geometry : Solid = box(10mm, 10mm, 10mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
@@ -19267,7 +19259,6 @@ fn surface_finish_wiring_source() -> &'static str {
     r#"import std.materials.mechanical
 import std.si_units
 import std.structural.physical
-import std.units
 import std.surface_finish
 structure def PolishedSteel : Physical {
     param geometry : Solid = box(10mm, 10mm, 10mm)
