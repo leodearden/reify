@@ -9,6 +9,7 @@ use reify_core::Severity;
 
 use crate::CompiledModule;
 use crate::PreludeContext;
+use crate::prelude_context::StdlibScope;
 use crate::si_units;
 
 /// Global cache for compiled stdlib modules.
@@ -429,5 +430,7 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
 /// Subsequent calls return the same `&'static PreludeContext<'static>` with
 /// zero overhead (a single atomic pointer load).
 pub fn load_stdlib_context() -> &'static PreludeContext<'static> {
-    STDLIB_CONTEXT_CACHE.get_or_init(|| PreludeContext::from_slice(load_stdlib()))
+    STDLIB_CONTEXT_CACHE.get_or_init(|| {
+        PreludeContext::from_slice(load_stdlib()).with_stdlib_scope(StdlibScope::Ambient)
+    })
 }

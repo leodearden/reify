@@ -638,8 +638,11 @@ pub enum DiagnosticCode {
     /// Two labels: the local declaration (primary) and the prelude sentinel
     /// span (`"defined in std module '<std module>'"`).
     ///
-    /// Severity is `Warning` in the N0 interim; stdlib-namespace κ #5503
-    /// escalates it to `Error` (PRD `docs/prds/v0_6/stdlib-namespace.md` D-2).
+    /// Severity is `Error` when the shadowed std module is one the module
+    /// chose (a declared import, or one such an import re-exports) and the
+    /// module is a user module: D-2 stage 2, landed by stdlib-namespace κ
+    /// #5503 (PRD `docs/prds/v0_6/stdlib-namespace.md` D-2). It is `Warning`
+    /// under the ambient whole-stdlib compile, where no std name was chosen.
     /// The PRD-prose mnemonic for this code is `W_STDLIB_NAME_SHADOWED`.
     StdlibNameShadowed,
     /// Origin: `crates/reify-compiler/src/import_headers/fixit.rs`

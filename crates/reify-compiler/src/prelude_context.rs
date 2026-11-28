@@ -46,6 +46,19 @@ use crate::compile_builder::enums_phase::bind_prelude_enum_defs;
 use crate::name_env;
 use crate::types::CompiledTypeAlias;
 
+/// How the std modules a [`PreludeContext`] holds came into scope for the
+/// module compiled against it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum StdlibScope {
+    /// The module chose them: each is one of its declared imports, or a
+    /// module such an import re-exports. Every context built by
+    /// [`PreludeContext::new`] or [`PreludeContext::from_slice`].
+    Declared,
+    /// The whole stdlib, seeded with no import: the cached context of the
+    /// ambient compile `compile_with_stdlib` uses. No std name was chosen.
+    Ambient,
+}
+
 /// An immutable, pre-built cache of prelude module data.
 ///
 /// Binds the prelude's own `resolution_enums` (the parser's enum-name seed) and
@@ -65,6 +78,8 @@ use crate::types::CompiledTypeAlias;
 pub struct PreludeContext<'a> {
     /// Borrowed references to the prelude modules.
     modules: Vec<&'a CompiledModule>,
+    /// How this context's std modules came into scope.
+    stdlib_scope: StdlibScope,
     /// The prelude's own NS-P1 enum bindings, in precedence order.
     resolution_enums: Vec<EnumDef>,
     /// The prelude's own NS-P1 binding of pub type aliases, in precedence order.
@@ -89,6 +104,7 @@ impl<'a> PreludeContext<'a> {
         let pub_aliases: Vec<CompiledTypeAlias> = alias_bindings.winners().cloned().collect();
         Self {
             modules: prelude.to_vec(),
+            stdlib_scope: StdlibScope::Declared,
             resolution_enums,
             pub_aliases,
             pub_alias_collision_warnings: alias_bindings
@@ -110,9 +126,22 @@ impl<'a> PreludeContext<'a> {
         Self::new(&refs)
     }
 
+    /// This context with its std modules in scope as `stdlib_scope` says.
+    pub(crate) fn with_stdlib_scope(self, stdlib_scope: StdlibScope) -> Self {
+        Self {
+            stdlib_scope,
+            ..self
+        }
+    }
+
     /// The prelude module references this context was built from.
     pub fn modules(&self) -> &[&'a CompiledModule] {
         &self.modules
+    }
+
+    /// How this context's std modules came into scope.
+    pub(crate) fn stdlib_scope(&self) -> StdlibScope {
+        self.stdlib_scope
     }
 
     /// The enums the prelude binds on its own under NS-P1: one per name, user
