@@ -215,6 +215,71 @@ fn a_name_a_user_import_provides_needs_no_import() {
     );
 }
 
+/// `Part` is a std name (std.modal.analysis); a user import that should
+/// define it but is absent from the compiled tier must not draw advice to
+/// import the std module.
+const RIG_USING_PART: &str = "structure def Rig {\n    sub p = Part()\n}\n";
+
+#[test]
+fn a_user_import_missing_from_the_tier_suppresses_std_attribution() {
+    let source = format!("import parts\n\n{RIG_USING_PART}");
+    assert_no_fixit(
+        &fixits_with(&source, &[], &[], &linux()),
+        "an absent user import",
+    );
+}
+
+#[test]
+fn a_missing_user_import_file_draws_no_std_fixit_in_a_program() {
+    let program = compile_main(
+        &format!("module main\n\nimport partz\n\n{RIG_USING_PART}"),
+        &linux(),
+    );
+    assert!(
+        std_name_fixits(program.entry()).is_empty(),
+        "no std fix-it for a name the missing import may define: {:#?}",
+        program.entry().diagnostics
+    );
+}
+
+#[test]
+fn a_failed_user_import_draws_no_std_fixit_on_the_entry() {
+    for parts_source in [
+        "module parts\n\nimport std\n\npub structure def Part {\n    param q : Real = 1\n}\n",
+        "module parts\n\nimport std.nonexistent\n\npub structure def Part {\n    param q : Real = 1\n}\n",
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("parts.ri"), parts_source).expect("write parts.ri");
+        let program = compile_program(
+            &dir.path().join("main.ri"),
+            &format!("module main\n\nimport parts\n\n{RIG_USING_PART}"),
+            &ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
+            &linux(),
+            &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+        );
+        assert!(
+            std_name_fixits(program.entry()).is_empty(),
+            "no std fix-it for `Part` when `parts` fails ({parts_source}): {:#?}",
+            program.entry().diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_detached_entry_with_an_unfollowed_user_import_draws_no_std_fixit() {
+    let parsed = parse_clean(&format!("import parts\n\n{RIG_USING_PART}"), SUBJECT);
+    let program = reify_compiler::program::compile_detached_entry(
+        &parsed,
+        &linux(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    );
+    assert!(
+        std_name_fixits(program.entry()).is_empty(),
+        "no std fix-it for a name the unfollowed import may define: {:#?}",
+        program.entry().diagnostics
+    );
+}
+
 #[test]
 fn a_gated_off_import_of_the_module_is_named_as_out_of_effect() {
     let source = format!("#cfg(target = \"wasm\")\nimport std.si_units\n\n{GPA_BODY}");

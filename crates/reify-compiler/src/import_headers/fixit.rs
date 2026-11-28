@@ -14,7 +14,7 @@ use reify_ast::ParsedModule;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, SourceSpan};
 
 use super::attribution::{ExportIndex, defining_std_modules};
-use super::coverage::ImportCoverage;
+use super::coverage::{ImportCoverage, in_effect};
 use super::name_uses::collect_name_uses;
 use crate::cfg::CfgSet;
 use crate::re_exports::ReExports;
@@ -31,12 +31,19 @@ const PRELUDE: &str = "std.prelude";
 /// name one of whose defining modules is visible draws none either: what
 /// stays unresolved there is an overload or type question, not a missing
 /// import.
+///
+/// A module with an in-effect user import absent from `imports` (missing,
+/// failed, cyclic, or unfollowed because the entry is detached) draws none:
+/// that import may define any name it writes, so no std attribution is sound.
 pub fn std_import_fixits(
     parsed: &ParsedModule,
     local: &CompiledModule,
     imports: &[&CompiledModule],
     cfg: &CfgSet,
 ) -> Vec<Diagnostic> {
+    if has_absent_user_import(parsed, imports, cfg) {
+        return Vec::new();
+    }
     let universe = tier_then_stdlib(local, imports);
     let index = ExportIndex::new(local, &universe);
     let uses = collect_name_uses(parsed);
@@ -79,6 +86,19 @@ pub fn std_import_fixits(
         .collect();
     fixits.sort_by_key(|(span, _)| span.map(|span| span.start));
     fixits.into_iter().map(|(_, fixit)| fixit).collect()
+}
+
+/// Whether `parsed` declares a non-std import in effect under `cfg` whose
+/// module is not one of `imports`.
+fn has_absent_user_import(
+    parsed: &ParsedModule,
+    imports: &[&CompiledModule],
+    cfg: &CfgSet,
+) -> bool {
+    in_effect(parsed, cfg).any(|(module, _)| {
+        !crate::module_dag::is_std_import_path(&module.to_dotted())
+            && !imports.iter().any(|compiled| compiled.path == module)
+    })
 }
 
 /// `imports`, then every stdlib module that is neither one of them nor
