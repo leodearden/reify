@@ -681,6 +681,21 @@ pub enum DiagnosticCode {
     /// No labels. Severity is `Error`. The PRD-prose mnemonic for this code is
     /// `E_UNKNOWN_STD_MODULE`.
     UnknownStdModule,
+    /// Origin: `crates/reify-compiler/src/module_dag.rs`
+    /// (`bare_std_import_diag`), raised when a module compile follows a bare
+    /// `import std` (stdlib-namespace §10 Q3, decided in κ #5503: explicit is
+    /// the point, and an alias of `std` to the facade would be a second
+    /// spelling of `std.prelude`). It surfaces on the program entry like any
+    /// other failed import; a cfg-gated-out `import std` never reaches it.
+    ///
+    /// Canonical message form:
+    /// `"bare `import std` is not allowed; write `import std.prelude` for the curated core, or import the `std.*` module that defines a name"`,
+    /// prefixed `"in imported module '<key>' (<path>): "` when an import unit
+    /// declares it.
+    ///
+    /// No labels. `candidates` is `["std.prelude"]`. Severity is `Error`. The
+    /// PRD-prose mnemonic for this code is `E_BARE_STD_IMPORT`.
+    BareStdImport,
     /// Origin: `crates/reify-compiler/src/name_env.rs` (`collision_warning`),
     /// raised by the compiler's prelude seeds of units
     /// (`compile_builder/units_phase.rs`) and pub type aliases

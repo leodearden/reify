@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 
 use reify_core::{Diagnostic, DiagnosticCode, ModulePathParseError};
 
@@ -160,10 +160,11 @@ pub struct ModuleDag {
     pub modules: HashMap<String, CompiledModule>,
     /// Post-order traversal (leaves first) — topological sort.
     pub topo_order: Vec<String>,
-    /// Modules currently being compiled (for cycle detection).
-    /// IndexSet preserves insertion order (= DFS traversal order), enabling
-    /// the cycle error to show the actual import chain.
-    in_progress: IndexSet<String>,
+    /// Modules currently being compiled, each with the file it is compiled
+    /// from. Insertion order is DFS traversal order, so the cycle error shows
+    /// the actual import chain, and the last entry is the module whose import
+    /// is being followed.
+    in_progress: IndexMap<String, PathBuf>,
     /// Source committed on the first `std.*` resolution (all-or-nothing invariant).
     stdlib_mode: Option<StdlibMode>,
     /// Active compile-time configuration for evaluating `#cfg(...)` predicates.
@@ -309,7 +310,7 @@ impl ModuleDag {
         Self {
             modules: HashMap::new(),
             topo_order: Vec::new(),
-            in_progress: IndexSet::new(),
+            in_progress: IndexMap::new(),
             stdlib_mode: None,
             cfg: CfgSet::default(),
             sources: HashMap::new(),
@@ -404,6 +405,8 @@ impl ModuleDag {
     ///
     /// Imports with `#cfg(...)` predicates that are not satisfied by `self.cfg`
     /// are skipped entirely (not recursed into, not included in the prelude).
+    /// A bare `std` path is refused before any resolution, in both regimes,
+    /// with a coded [`DiagnosticCode::BareStdImport`] Error.
     /// Under [`StdlibVisibility::EmbeddedStd`] a `std.*` path resolves from the
     /// embedded stdlib only, and an unknown one is a coded
     /// [`DiagnosticCode::UnknownStdModule`] Error; the precedence rules below
@@ -453,8 +456,8 @@ impl ModuleDag {
             // gives only the cycle members, excluding any non-cycle ancestors.
             // Appending module_path at the end closes the cycle visually.
             let chain: Vec<&str> = self.in_progress[cycle_start..]
-                .iter()
-                .map(|s| s.as_str())
+                .keys()
+                .map(String::as_str)
                 .collect();
             let mut arrow_chain = chain.join(" -> ");
             arrow_chain.push_str(" -> ");
@@ -463,6 +466,10 @@ impl ModuleDag {
                 "circular dependency detected: {}",
                 arrow_chain,
             ))]);
+        }
+
+        if module_path == "std" {
+            return Err(vec![bare_std_import_diag(self.in_progress.last())]);
         }
 
         let is_std_path = is_std_import_path(module_path);
@@ -572,7 +579,8 @@ impl ModuleDag {
         }
 
         // Mark in-progress for cycle detection
-        self.in_progress.insert(module_path.to_string());
+        self.in_progress
+            .insert(module_path.to_string(), fs_path.clone());
 
         // Use inner closure to guarantee in_progress cleanup on all exit paths
         let result = (|| -> Result<(CompiledModule, Vec<&str>), Vec<Diagnostic>> {
@@ -902,6 +910,23 @@ pub(crate) fn entry_module_name(entry_path: &Path) -> &str {
 /// resolves through the stdlib rather than the resolver's project root.
 fn is_std_import_path(path: &str) -> bool {
     path == "std" || path.starts_with("std.")
+}
+
+/// The Error for a bare `import std` (stdlib-namespace §10 Q3), naming the
+/// importing unit when one declares it; `None` when the program entry does.
+fn bare_std_import_diag(importer: Option<(&String, &PathBuf)>) -> Diagnostic {
+    let refusal = "bare `import std` is not allowed; write `import std.prelude` for the \
+                   curated core, or import the `std.*` module that defines a name";
+    let message = match importer {
+        None => refusal.to_string(),
+        Some((key, path)) => format!(
+            "in imported module '{key}' ({}): {refusal}",
+            path.display()
+        ),
+    };
+    Diagnostic::error(message)
+        .with_code(DiagnosticCode::BareStdImport)
+        .with_candidates(["std.prelude"])
 }
 
 /// The Error for a `std.*` path the embedded stdlib has no module for. An
