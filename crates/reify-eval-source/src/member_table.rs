@@ -50,7 +50,8 @@ pub enum DeclaredType {
 pub enum MemberOrigin {
     /// In the definition's own body.
     Own,
-    /// In the body of this trait, which the definition conforms to.
+    /// In the body of this trait, which the definition conforms to; the
+    /// definition's own body declares no member of that name.
     Inherited(DefinitionName),
 }
 
@@ -93,7 +94,8 @@ pub(crate) struct DefinitionBody<'a> {
 
 /// The table of `definition`, declared in `module`, whose existing-compile
 /// template is `template`: the members it inherits from the traits it
-/// conforms to, then its own.
+/// conforms to, except one whose name its own body declares, which its own
+/// member stands for; then its own.
 pub(crate) fn lower_definition<'p, 'm>(
     definition: &DefinitionBody<'_>,
     template: &TopologyTemplate,
@@ -117,8 +119,10 @@ pub(crate) fn lower_definition<'p, 'm>(
         module,
         diagnostics,
     };
+    let own_names: Vec<&str> = definition.members.iter().filter_map(member_name).collect();
     let mut members: Vec<Member> = inherited
         .iter()
+        .filter(|member| member_name(member.decl).is_none_or(|name| !own_names.contains(&name)))
         .map(|member| {
             let written = WrittenIn {
                 origin: MemberOrigin::Inherited(member.from.clone()),
@@ -147,29 +151,17 @@ struct WrittenIn<'l, 'm> {
     trait_declaration: Option<&'m CompiledTrait>,
 }
 
-/// What one member's form writes: everything of its table entry but its kind
-/// and origin.
-struct WrittenMember<'d> {
-    /// The member's own name; `None` for a form that names nothing.
-    name: Option<&'d str>,
+/// What one member's form writes: everything of its table entry but its
+/// name, kind and origin.
+struct WrittenMember {
     guarded: bool,
     declared_type: DeclaredType,
     branches: Vec<MemberTable>,
 }
 
-impl<'d> WrittenMember<'d> {
-    fn named(name: &'d str, guarded: bool, declared_type: DeclaredType) -> Self {
+impl WrittenMember {
+    fn new(guarded: bool, declared_type: DeclaredType) -> Self {
         Self {
-            name: Some(name),
-            guarded,
-            declared_type,
-            branches: Vec::new(),
-        }
-    }
-
-    fn unnamed(guarded: bool, declared_type: DeclaredType) -> Self {
-        Self {
-            name: None,
             guarded,
             declared_type,
             branches: Vec::new(),
@@ -179,7 +171,6 @@ impl<'d> WrittenMember<'d> {
     /// A guarded or match group, which holds its members in `branches`.
     fn group(branches: Vec<MemberTable>) -> Self {
         Self {
-            name: None,
             guarded: false,
             declared_type: DeclaredType::None,
             branches,
@@ -210,17 +201,16 @@ impl Lowering<'_, '_> {
     }
 
     fn member(&mut self, decl: &MemberDecl, written: &WrittenIn<'_, '_>) -> Member {
+        let name = member_name(decl);
         let form = self.written_member(decl, written);
         let table_type = match &form.declared_type {
             DeclaredType::Value(ty) => Some(ty),
             _ => None,
         };
-        let existing_type = form
-            .name
-            .and_then(|name| template_cell_type(self.template, name));
+        let existing_type = name.and_then(|name| template_cell_type(self.template, name));
         let kind = member_kind::kind(decl, table_type.into_iter().chain(existing_type));
         Member {
-            name: form.name.map(identifier),
+            name: name.map(identifier),
             kind,
             declared_type: form.declared_type,
             origin: written.origin.clone(),
@@ -230,14 +220,9 @@ impl Lowering<'_, '_> {
     }
 
     /// What the form `decl` writes, lowered.
-    fn written_member<'d>(
-        &mut self,
-        decl: &'d MemberDecl,
-        written: &WrittenIn<'_, '_>,
-    ) -> WrittenMember<'d> {
+    fn written_member(&mut self, decl: &MemberDecl, written: &WrittenIn<'_, '_>) -> WrittenMember {
         match decl {
-            MemberDecl::Param(param) => WrittenMember::named(
-                &param.name,
+            MemberDecl::Param(param) => WrittenMember::new(
                 param.where_clause.is_some(),
                 self.cell_type(&param.name, param.span, written),
             ),
@@ -246,25 +231,24 @@ impl Lowering<'_, '_> {
                     Some(_) => self.cell_type(&binding.name, binding.span, written),
                     None => DeclaredType::Value(self.expression_type(&binding.value)),
                 };
-                WrittenMember::named(&binding.name, binding.where_clause.is_some(), declared_type)
+                WrittenMember::new(binding.where_clause.is_some(), declared_type)
             }
             MemberDecl::Constraint(constraint) => {
-                WrittenMember::unnamed(constraint.where_clause.is_some(), DeclaredType::None)
+                WrittenMember::new(constraint.where_clause.is_some(), DeclaredType::None)
             }
-            MemberDecl::ConstraintInst(applied) => WrittenMember::unnamed(
+            MemberDecl::ConstraintInst(applied) => WrittenMember::new(
                 applied.where_clause.is_some(),
                 DeclaredType::Written(identifier(&applied.name)),
             ),
-            MemberDecl::Sub(sub) => WrittenMember::named(
-                &sub.name,
+            MemberDecl::Sub(sub) => WrittenMember::new(
                 sub.where_clause.is_some(),
                 self.sub_definition(sub, written.names),
             ),
             MemberDecl::Minimize(objective) => {
-                WrittenMember::unnamed(objective.where_clause.is_some(), DeclaredType::None)
+                WrittenMember::new(objective.where_clause.is_some(), DeclaredType::None)
             }
             MemberDecl::Maximize(objective) => {
-                WrittenMember::unnamed(objective.where_clause.is_some(), DeclaredType::None)
+                WrittenMember::new(objective.where_clause.is_some(), DeclaredType::None)
             }
             MemberDecl::GuardedGroup(group) => WrittenMember::group(vec![
                 self.table(&group.members, written),
@@ -277,26 +261,19 @@ impl Lowering<'_, '_> {
                     .map(|arm| self.table(std::slice::from_ref(arm.member.as_ref()), written))
                     .collect(),
             ),
-            MemberDecl::AssociatedType(associated) => {
-                WrittenMember::named(&associated.name, false, DeclaredType::None)
+            MemberDecl::AssociatedType(_) | MemberDecl::Fn(_) | MemberDecl::Sketch(_) => {
+                WrittenMember::new(false, DeclaredType::None)
             }
-            MemberDecl::Fn(function) => {
-                WrittenMember::named(&function.name, false, DeclaredType::None)
-            }
-            MemberDecl::Port(port) => WrittenMember::named(
-                &port.name,
+            MemberDecl::Port(port) => WrittenMember::new(
                 port.where_clause.is_some(),
                 DeclaredType::Written(identifier(&port.type_name)),
             ),
-            MemberDecl::Sketch(sketch) => {
-                WrittenMember::named(&sketch.name, false, DeclaredType::None)
-            }
             MemberDecl::Connect(_)
             | MemberDecl::Chain(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::ForallConnect(_)
             | MemberDecl::ForallConstraint(_)
-            | MemberDecl::Relate(_) => WrittenMember::unnamed(false, DeclaredType::None),
+            | MemberDecl::Relate(_) => WrittenMember::new(false, DeclaredType::None),
         }
     }
 
@@ -379,6 +356,32 @@ impl Lowering<'_, '_> {
                 .with_code(code)
                 .with_label(DiagnosticLabel::new(span, "this member")),
         );
+    }
+}
+
+/// The name the form `decl` gives itself; `None` for a form that names
+/// nothing.
+fn member_name(decl: &MemberDecl) -> Option<&str> {
+    match decl {
+        MemberDecl::Param(param) => Some(&param.name),
+        MemberDecl::Let(binding) => Some(&binding.name),
+        MemberDecl::Sub(sub) => Some(&sub.name),
+        MemberDecl::AssociatedType(associated) => Some(&associated.name),
+        MemberDecl::Fn(function) => Some(&function.name),
+        MemberDecl::Port(port) => Some(&port.name),
+        MemberDecl::Sketch(sketch) => Some(&sketch.name),
+        MemberDecl::Constraint(_)
+        | MemberDecl::ConstraintInst(_)
+        | MemberDecl::Minimize(_)
+        | MemberDecl::Maximize(_)
+        | MemberDecl::GuardedGroup(_)
+        | MemberDecl::MatchArmDeclGroup(_)
+        | MemberDecl::Connect(_)
+        | MemberDecl::Chain(_)
+        | MemberDecl::MetaBlock(_)
+        | MemberDecl::ForallConnect(_)
+        | MemberDecl::ForallConstraint(_)
+        | MemberDecl::Relate(_) => None,
     }
 }
 

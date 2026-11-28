@@ -688,7 +688,11 @@ fn no_standard_library_table_lists_a_name_twice() {
         .members;
     let tolerance_value: Vec<&MemberOrigin> = flatness
         .iter()
-        .filter(|m| m.name.as_ref().is_some_and(|n| n.as_str() == "tolerance_value"))
+        .filter(|m| {
+            m.name
+                .as_ref()
+                .is_some_and(|n| n.as_str() == "tolerance_value")
+        })
         .map(|m| &m.origin)
         .collect();
     assert_eq!(
