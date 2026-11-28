@@ -49,7 +49,8 @@
 //! type args at compile time.
 //!
 //! A module's direct user imports arrive through this same `prelude_aliases`
-//! slice (`PreludeContext::extended`), so user-module → user-module import of
+//! slice (its `PreludeContext` is built over its import tier), so
+//! user-module → user-module import of
 //! pub aliases is live. A parametric body (#10297), and the body of a
 //! non-parametric alias that names an entity (#10354), resolves its ALIAS
 //! names against the `body_scope` its defining module captured on export, so

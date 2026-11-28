@@ -667,6 +667,20 @@ pub enum DiagnosticCode {
     /// Severity is `Error`. The PRD-prose mnemonic for this code is
     /// `E_STD_NAME_NOT_IMPORTED`.
     StdNameNotImported,
+    /// Origin: `crates/reify-compiler/src/module_dag.rs`
+    /// (`unknown_std_module_diag`), raised when a strict program compile
+    /// follows a `std.*` import the embedded stdlib has no module for
+    /// (stdlib-namespace κ #5503). It surfaces on the program entry like any
+    /// other failed import.
+    ///
+    /// Canonical message form:
+    /// `"unknown std module '<path>': the standard library has no module at that path"`.
+    /// Embedded-only resolution reads no file, so the message names no
+    /// filesystem path.
+    ///
+    /// No labels. Severity is `Error`. The PRD-prose mnemonic for this code is
+    /// `E_UNKNOWN_STD_MODULE`.
+    UnknownStdModule,
     /// Origin: `crates/reify-compiler/src/name_env.rs` (`collision_warning`),
     /// raised by the compiler's prelude seeds of units
     /// (`compile_builder/units_phase.rs`) and pub type aliases
