@@ -1,3 +1,90 @@
+//! The content this crate gives the core of a result, an input or a
+//! description (contract 5.2): a hash of everything a reader can see of the
+//! value (O7). Every content is std `Hash` fed to one xxh3 hasher.
+//!
+//! A member table's content is hashed field by field: `Member`, `DeclaredType`
+//! and `MemberOrigin` are destructured with no `..` and matched with no `_`,
+//! so a field or variant the second output adds is a compile error here
+//! rather than a content that silently stops covering it.
+
+use std::hash::{Hash, Hasher};
+
+use reify_eval_core::Hash128;
+use reify_eval_source::{DeclaredType, Member, MemberOrigin, MemberTable};
+use xxhash_rust::xxh3::Xxh3;
+
+/// The content of `value`: its std `Hash`, through xxh3.
+pub(crate) fn content_of(value: &impl Hash) -> Hash128 {
+    let mut hasher = Xxh3::new();
+    value.hash(&mut hasher);
+    Hash128::from_u128(hasher.digest128())
+}
+
+/// The content of a definition's member table.
+pub(crate) fn member_table_content(table: &MemberTable) -> Hash128 {
+    content_of(&Table(table))
+}
+
+/// A member table, hashed as its count, then each member in order.
+struct Table<'t>(&'t MemberTable);
+
+impl Hash for Table<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_usize(self.0.len());
+        for member in self.0 {
+            hash_member(member, state);
+        }
+    }
+}
+
+fn hash_member<H: Hasher>(member: &Member, state: &mut H) {
+    let Member {
+        name,
+        kind,
+        declared_type,
+        origin,
+        guarded,
+        branches,
+    } = member;
+    name.hash(state);
+    kind.hash(state);
+    hash_declared_type(declared_type, state);
+    hash_origin(origin, state);
+    guarded.hash(state);
+    state.write_usize(branches.len());
+    for branch in branches {
+        Table(branch).hash(state);
+    }
+}
+
+fn hash_declared_type<H: Hasher>(declared_type: &DeclaredType, state: &mut H) {
+    match declared_type {
+        DeclaredType::None => state.write_u8(0),
+        DeclaredType::Value(ty) => {
+            state.write_u8(1);
+            ty.hash(state);
+        }
+        DeclaredType::Definition(definition) => {
+            state.write_u8(2);
+            definition.hash(state);
+        }
+        DeclaredType::Written(written) => {
+            state.write_u8(3);
+            written.hash(state);
+        }
+    }
+}
+
+fn hash_origin<H: Hasher>(origin: &MemberOrigin, state: &mut H) {
+    match origin {
+        MemberOrigin::Own => state.write_u8(0),
+        MemberOrigin::Inherited(from) => {
+            state.write_u8(1);
+            from.hash(state);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -6,6 +93,7 @@ mod tests {
     use reify_eval_source::{MemberTable, compile_entry};
 
     use super::{content_of, member_table_content};
+    use crate::member_kinds::MemberKinds;
 
     const BASE: &str = "structure def A { param t : Length = 1mm }";
 
@@ -21,7 +109,10 @@ mod tests {
             "kind: a geometry member",
             "structure def A { let t = box(1mm, 1mm, 1mm) }",
         ),
-        ("declared type", "structure def A { param t : Angle = 1deg }"),
+        (
+            "declared type",
+            "structure def A { param t : Angle = 1deg }",
+        ),
         (
             "trailing guard",
             "structure def A { param t : Length = 1mm where true }",
@@ -73,5 +164,17 @@ mod tests {
     fn equal_values_have_one_content_and_different_values_another() {
         assert_eq!(content_of(&(1_u32, "a")), content_of(&(1_u32, "a")));
         assert_ne!(content_of(&(1_u32, "a")), content_of(&(2_u32, "a")));
+    }
+
+    #[test]
+    fn a_table_of_member_kinds_has_a_content_of_its_rows() {
+        assert_eq!(
+            content_of(&MemberKinds::built()),
+            content_of(&MemberKinds::built())
+        );
+        assert_ne!(
+            content_of(&MemberKinds::built()),
+            content_of(&MemberKinds::empty())
+        );
     }
 }
