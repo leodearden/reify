@@ -1287,6 +1287,75 @@ fn a_refused_dimensions_spelling_does_not_compile_without_its_import() {
     }
 }
 
+/// POSITION PIN: a compound literal re-parses only where the compile scope
+/// carries a `UnitRegistry`. A fn body and a fn param default compile with
+/// none, whatever the module imports, so the serializer's compound output is
+/// rejected there; a bare literal has no such precondition.
+#[test]
+fn compound_literals_do_not_compile_in_a_fn_body_or_fn_param_default() {
+    const NEEDS_A_REGISTRY: &str = "compound unit expression requires a unit registry in scope";
+
+    fn compile_errors(source: &str, prelude: Prelude) -> Vec<String> {
+        let compiled = match prelude {
+            Prelude::None => reify_test_support::compile_source_allow_parse_errors(source),
+            Prelude::Stdlib => reify_test_support::compile_source_with_stdlib_allow_parse_errors(
+                &format!("import std.units\n{source}"),
+            ),
+        };
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error)
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    let compound = value_to_ri_literal(&Value::Scalar {
+        si_value: 2.5,
+        dimension: DimensionVector::AREA,
+    })
+    .expect("an Area is a builtin-only compound the serializer writes");
+    assert_eq!(compound, "2.5m^2");
+    let bare = value_to_ri_literal(&Value::Scalar {
+        si_value: 0.08,
+        dimension: DimensionVector::LENGTH,
+    })
+    .expect("a Length has a bare builtin symbol");
+    assert_eq!(bare, "80mm");
+
+    type SourceAt = fn(ty: &str, lit: &str) -> String;
+    let positions: [(&str, SourceAt); 2] = [
+        ("fn param default", |ty, lit| {
+            format!("fn f(x: {ty} = {lit}) -> {ty} {{ x }}\n")
+        }),
+        ("fn body", |ty, lit| format!("fn g() -> {ty} {{ {lit} }}\n")),
+    ];
+    for prelude in [Prelude::None, Prelude::Stdlib] {
+        for (position, source_at) in positions {
+            let source = source_at("Area", &compound);
+            let errors = compile_errors(&source, prelude);
+            assert!(
+                errors.iter().any(|m| m.contains(NEEDS_A_REGISTRY)),
+                "Prelude::{prelude:?}, {position}: the compound literal {compound:?} no longer \
+                 fails for want of a unit registry, so fn scopes now carry one. Drop the \
+                 position precondition from ri_literal.rs qualification 3 and \
+                 `value_to_ri_literal`'s doc, and from reify-core units.rs's \
+                 `ri_compound_unit_expr` / `ri_builtin_compound_unit_expr` docs, then \
+                 retire this pin. Errors: {errors:?}\nSource:\n{source}"
+            );
+
+            let control = source_at("Length", &bare);
+            let control_errors = compile_errors(&control, prelude);
+            assert!(
+                control_errors.is_empty(),
+                "Prelude::{prelude:?}, {position}: the bare control {bare:?} must compile \
+                 clean, or the compound failure above is not specific to compound literals. \
+                 Errors: {control_errors:?}\nSource:\n{control}"
+            );
+        }
+    }
+}
+
 // ─── (e) rejections are never spliced ────────────────────────────────────────
 
 /// Rejected values are deliberately NOT parsed — the point is that nothing
