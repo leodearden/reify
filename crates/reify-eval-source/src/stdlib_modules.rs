@@ -8,9 +8,9 @@ use reify_compiler::CompiledModule;
 use reify_compiler::stdlib_loader::{load_stdlib, stdlib_sources};
 use reify_core::{Diagnostic, ModulePath, Severity};
 
-use crate::SourceRefusal;
 use crate::definition_list::{self, Definition};
 use crate::module_context::{ModuleContext, ModuleSet, module_name};
+use crate::refusal::SourceRefusal;
 
 /// The standard library's definitions, in registration order, and the
 /// errors their lowering raised. Its warnings are not kept: they would repeat

@@ -14,16 +14,17 @@ mod member_kind;
 mod member_table;
 mod module_context;
 mod program_modules;
+mod refusal;
 mod stdlib_modules;
 
 use std::path::Path;
 
-use reify_ast::ParseError;
-use reify_core::{DefinitionName, Diagnostic, ModulePath};
+use reify_core::Diagnostic;
 
 pub use definition_list::{Definition, DefinitionList};
 pub use member_kind::MemberKind;
 pub use member_table::{DeclaredType, Member, MemberOrigin, MemberTable};
+pub use refusal::SourceRefusal;
 
 /// What the second output makes of a program.
 #[derive(Debug, Clone)]
@@ -32,25 +33,6 @@ pub struct SourceOutput {
     /// Every defect found in a member, each coded; the member stays in its
     /// table.
     pub diagnostics: Vec<Diagnostic>,
-}
-
-/// A program the second output cannot lower at all. It never yields a
-/// partial list.
-#[derive(Debug, Clone)]
-pub enum SourceRefusal {
-    /// A module of the program does not parse.
-    NotParsed {
-        module: ModulePath,
-        errors: Vec<ParseError>,
-    },
-    /// A module imports a module the program did not compile.
-    ImportNotCompiled {
-        module: ModulePath,
-        import: ModulePath,
-    },
-    /// The existing compile produced no template for a definition, so its
-    /// names and types cannot be read.
-    TemplateMissing { definition: DefinitionName },
 }
 
 /// Lower the program rooted at `entry_path`, whose text is `entry_source`

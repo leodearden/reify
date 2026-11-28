@@ -123,7 +123,7 @@ impl<'m> ModuleContext<'m> {
 
     /// The qualified name of a definition this module declares.
     pub(crate) fn own_definition(&self, name: &str) -> DefinitionName {
-        DefinitionName::new(self.name.clone(), definition_segment(name))
+        DefinitionName::new(self.name.clone(), identifier(name))
     }
 
     /// The existing compile's template of a definition this module declares.
@@ -149,7 +149,7 @@ impl<'m> ModuleContext<'m> {
             None => self.name.clone(),
             Some(path) => Some(module_name(path)),
         };
-        DefinitionName::new(module, definition_segment(name))
+        DefinitionName::new(module, identifier(name))
     }
 
     /// The declaration of the trait `name` this module declares.
@@ -232,12 +232,13 @@ pub(crate) fn has_no_prelude(parsed: &ParsedModule) -> bool {
 
 /// A module's name as a definition name's module.
 pub(crate) fn module_name(path: &ModulePath) -> ModuleName {
-    ModuleName::new(path.0.iter().map(|s| definition_segment(s)).collect())
+    ModuleName::new(path.0.iter().map(|s| identifier(s)).collect())
         .unwrap_or_else(|e| panic!("a compiled module's path `{path}` is a module name: {e:?}"))
 }
 
-/// A definition or module segment the parser accepted as an identifier.
-fn definition_segment(text: &str) -> PathName {
+/// A name the parser accepted as an identifier: a member's, a definition's,
+/// or a module path's segment.
+pub(crate) fn identifier(text: &str) -> PathName {
     PathName::new(text)
         .unwrap_or_else(|e| panic!("the parser accepts `{text}` only as an identifier: {e:?}"))
 }

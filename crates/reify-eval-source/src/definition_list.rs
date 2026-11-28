@@ -4,9 +4,9 @@
 use reify_ast::{Declaration, MemberDecl, TraitBoundRef};
 use reify_core::{DefinitionName, Diagnostic};
 
-use crate::SourceRefusal;
 use crate::member_table::{self, DefinitionBody, MemberTable};
 use crate::module_context::{ModuleContext, ModuleSet};
+use crate::refusal::SourceRefusal;
 
 /// One structure or occurrence definition.
 #[derive(Debug, Clone, PartialEq, Eq)]

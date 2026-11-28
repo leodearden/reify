@@ -16,9 +16,9 @@ use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
 };
 
-use crate::SourceRefusal;
 use crate::definition_list::{self, Definition};
 use crate::module_context::{ModuleContext, ModuleSet, has_no_prelude, module_name};
+use crate::refusal::SourceRefusal;
 
 /// The user modules of one program: the entry first, then every module it
 /// imports, directly or not, in the order the program compiled them.

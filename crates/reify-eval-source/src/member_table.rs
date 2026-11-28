@@ -13,7 +13,7 @@ use reify_core::{
 use crate::definition_scope::{definition_registry, definition_scope};
 use crate::inherited_members::inherited_members;
 use crate::member_kind::{self, MemberKind};
-use crate::module_context::{ModuleContext, ModuleSet};
+use crate::module_context::{ModuleContext, ModuleSet, identifier};
 
 /// One member of a definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -432,10 +432,4 @@ fn keyed_element(sub: &SubDecl) -> Option<&str> {
         TypeExprKind::Named { name, .. } => Some(name),
         _ => None,
     }
-}
-
-/// A name the parser accepted as an identifier.
-fn identifier(text: &str) -> PathName {
-    PathName::new(text)
-        .unwrap_or_else(|e| panic!("the parser accepts `{text}` only as an identifier: {e:?}"))
 }
