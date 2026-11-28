@@ -69,10 +69,14 @@ REGISTRY_META_BY_ID = re.compile(
     r"\.(?:meta|declared_bounds|name_for)\(\s*&?\s*"
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\.type_id\b")
 READ_SCALAR_SI = re.compile(r"\bread_scalar_si\b")
-SILENT_ZERO = re.compile(r"unwrap_or\(\s*0\.0\s*\)|=>\s*0\.0\b|\[\s*0\.0\s*;\s*3\s*\]")
-# A construction opens its body at the line end or with a `field:`; a pattern
-# opens it with `..` or a shorthand `field,`.
-INLINE_FAILED = re.compile(r"ComputeOutcome::Failed\s*\{(?:\s*$|\s*[A-Za-z_]\w*\s*:(?!:))")
+FLOAT_ZERO = r"(?:0\.0*(?:_?f64)?|0_?f64)(?![\w.])"
+# `unwrap_or_default()` counts whatever its type: the lexer cannot see an f64.
+SILENT_ZERO = re.compile(r"unwrap_or\(\s*" + FLOAT_ZERO + r"\s*\)|unwrap_or_default\(\)"
+                         r"|=>\s*" + FLOAT_ZERO + r"|\[\s*0\.0\s*;\s*3\s*\]")
+# A pattern, not a construction: the path a `let` binds, or a one-line body
+# that ends in a rest `..` or is followed by `=>`, `=` or `|`.
+INLINE_FAILED = re.compile(r"(?<!\blet )(?<!\blet crate::)\bComputeOutcome::Failed\s*\{"
+                           r"(?![^{}]*\.\.\s*\})(?![^{}]*\}\s*(?:=>|=(?!=)|\|))")
 
 
 def result_type_write(structure):
@@ -369,6 +373,18 @@ INLINE_FAILED_NOT_COUNTED = (
     Case(cfg_test_module("let o = ComputeOutcome::Failed { diagnostics: vec![], "
                          "structured_detail: vec![] };")),
     Case(rust_fn("    return e.into_failed(TARGET);")),
+    Case(rust_fn("    match o {",
+                 "        ComputeOutcome::Failed { diagnostics, .. } => drop(diagnostics),",
+                 "        _ => {}",
+                 "    }")),
+    Case(rust_fn("    let ComputeOutcome::Failed { diagnostics, structured_detail } = o else {",
+                 "        return;",
+                 "    };")),
+    Case(rust_fn("    match o {",
+                 "        ComputeOutcome::Failed { diagnostics, structured_detail } => {}",
+                 "        _ => {}",
+                 "    }")),
+    Case(rust_fn("    let n = matches!(r, Ok(crate::ComputeOutcome::Failed { .. }));")),
 )
 
 NOT_COUNTED = {
@@ -419,6 +435,12 @@ NOT_COUNTED = {
                      "        _ => 0.05,",
                      "    };")),
         Case(rust_fn("    let acc = vec![0.0_f64; n];")),
+        Case(rust_fn("    let i = v.unwrap_or(0);")),
+        Case(rust_fn("    let x = v.unwrap_or(0.05_f64);")),
+        Case(rust_fn("    let x = match v {",
+                     "        Some(x) => x,",
+                     "        _ => 0,",
+                     "    };")),
         Case(cfg_test_module("let x = v.unwrap_or(0.0);")),
         Case(rust_fn("    let x = v.unwrap_or(0.0);"), rel=ELASTIC_STATIC),
     ),
@@ -452,7 +474,15 @@ INLINE_FAILED_COUNTED = ((2, Case(rust_fn(
     "        diagnostics: vec![d],",
     "        structured_detail: vec![],",
     "    };",
-    "    let q = crate::ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };"))),)
+    "    let q = crate::ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };"))),
+    (3, Case(rust_fn(
+        "    return ComputeOutcome::Failed { diagnostics, structured_detail: vec![] };",
+        "    let o = ComputeOutcome::Failed { diagnostics, structured_detail };",
+        "    let r = match e {",
+        "        Some(e) => ComputeOutcome::Failed { diagnostics: vec![e], structured_detail },",
+        "        None => o,",
+        "    };"))),
+)
 
 COUNTED = {
     "registry-free-literal": REGISTRY_FREE_COUNTED,
@@ -496,7 +526,17 @@ COUNTED = {
         "        Some(x) => x,",
         "        _ => 0.0,",
         "    };",
-        "    let c = shape.get(node).copied().unwrap_or([0.0; 3]);"))),),
+        "    let c = shape.get(node).copied().unwrap_or([0.0; 3]);"))),
+        (5, Case(rust_fn(
+            "    let a = v.unwrap_or(0.0_f64);",
+            "    let b = v.unwrap_or(0.);",
+            "    let c = v.unwrap_or(0f64);",
+            "    let d = v.unwrap_or_default();",
+            "    let e = match v {",
+            "        Some(x) => x,",
+            "        _ => 0.0_f64,",
+            "    };"))),
+    ),
     "inline-failed": INLINE_FAILED_COUNTED + (
         (1, Case(rust_fn(FAILED_CONSTRUCTION), rel=STDLIB_INPUTS_CONSUMERS[1])),
     ),
