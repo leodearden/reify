@@ -12,6 +12,7 @@ reify-expr.workspace = true
 reify-ir.workspace = true
 reify-core.workspace = true
 reify-syntax.workspace = true
+reify-eval-source.workspace = true
 
 [dev-dependencies]
 toml.workspace = true
@@ -19,3 +20,4 @@ serde = { workspace = true, features = ["derive"] }
 tree-sitter.workspace = true
 tree-sitter-reify.workspace = true
 reify-test-support.workspace = true
+reify-ast.workspace = true

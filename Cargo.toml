@@ -41,6 +41,7 @@ members = [
     "crates/reify-version",
     "crates/reify-eval-core",
     "crates/reify-eval-instances",
+    "crates/reify-eval-source",
     "crates/workspace-feature-union",
     "tree-sitter-reify",
     "gui/src-tauri",
@@ -88,6 +89,7 @@ reify-exec-lookup = { path = "crates/reify-exec-lookup" }
 reify-version = { path = "crates/reify-version" }
 reify-eval-core = { path = "crates/reify-eval-core" }
 reify-eval-instances = { path = "crates/reify-eval-instances" }
+reify-eval-source = { path = "crates/reify-eval-source" }
 workspace-feature-union = { path = "crates/workspace-feature-union" }
 reify-gui = { path = "gui/src-tauri" }
 
