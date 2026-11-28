@@ -1025,7 +1025,7 @@ Leo's approval of this PRD rules its decisions, so no leaf lists a ruling as a p
   *Prereqs:* ι, κ₃; core 10564, for the count of index entries.
 
 - **φ (#10665). The whole corpus.** The integration gate of this PRD.
-  Every entry whose needs are built passes. The list of disputed entries is empty. The waiting entries per owner are committed and named in tasks 10610, 10611 and 7874. Editing a default re-runs only the cells that read it, asserted on the core's counters. The runner turns on the core's debug mode. Every scenario of section 10 exists under its name.
+  Every entry whose needs are built passes. The list of disputed entries is empty. The waiting entries per owner are committed. Those that wait for the solve kinds and for the geometry kinds are named on the milestones 10610 and 10611, and the two that wait for the rule of task 7874 on the milestone 10551. Editing a default re-runs only the cells that read it, asserted on the core's counters. The runner turns on the core's debug mode. Every scenario of section 10 exists under its name.
   *Signal:* those, in the merge gate.
   *Prereqs:* every leaf above but χ; core 10564.
 
@@ -1114,6 +1114,8 @@ The plan above was filed on 2026-11-26 by a team: three seats drafted the task r
 **One task outside the plan: #10667.** It switches on the core's sampled re-run of determinism claims for the corpus runner, and fixes what the re-run finds. Section 9 expected core task 10571 to switch it on in this crate. The Core PRD session left it to this PRD, so that a false claim in an instance kind cannot block a core task. It waits for φ and for core task 10571, and the close leaf waits for it. So the close leaf, and no other, waits for one of the core's later tasks; tasks 10551 and 10552 wait for the core's close task in any case.
 
 **Decision D13, item 24, cannot be built today.** Braces on a list sub do not parse: `sub vents : List<Vent> { constraint w >= 3mm }` is a syntax error. The item stands as what the form means when the grammar gains it, with indexed subs (task 5482). No leaf builds it and no entry pins it.
+
+**Where a wait is recorded.** A note about work that waits is written on the milestone that will create that work, and not on the task waited for (Leo, 2026-11-28); a wait that matters to a task is a dependency of that task. So the two entries that wait for the rule of task 7874, and item 24 above, are item 20 in the details of the milestone 10551, with the general point that a rule the existing compile gains before the switch has to be put on the second output too.
 
 **Decision D13, item 14, for a subject of type `Structure`.** A purpose's body reads only parameters, subs, ports and `pub` `let`s of its subject. Where the subject's type is a definition, a read of a private `let` is an error at the purpose's declaration. Where it is `Structure` or a trait, the read is resolved when the purpose is applied, and the error is at the application line. This is the lead's reading of the ruling.
 

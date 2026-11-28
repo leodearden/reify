@@ -1462,7 +1462,7 @@ tasks:
       kind: manual
       reason: the PRD fixes no path for the disputed list, and a pattern cannot see a test pass
   - name: waiting-counts-committed-and-named
-    binding: 'built here: the waiting entries per owner are committed and named in tasks 10610, 10611 and 7874 (10, 3 and 2 in the catalogue as approved); none waits for task 10551 (PRD section 12.5; kinds decision 16)'
+    binding: 'built here: the waiting entries per owner are committed (10, 3 and 2 for tasks 10610, 10611 and 7874 in the catalogue as approved); they are named on the milestones 10610 and 10611, and the two that wait for the rule of task 7874 on the milestone 10551 (PRD section 12.5)'
     verdict: PASS
     delivered_check:
       kind: manual
