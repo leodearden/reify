@@ -45,17 +45,16 @@ pub mod elastic_static;
 pub mod fdm_slice;
 // Task 2929: FEA diagnostic mapping — FeaFailure → reify_core::Diagnostic.
 pub mod fea_diagnostics;
-/// Task 6922: the FEA leaf input readers shared by the FEA trampolines.
-mod fea_inputs;
 /// Task 6922 (γ1): the one reader of a load magnitude off an FEA load struct.
 mod fea_loads;
-/// Task 6922 (γ1): the FEA value-shape error shared by the FEA trampolines.
-mod fea_value_shape;
 pub mod form_find;
 /// Task 9219: the LoadCase sweep shared by the multi-case trampolines.
 mod load_cases;
 pub mod multi_case;
 pub mod shell_solve;
+/// Task 8674 (S15 α): the decode of a compute trampoline's stdlib inputs, and
+/// the one point where a decode error becomes a `Failed` outcome.
+pub(crate) mod stdlib_inputs;
 /// Shared Tensegrity input-cracking helpers (node / index-pair / scalar / index
 /// validation) reused by the `form_find` and `tensegrity_load` trampolines.
 mod tensegrity_crack;

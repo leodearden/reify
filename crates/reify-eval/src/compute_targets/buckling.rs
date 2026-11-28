@@ -92,9 +92,9 @@ use reify_solver_elastic::{
     resample_multi_nodal_to_grid, solve_buckling_kernel, solve_buckling_kernel_p2, tet_volume_p1,
 };
 
-use super::fea_inputs::{extract_length_si, extract_material};
 use super::fea_loads::{load_items, point_load_force};
-use super::fea_value_shape::{FeaValueShapeError, failed_outcome};
+use super::stdlib_inputs::{DecodeStdlibInput, InputDecodeError, read_positional};
+use crate::arg_acceptance::length_spec;
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Trampoline for `solver::buckling`.
@@ -137,7 +137,7 @@ pub fn solve_buckling_trampoline(
         total_load,
     } = match read_buckling_inputs(value_inputs) {
         Ok(inputs) => inputs,
-        Err((arg, err)) => return failed_outcome("solve_buckling_trampoline", arg, &err),
+        Err(err) => return err.into_failed("solve_buckling_trampoline"),
     };
 
     // ── (4) Extract BucklingOptions ───────────────────────────────────────────
@@ -679,30 +679,27 @@ struct BucklingInputs {
 }
 
 /// Read material → length → width → height → loads through the same
-/// Result-returning readers as `solve_elastic_static`, returning the first
-/// `Err` with the name of its arg.
-fn read_buckling_inputs(
-    value_inputs: &[Value],
-) -> Result<BucklingInputs, (&'static str, FeaValueShapeError)> {
-    let at = |arg: &'static str| move |err: FeaValueShapeError| (arg, err);
+/// readers as `solve_elastic_static`, returning the first `Err`.
+fn read_buckling_inputs(value_inputs: &[Value]) -> Result<BucklingInputs, InputDecodeError> {
     Ok(BucklingInputs {
-        mat: extract_material(&value_inputs[0]).map_err(at("material"))?,
-        length: extract_length_si(&value_inputs[1]).map_err(at("length"))?,
-        width: extract_length_si(&value_inputs[2]).map_err(at("width"))?,
-        height: extract_length_si(&value_inputs[3]).map_err(at("height"))?,
-        total_load: total_point_load(&value_inputs[4]).map_err(at("loads"))?,
+        mat: IsotropicElastic::decode(&value_inputs[0])?,
+        length: read_positional(&value_inputs[1], "length", &length_spec())?,
+        width: read_positional(&value_inputs[2], "width", &length_spec())?,
+        height: read_positional(&value_inputs[3], "height", &length_spec())?,
+        total_load: total_point_load(&value_inputs[4])?,
     })
 }
 
 /// Sum the `force` of every `PointLoad` in the `loads` list, read by
 /// `fea_loads`; other load kinds do not contribute. Falls back to 1.0 N when
 /// the total is zero.
-fn total_point_load(val: &Value) -> Result<f64, FeaValueShapeError> {
+fn total_point_load(val: &Value) -> Result<f64, InputDecodeError> {
     let mut total = 0.0f64;
-    for item in load_items(val, "solve_buckling_trampoline loads")? {
+    for item in load_items(val)? {
         if let Value::StructureInstance(data) = item
             && data.type_name == "PointLoad"
-            && let Some(force) = point_load_force(data)?
+            && let Some(force) =
+                point_load_force(data).map_err(|r| InputDecodeError::refused("PointLoad", r))?
         {
             total += force;
         }
@@ -1396,7 +1393,7 @@ mod tests {
     // ── task 6922 γ1: loads read through fea_loads; malformed inputs fail ─────
 
     use crate::arg_acceptance::FieldRejection;
-    use crate::compute_targets::fea_value_shape::FeaValueShapeError;
+    use crate::compute_targets::stdlib_inputs::{DecodeFailure, InputDecodeError};
     use crate::compute_targets::{scalar, structure};
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -1435,16 +1432,25 @@ mod tests {
     fn total_point_load_rejects_a_non_list_and_a_wrong_dimension_force() {
         let non_list = super::total_point_load(&Value::Real(1.0));
         assert!(
-            matches!(non_list, Err(FeaValueShapeError::ExpectedList { .. })),
-            "a non-List loads value must be Err(ExpectedList), got {non_list:?}"
+            matches!(
+                non_list,
+                Err(InputDecodeError {
+                    input: "loads",
+                    failure: DecodeFailure::WrongShape { .. },
+                    ..
+                })
+            ),
+            "a non-List loads value must be a WrongShape at loads, got {non_list:?}"
         );
         let length_force = point_load(scalar(2.0, DimensionVector::LENGTH));
         let wrong = super::total_point_load(&Value::List(vec![length_force]));
         assert!(
             matches!(
                 &wrong,
-                Err(FeaValueShapeError::Rejected(FieldRejection { path, rejection }))
-                    if path == "PointLoad.force" && rejection.expected == "Force"
+                Err(InputDecodeError {
+                    failure: DecodeFailure::Rejected(FieldRejection { path, rejection }),
+                    ..
+                }) if path == "PointLoad.force" && rejection.expected == "Force"
             ),
             "a LENGTH force must be Err(Rejected) naming PointLoad.force, got {wrong:?}"
         );
@@ -1469,6 +1475,41 @@ mod tests {
         ]
     }
 
+    /// S15 α T1/T2 (task 8674): the material decodes as an `ElasticMaterial`,
+    /// so a hand-built conformer missing a field or carrying a LENGTH modulus
+    /// fails with ONE coded Error naming the trait path.
+    #[test]
+    fn solve_buckling_trampoline_fails_a_malformed_elastic_material_naming_the_trait_path() {
+        use crate::compute_targets::stdlib_inputs::test_support::{
+            assert_one_coded_error, material_missing_poisson_ratio,
+            material_with_length_youngs_modulus,
+        };
+        use reify_core::DiagnosticCode;
+        for (material, code, path) in [
+            (
+                material_missing_poisson_ratio(),
+                DiagnosticCode::ComputeInputMalformed,
+                "ElasticMaterial.poisson_ratio",
+            ),
+            (
+                material_with_length_youngs_modulus(),
+                DiagnosticCode::DimensionedArgRejected,
+                "ElasticMaterial.youngs_modulus",
+            ),
+        ] {
+            let mut inputs = buckling_inputs();
+            inputs[0] = material;
+            let outcome = super::solve_buckling_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            assert_one_coded_error(&outcome, code, path);
+        }
+    }
+
     #[test]
     fn solve_buckling_trampoline_fails_malformed_inputs_instead_of_panicking() {
         let mut no_poisson = buckling_inputs();
@@ -1476,10 +1517,10 @@ mod tests {
             "Steel_AISI_1045",
             vec![("youngs_modulus", scalar(205.0e9, DimensionVector::PRESSURE))],
         );
-        let mut cases = vec![(no_poisson, "material")];
+        let mut cases = vec![(no_poisson, "ElasticMaterial.poisson_ratio")];
         for (index, malformed, arg) in [
             (4, Value::Real(1.0), "loads"),
-            (0, Value::Real(0.0), "material"),
+            (0, Value::Real(0.0), "ElasticMaterial"),
             (1, Value::Real(1.0), "length"),
         ] {
             let mut inputs = buckling_inputs();
@@ -1501,9 +1542,12 @@ mod tests {
             let prefix = format!("solve_buckling_trampoline: {arg}:");
             assert!(
                 diagnostics.iter().any(|d| {
-                    d.severity == reify_core::Severity::Error && d.message.starts_with(&prefix)
+                    d.severity == reify_core::Severity::Error
+                        && d.code == Some(reify_core::DiagnosticCode::ComputeInputMalformed)
+                        && d.message.starts_with(&prefix)
                 }),
-                "a malformed {arg} must yield an Error starting {prefix:?}, got {diagnostics:?}"
+                "a malformed {arg} must yield a ComputeInputMalformed Error starting \
+                 {prefix:?}, got {diagnostics:?}"
             );
         }
     }
@@ -1524,13 +1568,12 @@ mod tests {
             let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
                 unreachable!("a MASS {arg} must yield Failed, got {outcome:?}");
             };
-            let prefix = format!("solve_buckling_trampoline: {arg}:");
+            let prefix = format!("solve_buckling_trampoline: {arg} argument expects Length");
             assert!(
                 diagnostics.iter().any(|d| {
                     d.severity == reify_core::Severity::Error
                         && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
                         && d.message.starts_with(&prefix)
-                        && d.message.contains("Length")
                 }),
                 "a MASS {arg} must yield a DimensionedArgRejected Error starting \
                  {prefix:?} and expecting a Length, got {diagnostics:?}"

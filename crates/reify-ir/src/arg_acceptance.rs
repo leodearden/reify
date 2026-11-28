@@ -321,6 +321,11 @@ pub fn length_spec() -> ArgSpec {
 // from rad⁻¹ to rad⁻²; a reader carrying its own tuple would have silently
 // disagreed with the registry from that day on.)
 //
+// Later tasks add constructors under the same rule (task 8674:
+// [`impulse_spec`], for `ImpulseForce.impulse`), seventeen in all; the
+// registry test `prd5_spec_constructors_read_dimensions_from_the_core_registry`
+// lists every one of them.
+//
 // # Why every one of them sets `migration_hint: None`
 //
 // `reify_core::units` today holds exactly two shared hint consts —
@@ -330,10 +335,10 @@ pub fn length_spec() -> ArgSpec {
 // literals that the EVAL layer (this module) and the COMPILE layer
 // (`reify-compiler::builtin_signatures`) must render byte-identically for the
 // same authoring mistake, so they genuinely can drift and that is what earns
-// them a shared const. None of the eleven below has a compile-layer twin to
-// keep byte-identical yet, so minting eleven more consts there would add an
+// them a shared const. None of the specs below has a compile-layer twin to
+// keep byte-identical yet, so minting more consts there would add an
 // edit site with nothing on the other end of it. The slot is left
-// INTENTIONALLY EMPTY until a consuming leaf (β…ι) grows that twin; the leaf
+// INTENTIONALLY EMPTY until a consuming leaf grows that twin; the leaf
 // that does is the one that should hoist the const, following the same
 // hoist-not-a-copy argument.
 
@@ -350,14 +355,16 @@ pub fn length_spec() -> ArgSpec {
 /// `Value::Scalar` with `DimensionVector::ANGLE` (radians). Mirrors
 /// [`length_spec`].
 ///
-/// Two families of position share this spec:
+/// Three families of position share this spec:
 ///
 /// - the PRODUCER angles — `rotate`'s and `rotate_around`'s rotation angle,
 ///   `revolve`'s sweep angle, `arc`'s `start_angle` and `end_angle`, `draft`'s
 ///   draft angle and `circular_pattern`'s total sweep;
 /// - the SELECTOR tolerances — the `tol` of the four directional face
 ///   selectors (`faces_by_normal` and siblings), which is an angular tolerance
-///   rather than a length.
+///   rather than a length;
+/// - the FORCING phases — `HarmonicForce.phase`, the phase offset φ of the
+///   modal transient's `A·sin(ωt + φ)`.
 ///
 /// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
 /// **radians** by `Value::as_f64`, so an author writing `45` meaning 45° gets
@@ -613,6 +620,19 @@ pub fn torque_spec() -> ArgSpec {
     }
 }
 
+/// Returns the [`ArgSpec`] for an IMPULSE reader position (N·s =
+/// kg·m·s⁻¹): `ImpulseForce.impulse`, the momentum a Dirac-delta forcing
+/// source transfers.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn impulse_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Impulse",
+        dimension: reify_core::DimensionVector::IMPULSE,
+        migration_hint: None,
+    }
+}
+
 
 /// Returns the [`ArgSpec`] for a DELIBERATELY-BARE reader position — one whose
 /// quantity is genuinely dimensionless (a ratio, a count, a relative
@@ -822,6 +842,17 @@ pub fn accept_field(
     accept_present_field(data.fields.get(key), spec, accept_arg)
 }
 
+/// [`accept_field`] for a position that still takes the legacy bare spelling:
+/// the field twin of [`accept_arg_or_bare`], which stays the one home of the
+/// transitional bare rule.
+pub fn accept_field_or_bare(
+    data: &crate::value::StructureInstanceData,
+    key: &str,
+    spec: &ArgSpec,
+) -> FieldAcceptance {
+    accept_present_field(data.fields.get(key), spec, accept_arg_or_bare)
+}
+
 /// The strict struct-field reader: [`accept_field`] as a reader's `Result`.
 ///
 /// `Ok(Some(si))` accepted; `Ok(None)` for a field that is absent, `none` or
@@ -991,7 +1022,7 @@ mod tests {
     fn prd5_spec_constructors_read_dimensions_from_the_core_registry() {
         use reify_core::DimensionVector as DV;
 
-        let cases: [(&str, ArgSpec, DV); 16] = [
+        let cases: [(&str, ArgSpec, DV); 17] = [
             ("pressure_spec", pressure_spec(), DV::PRESSURE),
             ("force_spec", force_spec(), DV::FORCE),
             ("mass_spec", mass_spec(), DV::MASS),
@@ -1036,6 +1067,7 @@ mod tests {
                 DV::ANGULAR_VELOCITY.div(&DV::TIME),
             ),
             ("torque_spec", torque_spec(), DV::TORQUE),
+            ("impulse_spec", impulse_spec(), DV::IMPULSE),
         ];
 
         for (name, spec, expected) in cases {
@@ -1047,6 +1079,31 @@ mod tests {
                 !spec.type_name.is_empty(),
                 "{name}: type_name must be non-empty (it is the `expects {{…}}` \
                  text in every rejection message)"
+            );
+        }
+    }
+
+    /// `impulse_spec` (`ImpulseForce.impulse`) reads the IMPULSE registry
+    /// const and accepts only an IMPULSE `Scalar`: a FORCE is a neighbouring
+    /// dimension, and a bare `Real` carries none.
+    #[test]
+    fn impulse_spec_accepts_only_an_impulse_scalar() {
+        use reify_core::DimensionVector as DV;
+        let spec = impulse_spec();
+        assert_eq!(spec.dimension, DV::IMPULSE);
+        assert_eq!(spec.type_name, "Impulse");
+        let scalar = |dimension| crate::value::Value::Scalar {
+            si_value: 2.5,
+            dimension,
+        };
+        assert_eq!(
+            accept_arg(&scalar(DV::IMPULSE), &spec),
+            Acceptance::Accepted(2.5)
+        );
+        for refused in [scalar(DV::FORCE), crate::value::Value::Real(2.5)] {
+            assert!(
+                matches!(accept_arg(&refused, &spec), Acceptance::Rejected(_)),
+                "{refused:?} must be refused"
             );
         }
     }
@@ -1564,6 +1621,40 @@ mod tests {
             si_value: si,
             dimension: reify_core::DimensionVector::PRESSURE,
         }
+    }
+
+    /// `accept_field_or_bare` is `accept_field` under the transitional bare
+    /// rule of [`accept_arg_or_bare`]: a bare number is accepted where a
+    /// dimensioned one belongs, a wrong dimension is still refused, and the
+    /// absent / `none` / `Undef` field shapes classify as `accept_field`'s do.
+    #[test]
+    fn accept_field_or_bare_tolerates_a_bare_number_and_refuses_a_wrong_dimension() {
+        use crate::value::Value;
+        use reify_core::DimensionVector as DV;
+        let alpha = |value: Value| steel_instance(&[("alpha", value)]);
+        let accept = |data: &crate::value::StructureInstanceData| {
+            accept_field_or_bare(data, "alpha", &frequency_spec())
+        };
+        let frequency = Value::Scalar {
+            si_value: 0.5,
+            dimension: DV::FREQUENCY,
+        };
+        assert_eq!(accept(&alpha(frequency)), FieldAcceptance::Accepted(0.5));
+        assert_eq!(
+            accept(&alpha(Value::Real(0.5))),
+            FieldAcceptance::Accepted(0.5)
+        );
+        let length = Value::Scalar {
+            si_value: 0.5,
+            dimension: DV::LENGTH,
+        };
+        assert!(
+            matches!(accept(&alpha(length)), FieldAcceptance::Rejected(_)),
+            "a LENGTH at a Frequency field must be refused"
+        );
+        assert_eq!(accept(&steel_instance(&[])), FieldAcceptance::Absent);
+        assert_eq!(accept(&alpha(Value::Option(None))), FieldAcceptance::Absent);
+        assert_eq!(accept(&alpha(Value::Undef)), FieldAcceptance::Undefined);
     }
 
     #[test]

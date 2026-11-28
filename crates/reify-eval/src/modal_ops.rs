@@ -46,8 +46,16 @@ use reify_stdlib::modal::transient::{
 };
 use reify_stdlib::resolve_body_mass;
 
+use crate::arg_acceptance::{
+    angle_spec, dimensionless_spec, force_spec, frequency_spec, impulse_spec, length_spec,
+    time_spec,
+};
 use crate::compute_targets::bc_resolve::named_leaf_target;
 use crate::compute_targets::result_topology::carried_topology_from_result;
+use crate::compute_targets::stdlib_inputs::{
+    DecodeFailure, DecodeStdlibInput, InputDecodeError, positional, read_list, read_positional,
+    read_vec3, required_field, required_field_or_bare, required_value, structure_fields,
+};
 use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -1378,6 +1386,10 @@ impl ModalAnalysisCache {
     }
 }
 
+/// The stdlib fn [`run_modal_analysis`] implements, named in its decode
+/// diagnostics.
+const MODAL_ANALYSIS: &str = "modal_analysis";
+
 /// Result of the in-crate modal core [`run_modal_analysis`]: the engine-facing
 /// [`ComputeOutcome`] plus a white-box `reused_assembly` flag the unit tests
 /// assert cache amortization against (the public `ComputeFn` returns only the
@@ -1390,6 +1402,16 @@ pub(crate) struct ModalTrampolineRun {
     /// tests); the public `ComputeFn` discards it, hence `allow(dead_code)`.
     #[allow(dead_code)]
     pub(crate) reused_assembly: bool,
+}
+
+impl ModalTrampolineRun {
+    /// The run that fails `modal_analysis` on a decode error.
+    fn decode_failed(err: InputDecodeError) -> Self {
+        Self {
+            outcome: err.into_failed(MODAL_ANALYSIS),
+            reused_assembly: false,
+        }
+    }
 }
 
 /// In-crate modal core behind [`solve_modal_analysis_trampoline`], adding the
@@ -1502,13 +1524,25 @@ pub(crate) fn run_modal_analysis(
         }
     };
 
-    // ── (2) material elastic constants (E, ν) ────────────────────────────────
-    let material = extract_isotropic_material(&value_inputs[0]);
+    // ── (2) material elastic constants (E, ν), decoded as an ElasticMaterial ─
+    // After the density guard and the damping plan, so their ordering holds.
+    let material = match IsotropicElastic::decode(&value_inputs[0]) {
+        Ok(material) => material,
+        Err(err) => return ModalTrampolineRun::decode_failed(err),
+    };
 
     // ── (3) geometry scalars (SI metres) ─────────────────────────────────────
-    let length = read_scalar_si(&value_inputs[1]);
-    let width = read_scalar_si(&value_inputs[2]);
-    let height = read_scalar_si(&value_inputs[3]);
+    let dims = (|| {
+        Ok::<_, InputDecodeError>((
+            read_positional(&value_inputs[1], "length", &length_spec())?,
+            read_positional(&value_inputs[2], "width", &length_spec())?,
+            read_positional(&value_inputs[3], "height", &length_spec())?,
+        ))
+    })();
+    let (length, width, height) = match dims {
+        Ok(dims) => dims,
+        Err(err) => return ModalTrampolineRun::decode_failed(err),
+    };
     // Build the beam mesh once and share it between the BC realization (4) and
     // the eigensolve (5); both index DOFs against the same node numbering.
     let mesh = build_beam_mesh(length, width, height);
@@ -1516,7 +1550,10 @@ pub(crate) fn run_modal_analysis(
     // ── (4) ModalOptions: eigen knobs, excitation direction, damping, BCs ────
     let options = &value_inputs[4];
     let (n_modes, tol, max_iters, sigma) = extract_eigen_knobs(options);
-    let reference_direction = extract_reference_direction(options);
+    let reference_direction = match extract_reference_direction(options) {
+        Ok(direction) => direction,
+        Err(err) => return ModalTrampolineRun::decode_failed(err),
+    };
     // Task #6878: `plan` / `damping_diagnostics` are already resolved at (1b)
     // above — genuinely above the mesh build, not merely above the assembly —
     // because the planner's rejection arm must short-circuit before any of it.
@@ -2100,6 +2137,10 @@ fn mechanism_shift_unsupported_diagnostic(shift_hz: f64) -> Option<Diagnostic> {
     })
 }
 
+/// The stdlib fn [`run_mechanism_modal`] implements, named in its decode
+/// diagnostics.
+const MECHANISM_MODAL_ANALYSIS: &str = "mechanism_modal_analysis";
+
 /// Core implementation for the `modal::mechanism_modal` compute target (task
 /// #4271).
 ///
@@ -2346,7 +2387,11 @@ fn run_mechanism_modal(
     // with its own `E_MechanismModal*` Error and has no modes to damp, so the
     // Error is the louder and correct signal there.
     let options = value_inputs.get(1).unwrap_or(&Value::Undef);
-    let (alpha, beta) = match classify_damping(options) {
+    let damping = match classify_damping(options) {
+        Ok(damping) => damping,
+        Err(err) => return err.into_failed(MECHANISM_MODAL_ANALYSIS),
+    };
+    let (alpha, beta) = match damping {
         DampingKind::Rayleigh { alpha, beta } => (alpha, beta),
         DampingKind::Unsupported(type_name) => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -2561,31 +2606,6 @@ fn field_ref<'a>(val: &'a Value, name: &str) -> Option<&'a Value> {
     None
 }
 
-/// Read a `Vector3` runtime value into `[f64; 3]`, tolerating both the
-/// `Value::Vector` encoding [`mode_shape_value`] emits and a `Value::List` of
-/// numerics; missing components / non-vector values read as `0.0` (defensive —
-/// the type-checker guarantees the shape upstream).
-fn read_vec3(val: &Value) -> [f64; 3] {
-    let comps = match val {
-        Value::Vector(c) | Value::List(c) => c,
-        _ => return [0.0; 3],
-    };
-    let mut out = [0.0; 3];
-    for (slot, v) in out.iter_mut().zip(comps.iter()) {
-        *slot = read_scalar_si(v);
-    }
-    out
-}
-
-/// Read a `List<Scalar>` runtime value into `Vec<f64>` (SI magnitudes); a
-/// non-list reads as empty. Used for `SampledForce.time_samples / force_samples`.
-fn read_real_list(val: &Value) -> Vec<f64> {
-    match val {
-        Value::List(items) => items.iter().map(read_scalar_si).collect(),
-        _ => Vec::new(),
-    }
-}
-
 /// The `modes` list of a `ModalResult` StructureInstance, by reference; an empty
 /// slice if absent / mis-shaped.
 fn modal_result_modes(modal_result: &Value) -> &[Value] {
@@ -2597,23 +2617,40 @@ fn modal_result_modes(modal_result: &Value) -> &[Value] {
     &[]
 }
 
-/// Read one `Mode`'s `shape` field (a `List<Vector3>`) into per-node `[f64; 3]`
-/// displacements; empty if absent / mis-shaped.
-fn read_mode_shape(mode: &Value) -> Vec<[f64; 3]> {
+/// The input name a `Mode`'s decode diagnostics start with.
+const MODE: &str = "Mode";
+
+/// Read one `Mode`'s `shape` field (a `List<Vector3<Real>>`) into per-node
+/// `[f64; 3]` displacements, each component dimensionless. A shape that is not
+/// a list reads as empty: the mechanism solve degrades `shape` to `Undef`.
+fn read_mode_shape(mode: &Value) -> Result<Vec<[f64; 3]>, InputDecodeError> {
     match field_ref(mode, "shape") {
-        Some(Value::List(nodes)) => nodes.iter().map(read_vec3).collect(),
-        _ => Vec::new(),
+        Some(Value::List(nodes)) => nodes
+            .iter()
+            .map(|node| read_vec3(node, MODE, Some("shape"), &dimensionless_spec()))
+            .collect(),
+        _ => Ok(Vec::new()),
     }
 }
 
 /// Per-mode node shapes Φᵢ of a `ModalResult` (one `Vec<[f64; 3]>` per mode).
 /// Shared by [`solve_transient_response_trampoline`] (forcing projection) and
 /// [`displacement_at_trampoline`] (reconstruction) — both form Φᵢ[node]·dir.
-fn extract_mode_shapes(modal_result: &Value) -> Vec<Vec<[f64; 3]>> {
+fn extract_mode_shapes(modal_result: &Value) -> Result<Vec<Vec<[f64; 3]>>, InputDecodeError> {
     modal_result_modes(modal_result)
         .iter()
         .map(read_mode_shape)
         .collect()
+}
+
+/// One `Mode`'s `(frequency_hz, damping_ratio)`: `frequency : Frequency` and
+/// `damping_ratio : Real`, both required.
+fn read_mode_params(mode: &Value) -> Result<(f64, f64), InputDecodeError> {
+    let data = structure_fields(mode, MODE)?;
+    Ok((
+        required_field(data, MODE, "frequency", &frequency_spec())?,
+        required_field(data, MODE, "damping_ratio", &dimensionless_spec())?,
+    ))
 }
 
 /// The forcing sources of a `ForcingTimeHistory` StructureInstance, cloned; empty
@@ -2717,14 +2754,25 @@ fn resolve_location_value(
     resolve_location_node(location_str, mode0_shape)
 }
 
+/// The input name a forcing source's decode diagnostics start with when its
+/// kind is not yet known.
+const FORCING_FUNCTION: &str = "ForcingFunction";
+
 /// A forcing source with its invariant (time-independent) fields pre-extracted
 /// once. Resolving each source into this form *before* the grid loop hoists the
-/// per-source `field_ref` reads — and, for `Sampled`, the `Vec<f64>` table clone
-/// — out of the per-timestep sampler, so [`ResolvedForcing::sample`] does only
-/// arithmetic. This removes the O(T) redundant field lookups/allocations per
-/// source that arose when the closed-form params were re-parsed on every one of
-/// the T timesteps.
-enum ResolvedForcing {
+/// per-source field reads — and, for `Sampled`, the `Vec<f64>` table — out of
+/// the per-timestep sampler, so [`ForcingSampler::sample`] does only
+/// arithmetic.
+struct ResolvedForcing {
+    /// The `direction : Vector3<Dimensionless>` the source pushes along.
+    direction: [f64; 3],
+    sampler: ForcingSampler,
+}
+
+/// The closed-form sampler family of the θ-solver
+/// (`reify-stdlib::modal::transient`), one variant per `ForcingFunction`
+/// conformer, with its fields in SI.
+enum ForcingSampler {
     Step {
         magnitude: f64,
         start_time: f64,
@@ -2742,44 +2790,82 @@ enum ResolvedForcing {
         times: Vec<f64>,
         forces: Vec<f64>,
     },
-    /// Unrecognised / non-struct source — contributes no force at any `t`.
-    Zero,
 }
 
 impl ResolvedForcing {
-    /// Pre-extract a forcing source's invariant fields once, dispatched by
-    /// `type_name` to the θ-solver closed-form sampler family
-    /// (`reify-stdlib::modal::transient`). An unrecognised / non-struct source
-    /// resolves to [`ResolvedForcing::Zero`].
-    fn from_value(source: &Value) -> Self {
-        let type_name = match source {
-            Value::StructureInstance(data) => data.type_name.as_str(),
-            _ => return ResolvedForcing::Zero,
+    /// Resolve one source, each field read through the spec its declaration
+    /// in `modal_analysis.ri` names. Loads stay quiet (B6): an `Undef` source,
+    /// or one with an unresolved field, is `None` and contributes no force. A
+    /// defined non-structure is not a `ForcingFunction`, and a conformer with
+    /// no sampler is an unsupported kind.
+    fn from_value(source: &Value) -> Result<Option<Self>, InputDecodeError> {
+        if matches!(source, Value::Undef) {
+            return Ok(None);
+        }
+        match Self::from_fields(structure_fields(source, FORCING_FUNCTION)?) {
+            Err(err) if err.is_unresolved() => Ok(None),
+            resolved => resolved.map(Some),
+        }
+    }
+
+    fn from_fields(data: &StructureInstanceData) -> Result<Self, InputDecodeError> {
+        let sampler = match data.type_name.as_str() {
+            "StepForce" => ForcingSampler::Step {
+                magnitude: required_field(data, "StepForce", "magnitude", &force_spec())?,
+                start_time: required_field(data, "StepForce", "start_time", &time_spec())?,
+            },
+            "HarmonicForce" => ForcingSampler::Harmonic {
+                amplitude: required_field(data, "HarmonicForce", "amplitude", &force_spec())?,
+                frequency: required_field(data, "HarmonicForce", "frequency", &frequency_spec())?,
+                phase: required_field(data, "HarmonicForce", "phase", &angle_spec())?,
+            },
+            "ImpulseForce" => ForcingSampler::Impulse {
+                impulse: required_field(data, "ImpulseForce", "impulse", &impulse_spec())?,
+                time: required_field(data, "ImpulseForce", "time", &time_spec())?,
+            },
+            "SampledForce" => ForcingSampler::Sampled {
+                times: required_list(data, "SampledForce", "time_samples", &time_spec())?,
+                forces: required_list(data, "SampledForce", "force_samples", &force_spec())?,
+            },
+            kind => {
+                return Err(InputDecodeError::new(
+                    FORCING_FUNCTION,
+                    None,
+                    DecodeFailure::UnsupportedKind {
+                        kind: kind.to_string(),
+                    },
+                ));
+            }
         };
-        let scalar = |name: &str| field_ref(source, name).map(read_scalar_si).unwrap_or(0.0);
-        match type_name {
-            "StepForce" => ResolvedForcing::Step {
-                magnitude: scalar("magnitude"),
-                start_time: scalar("start_time"),
-            },
-            "HarmonicForce" => ResolvedForcing::Harmonic {
-                amplitude: scalar("amplitude"),
-                frequency: scalar("frequency"),
-                phase: scalar("phase"),
-            },
-            "ImpulseForce" => ResolvedForcing::Impulse {
-                impulse: scalar("impulse"),
-                time: scalar("time"),
-            },
-            "SampledForce" => ResolvedForcing::Sampled {
-                times: field_ref(source, "time_samples")
-                    .map(read_real_list)
-                    .unwrap_or_default(),
-                forces: field_ref(source, "force_samples")
-                    .map(read_real_list)
-                    .unwrap_or_default(),
-            },
-            _ => ResolvedForcing::Zero,
+        let kind = sampler.structure();
+        let direction = read_vec3(
+            required_value(data, kind, "direction")?,
+            kind,
+            Some("direction"),
+            &dimensionless_spec(),
+        )?;
+        Ok(Self { direction, sampler })
+    }
+}
+
+/// The required list field `key` of `data`, each entry read through `spec`.
+fn required_list(
+    data: &StructureInstanceData,
+    input: &'static str,
+    key: &'static str,
+    spec: &crate::arg_acceptance::ArgSpec,
+) -> Result<Vec<f64>, InputDecodeError> {
+    read_list(required_value(data, input, key)?, input, Some(key), spec)
+}
+
+impl ForcingSampler {
+    /// The `ForcingFunction` conformer this sampler was read from.
+    fn structure(&self) -> &'static str {
+        match self {
+            ForcingSampler::Step { .. } => "StepForce",
+            ForcingSampler::Harmonic { .. } => "HarmonicForce",
+            ForcingSampler::Impulse { .. } => "ImpulseForce",
+            ForcingSampler::Sampled { .. } => "SampledForce",
         }
     }
 
@@ -2788,18 +2874,17 @@ impl ResolvedForcing {
     /// step (only the `Impulse` discrete-pulse approximation needs it).
     fn sample(&self, t: f64, dt: f64) -> f64 {
         match self {
-            ResolvedForcing::Step {
+            ForcingSampler::Step {
                 magnitude,
                 start_time,
             } => step_force_at(*magnitude, *start_time, t),
-            ResolvedForcing::Harmonic {
+            ForcingSampler::Harmonic {
                 amplitude,
                 frequency,
                 phase,
             } => harmonic_force_at(*amplitude, *frequency, *phase, t),
-            ResolvedForcing::Impulse { impulse, time } => impulse_force_at(*impulse, *time, t, dt),
-            ResolvedForcing::Sampled { times, forces } => sampled_force_at(times, forces, t),
-            ResolvedForcing::Zero => 0.0,
+            ForcingSampler::Impulse { impulse, time } => impulse_force_at(*impulse, *time, t, dt),
+            ForcingSampler::Sampled { times, forces } => sampled_force_at(times, forces, t),
         }
     }
 }
@@ -2875,6 +2960,28 @@ pub(crate) struct TransientTrampolineRun {
     pub(crate) reused_setup: bool,
 }
 
+/// The stdlib fn [`run_transient_response`] implements, named in its decode
+/// diagnostics.
+const TRANSIENT_RESPONSE: &str = "transient_response";
+
+impl TransientTrampolineRun {
+    /// The run that fails `transient_response` on a decode error.
+    fn decode_failed(err: InputDecodeError) -> Self {
+        Self {
+            outcome: err.into_failed(TRANSIENT_RESPONSE),
+            reused_setup: false,
+        }
+    }
+}
+
+/// `transient_response`'s `(t_start, t_end, dt)`, each read as a Time.
+fn read_time_window(value_inputs: &[Value]) -> Result<(f64, f64, f64), InputDecodeError> {
+    let time = |index: usize, input: &'static str| {
+        read_positional(positional(value_inputs, index, input)?, input, &time_spec())
+    };
+    Ok((time(2, "t_start")?, time(3, "t_end")?, time(4, "dt")?))
+}
+
 /// In-crate transient core behind [`solve_transient_response_trampoline`],
 /// adding the task-λ warm-state cache — reuse the pre-derived grid + per-mode
 /// integrators across calls whose [`TransientCacheKey`] matches — on top of
@@ -2921,9 +3028,10 @@ pub(crate) fn run_transient_response(
     // value_inputs = [modal_result, forcing, t_start, t_end, dt]
     let modal_result = value_inputs.first().cloned().unwrap_or(Value::Undef);
     let forcing = value_inputs.get(1).cloned().unwrap_or(Value::Undef);
-    let t_start = value_inputs.get(2).map(read_scalar_si).unwrap_or(0.0);
-    let t_end = value_inputs.get(3).map(read_scalar_si).unwrap_or(0.0);
-    let dt = value_inputs.get(4).map(read_scalar_si).unwrap_or(0.0);
+    let (t_start, t_end, dt) = match read_time_window(value_inputs) {
+        Ok(window) => window,
+        Err(err) => return TransientTrampolineRun::decode_failed(err),
+    };
 
     // ── (1) missing-modal-result guard ───────────────────────────────────────
     // modal_result is the primary positional input: Undef / non-ModalResult /
@@ -2954,22 +3062,17 @@ pub(crate) fn run_transient_response(
     // supplies them, so a key match over (freq, zeta, dt, t_range) fully certifies
     // the cached payload — mode shapes are explicitly excluded from the key).
     let modes = modal_result_modes(&modal_result);
-    let shapes = extract_mode_shapes(&modal_result);
+    let shapes = match extract_mode_shapes(&modal_result) {
+        Ok(shapes) => shapes,
+        Err(err) => return TransientTrampolineRun::decode_failed(err),
+    };
 
     // Collect (frequency_hz, damping_ratio) pairs for the cache key; also used
-    // to compute omega below. Borrowed from the modal_result via field_ref.
-    let mode_params: Vec<(f64, f64)> = modes
-        .iter()
-        .map(|mode| {
-            let freq = field_ref(mode, "frequency")
-                .map(read_scalar_si)
-                .unwrap_or(0.0);
-            let zeta = field_ref(mode, "damping_ratio")
-                .map(read_scalar_si)
-                .unwrap_or(0.0);
-            (freq, zeta)
-        })
-        .collect();
+    // to compute omega below.
+    let mode_params: Vec<(f64, f64)> = match modes.iter().map(read_mode_params).collect() {
+        Ok(params) => params,
+        Err(err) => return TransientTrampolineRun::decode_failed(err),
+    };
 
     // ── (4) cache lookup: try to reuse the grid + prepared integrators ────────
     // Key excludes `forcing` (cheap-varying) and mode shapes (not needed by
@@ -3023,25 +3126,31 @@ pub(crate) fn run_transient_response(
         dir: [f64; 3],
         samples: Vec<f64>,
     }
-    let projections: Vec<SourceProjection> = sources
-        .iter()
-        .map(|src| {
-            // Dispatch on the `at` Value: String → 3823 resolver; Selector →
-            // carried-topology resolution against the ModalResult's topology field
-            // → representative node (task 4122 R3b). Shares resolve_location_value
-            // with displacement_at so "force at <sel>" / "query at <sel>" agree.
-            let node = match field_ref(src, "at") {
-                Some(at_val) => resolve_location_value(at_val, Some(&modal_result), mode0_shape),
-                None => resolve_location_node("", mode0_shape),
-            };
-            let dir = field_ref(src, "direction")
-                .map(read_vec3)
-                .unwrap_or([0.0; 3]);
-            let resolved = ResolvedForcing::from_value(src);
-            let samples = grid.iter().map(|&t| resolved.sample(t, dt)).collect();
-            SourceProjection { node, dir, samples }
-        })
-        .collect();
+    let mut projections: Vec<SourceProjection> = Vec::with_capacity(sources.len());
+    for src in &sources {
+        let resolved = match ResolvedForcing::from_value(src) {
+            Ok(Some(resolved)) => resolved,
+            Ok(None) => continue,
+            Err(err) => return TransientTrampolineRun::decode_failed(err),
+        };
+        // Dispatch on the `at` Value: String → 3823 resolver; Selector →
+        // carried-topology resolution against the ModalResult's topology field
+        // → representative node (task 4122 R3b). Shares resolve_location_value
+        // with displacement_at so "force at <sel>" / "query at <sel>" agree.
+        let node = match field_ref(src, "at") {
+            Some(at_val) => resolve_location_value(at_val, Some(&modal_result), mode0_shape),
+            None => resolve_location_node("", mode0_shape),
+        };
+        let samples = grid
+            .iter()
+            .map(|&t| resolved.sampler.sample(t, dt))
+            .collect();
+        projections.push(SourceProjection {
+            node,
+            dir: resolved.direction,
+            samples,
+        });
+    }
 
     // ── (6) per-mode integration (+ cancellation poll between modes) ──────────
     let mut mode_coords: Vec<Value> = Vec::with_capacity(modes.len());
@@ -3137,7 +3246,7 @@ pub(crate) fn run_transient_response(
 ///   1. read `t_start/t_end/dt`, build the uniform grid (`uniform_time_grid`);
 ///   2. read each mode's `(ω = 2π·frequency, ζ = damping_ratio, Φ shape)`;
 ///   3. per forcing source: resolve its node (`resolve_location_node`), read its
-///      direction, and sample its scalar `p_src(tⱼ)` (`ResolvedForcing::sample`,
+///      direction, and sample its scalar `p_src(tⱼ)` (`ForcingSampler::sample`,
 ///      its invariant fields pre-resolved once per source);
 ///   4. project onto each mode: `f_i[j] = Σ_src (Φ_i[node]·dir)·p_src(tⱼ)`;
 ///   5. integrate each decoupled SDOF mode (`solve_modal_response`) → ξ_i(tⱼ);
@@ -3188,15 +3297,35 @@ pub fn displacement_at_trampoline(
         Some(h) => h,
         None => return displacement_series_outcome(Vec::new()),
     };
+    match reconstruct_displacement_at(history, value_inputs) {
+        Ok(series) => displacement_series_outcome(series),
+        Err(err) => err.into_failed(DISPLACEMENT_AT),
+    }
+}
+
+/// The stdlib fn [`displacement_at_trampoline`] implements, named in its
+/// decode diagnostics.
+const DISPLACEMENT_AT: &str = "displacement_at";
+
+/// The queried node's displacement series `u(tⱼ)` of `history`, in SI metres.
+fn reconstruct_displacement_at(
+    history: &Value,
+    value_inputs: &[Value],
+) -> Result<Vec<f64>, InputDecodeError> {
     let location = value_inputs.get(1);
-    let direction = value_inputs.get(2).map(read_vec3).unwrap_or([0.0; 3]);
+    let direction = read_vec3(
+        positional(value_inputs, 2, "direction")?,
+        "direction",
+        None,
+        &dimensionless_spec(),
+    )?;
 
     // The echoed ModalResult carries both the per-mode node shapes Φᵢ (Φᵢ[node]
     // supplies each projection coefficient) and — task 4122 R3b — the `topology`
     // field a `Selector` location resolves against. Borrowed off the history.
     let modal_result = field_ref(history, "modal_result");
     let shapes = match modal_result {
-        Some(mr) => extract_mode_shapes(mr),
+        Some(mr) => extract_mode_shapes(mr)?,
         None => Vec::new(),
     };
     let mode0_shape: &[[f64; 3]] = shapes.first().map(Vec::as_slice).unwrap_or(&[]);
@@ -3218,11 +3347,21 @@ pub fn displacement_at_trampoline(
 
     // The stored modal-coordinate matrix ξ_i(tⱼ) as Vec<Vec<f64>> (List<List<Real>>).
     let mode_coords: Vec<Vec<f64>> = match field_ref(history, "mode_coords") {
-        Some(Value::List(series)) => series.iter().map(read_real_list).collect(),
+        Some(Value::List(series)) => series
+            .iter()
+            .map(|coords| {
+                read_list(
+                    coords,
+                    "DisplacementTimeHistory",
+                    Some("mode_coords"),
+                    &dimensionless_spec(),
+                )
+            })
+            .collect::<Result<_, _>>()?,
         _ => Vec::new(),
     };
 
-    displacement_series_outcome(reconstruct_series(&coeffs, &mode_coords))
+    Ok(reconstruct_series(&coeffs, &mode_coords))
 }
 
 /// Wrap a reconstructed displacement series in a `ComputeOutcome::Completed`
@@ -3244,41 +3383,6 @@ fn displacement_series_outcome(series: Vec<f64>) -> ComputeOutcome {
     }
 }
 
-/// Read an SI scalar magnitude from a numeric `Value`, tolerating the runtime
-/// spellings a stdlib numeric field takes: `Scalar { si_value }` (dimensioned —
-/// geometry, density, E), `Real`, and `Int`. Non-numeric values read as `0.0`
-/// (the upstream type-checker guarantees the shape; this is a defensive floor,
-/// not a validation point — mirrors buckling's permissive scalar reads).
-fn read_scalar_si(val: &Value) -> f64 {
-    match val {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        Value::Int(n) => *n as f64,
-        _ => 0.0,
-    }
-}
-
-/// Extract `IsotropicElastic { youngs_modulus, poisson_ratio }` from the
-/// material StructureInstance (`youngs_modulus : Scalar<Pressure>`,
-/// `poisson_ratio : Real`). Missing fields read as `0.0` via [`read_scalar_si`]
-/// (defensive; the type-checker guarantees presence for a real ElasticMaterial).
-fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
-    let mut youngs_modulus = 0.0;
-    let mut poisson_ratio = 0.0;
-    if let Value::StructureInstance(data) = val {
-        if let Some(v) = data.fields.get("youngs_modulus") {
-            youngs_modulus = read_scalar_si(v);
-        }
-        if let Some(v) = data.fields.get("poisson_ratio") {
-            poisson_ratio = read_scalar_si(v);
-        }
-    }
-    IsotropicElastic {
-        youngs_modulus,
-        poisson_ratio,
-    }
-}
-
 /// Read the per-material hysteretic loss factor η off a material value.
 ///
 /// `Some(η)` means "this material conforms to `trait Damped`
@@ -3288,11 +3392,10 @@ fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
 /// `E_ModalDampingMaterialNotDamped` rejection in [`run_modal_analysis`], not a
 /// value to substitute a default for.
 ///
-/// NON-DEFENSIVE ON PURPOSE — note the asymmetry with the neighbouring
-/// [`extract_isotropic_material`], which reads a MISSING field as `0.0`. That
-/// choice is right there: the type-checker guarantees `youngs_modulus` /
-/// `poisson_ratio` on any real `ElasticMaterial`, so its floor is unreachable
-/// scaffolding. Here the opposite is true and measured:
+/// NON-DEFENSIVE ON PURPOSE. The `ElasticMaterial` decoder treats a missing
+/// `youngs_modulus` / `poisson_ratio` as a malformed input, because the
+/// type-checker guarantees both on any real `ElasticMaterial`. Here the
+/// absence is the signal, and that is measured:
 /// `modal_analysis(material : ElasticMaterial, …)` does NOT require `Damped`, so
 /// a `structure def PlainSteel : ElasticMaterial { … }` type-checks, evaluates
 /// clean, and reaches this fn with no `loss_factor` at all. The absence is a
@@ -3303,40 +3406,25 @@ fn extract_isotropic_material(val: &Value) -> IsotropicElastic {
 /// `Some(0.0)`, accepted) distinct from a NON-conformer (`None`, rejected) — a
 /// distinction a bare `f64` cannot carry.
 ///
-/// The numeric read is gated on the value actually BEING one of the spellings a
-/// stdlib `Real` field takes, rather than delegating to [`read_scalar_si`]
-/// unconditionally: that helper's `_ => 0.0` floor is precisely the behaviour
-/// that must not fire here. `loss_factor : Real` is DIMENSIONLESS, so the
-/// `Value::Scalar` arm is gated on that dimension too — [`read_scalar_si`] is
-/// dimension-BLIND (it takes `si_value` off any `Scalar` whatsoever), so an
-/// ungated arm would read a `Scalar<Pressure>` — a hand-built or mis-typed
-/// `loss_factor` — straight through as a loss factor and turn it into ζ = η/2.
-/// That is the same silent-substitution shape the `Option` exists to prevent,
-/// one variant down; a dimensioned `loss_factor` is not a conformer, it is a
-/// malformed one, and `None` routes it to `E_ModalDampingMaterialNotDamped`
-/// rather than to a fabricated damping ratio. A negative or non-finite η is
-/// rejected for the same reason — `trait Damped`'s `constraint loss_factor >= 0`
+/// `loss_factor : Real` reads through `dimensionless_spec` at
+/// `Damped.loss_factor`, under the one refusal rule: a present value the spec
+/// refuses (a dimensioned `Scalar`, a non-number) is an `Err` naming that path,
+/// never a silent non-conformer, and an `Undef` one is unresolved. A negative
+/// or non-finite η is `None` — `trait Damped`'s `constraint loss_factor >= 0`
 /// is the CHECK-time gate on the author surface, but a hand-built runtime value
 /// can carry a NaN past it, and a NaN ζ must not reach `Mode.damping_ratio`.
-fn extract_loss_factor(val: &Value) -> Option<f64> {
-    let Value::StructureInstance(data) = val else {
-        return None;
+fn extract_loss_factor(material: &Value) -> Result<Option<f64>, InputDecodeError> {
+    let Value::StructureInstance(data) = material else {
+        return Ok(None);
     };
-    let raw = data.fields.get("loss_factor")?;
-    // Gate on the VARIANT (and, for `Scalar`, on the dimension), then convert.
-    // `read_scalar_si` is reused for the conversion so the tolerated spellings
-    // cannot drift apart from it, but its catch-all is deliberately unreachable
-    // from here and its dimension-blindness is deliberately fenced off.
-    let tolerated = match raw {
-        Value::Real(_) | Value::Int(_) => true,
-        Value::Scalar { dimension, .. } => *dimension == DimensionVector::DIMENSIONLESS,
-        _ => false,
-    };
-    if !tolerated {
-        return None;
+    match required_field(data, "Damped", "loss_factor", &dimensionless_spec()) {
+        Ok(eta) => Ok((eta.is_finite() && eta >= 0.0).then_some(eta)),
+        Err(InputDecodeError {
+            failure: DecodeFailure::Missing,
+            ..
+        }) => Ok(None),
+        Err(err) => Err(err),
     }
-    let eta = read_scalar_si(raw);
-    (eta.is_finite() && eta >= 0.0).then_some(eta)
 }
 
 /// Extract the eigensolver knobs `(n_modes, tol, max_iters, sigma)` from a
@@ -3418,32 +3506,34 @@ fn extract_shift_frequency_hz(options: &Value) -> f64 {
 
 /// Extract the unit excitation `reference_direction` (along which per-mode
 /// participation mass is projected) from a `ModalOptions` StructureInstance.
-/// Reads the `Value::Vector` field's three components (each via
-/// [`read_scalar_si`]) and normalizes to a unit vector — realizing the
-/// `reference_direction.norm() > 0` invariant deferred from the structure-def to
-/// this trampoline (the `reference_direction` field note on `structure def
-/// ModalOptions`, modal_analysis.ri — cited by name, not by line: that block has
-/// moved twice since the line range originally written here). A missing / degenerate
-/// (zero-norm) direction falls back to the slender bending default `[0, 0, 1]`.
-fn extract_reference_direction(val: &Value) -> [f64; 3] {
-    let default_dir = [0.0, 0.0, 1.0];
-    let raw = match val {
-        Value::StructureInstance(data) => match data.fields.get("reference_direction") {
-            Some(Value::Vector(items)) if items.len() == 3 => [
-                read_scalar_si(&items[0]),
-                read_scalar_si(&items[1]),
-                read_scalar_si(&items[2]),
-            ],
-            _ => return default_dir,
-        },
-        _ => return default_dir,
+/// Reads the `Value::Vector` field's three components as dimensionless numbers
+/// at `ModalOptions.reference_direction` and normalizes to a unit vector —
+/// realizing the `reference_direction.norm() > 0` invariant deferred from the
+/// structure-def to this trampoline (the `reference_direction` field note on
+/// `structure def ModalOptions`, modal_analysis.ri — cited by name, not by
+/// line: that block has moved twice since the line range originally written
+/// here). A missing / non-vector / degenerate (zero-norm) direction falls back
+/// to the slender bending default `[0, 0, 1]`.
+fn extract_reference_direction(options: &Value) -> Result<[f64; 3], InputDecodeError> {
+    const BENDING: [f64; 3] = [0.0, 0.0, 1.0];
+    let Value::StructureInstance(data) = options else {
+        return Ok(BENDING);
+    };
+    let raw = match data.fields.get("reference_direction") {
+        Some(direction @ Value::Vector(items)) if items.len() == 3 => read_vec3(
+            direction,
+            "ModalOptions",
+            Some("reference_direction"),
+            &dimensionless_spec(),
+        )?,
+        _ => return Ok(BENDING),
     };
     let norm = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
-    if norm > 0.0 {
+    Ok(if norm > 0.0 {
         [raw[0] / norm, raw[1] / norm, raw[2] / norm]
     } else {
-        default_dir
-    }
+        BENDING
+    })
 }
 
 /// How a `DampingDescriptor` value classifies against the refinements this
@@ -3495,12 +3585,12 @@ enum DampingKind {
 /// and a non-structure `val` all classify as [`DampingKind::Absent`]. This
 /// wrapper owns only that field lookup; the type-name discrimination itself is
 /// [`classify_descriptor`].
-fn classify_damping(val: &Value) -> DampingKind {
+fn classify_damping(val: &Value) -> Result<DampingKind, InputDecodeError> {
     let Value::StructureInstance(data) = val else {
-        return DampingKind::Absent;
+        return Ok(DampingKind::Absent);
     };
     let Some(damping) = data.fields.get("damping") else {
-        return DampingKind::Absent;
+        return Ok(DampingKind::Absent);
     };
     classify_descriptor(damping)
 }
@@ -3523,24 +3613,24 @@ fn classify_damping(val: &Value) -> DampingKind {
 /// `DampingDescriptor`, so it is classified by this same code. That is what
 /// guarantees a descriptor added here is automatically understood in `extra`
 /// position too, rather than needing a second, drifting match.
-fn classify_descriptor(val: &Value) -> DampingKind {
+///
+/// `RayleighDamping`'s `alpha : Frequency` and `beta : Time` are required, and
+/// read under the transitional bare rule (`accept_field_or_bare`): a legacy
+/// bare number still reads as SI, a wrong dimension is refused.
+fn classify_descriptor(val: &Value) -> Result<DampingKind, InputDecodeError> {
     let Value::StructureInstance(descriptor) = val else {
-        return DampingKind::Absent;
+        return Ok(DampingKind::Absent);
     };
-    match descriptor.type_name.as_str() {
-        "RayleighDamping" => {
-            let alpha = descriptor
-                .fields
-                .get("alpha")
-                .map(read_scalar_si)
-                .unwrap_or(0.0);
-            let beta = descriptor
-                .fields
-                .get("beta")
-                .map(read_scalar_si)
-                .unwrap_or(0.0);
-            DampingKind::Rayleigh { alpha, beta }
-        }
+    Ok(match descriptor.type_name.as_str() {
+        "RayleighDamping" => DampingKind::Rayleigh {
+            alpha: required_field_or_bare(
+                descriptor,
+                "RayleighDamping",
+                "alpha",
+                &frequency_spec(),
+            )?,
+            beta: required_field_or_bare(descriptor, "RayleighDamping", "beta", &time_spec())?,
+        },
         "NoDamping" => DampingKind::NoDamping,
         // Task #6878. A missing / `Value::Undef` `extra` recurses to `Absent`
         // through the guard above: the stdlib default
@@ -3551,10 +3641,10 @@ fn classify_descriptor(val: &Value) -> DampingKind {
         "MaterialDamping" => DampingKind::Material {
             extra: Box::new(classify_descriptor(
                 descriptor.fields.get("extra").unwrap_or(&Value::Undef),
-            )),
+            )?),
         },
         other => DampingKind::Unsupported(other.to_string()),
-    }
+    })
 }
 
 /// The per-solve damping contributions [`run_modal_analysis`] applies, resolved
@@ -3649,7 +3739,8 @@ fn plan_modal_damping(
         beta: 0.0,
     };
     let no_diagnostics = Vec::new();
-    Ok(match classify_damping(options) {
+    let damping = classify_damping(options).map_err(|err| err.into_failed(MODAL_ANALYSIS))?;
+    Ok(match damping {
         DampingKind::Absent | DampingKind::NoDamping => (UNDAMPED, no_diagnostics),
         DampingKind::Rayleigh { alpha, beta } => (
             ModalDampingPlan {
@@ -3691,7 +3782,9 @@ fn plan_modal_damping(
             // this descriptor asks, and `Err` is the only honest reply. Folding
             // `None` to 0.0 here would be precisely the silent ζ = 0 PRD §C6
             // forbids, reconstructed inside the fn built to prevent it.
-            let Some(eta) = extract_loss_factor(material) else {
+            let Some(eta) =
+                extract_loss_factor(material).map_err(|err| err.into_failed(MODAL_ANALYSIS))?
+            else {
                 return Err(material_not_damped_outcome(material_type_name(material)));
             };
             let mut diagnostics = Vec::new();
@@ -4595,7 +4688,7 @@ mod tests {
         modal_convergence_warning,
         mode_shape_value,
         nearest_node,
-        placeholder_part, plan_modal_damping, read_real_list, read_scalar_si,
+        placeholder_part, plan_modal_damping,
         resolve_location_node, rigid_body_mode_diagnostic, run_modal_analysis,
         run_transient_response,
         ModalSolveFault, shift_window_is_reportable,
@@ -4886,6 +4979,107 @@ mod tests {
             length_scalar(height),
             modal_options(opts),
         ]
+    }
+
+    // ── S15 α T1/T2 (task 8674): free vibration decodes an ElasticMaterial ──
+
+    fn run_free_vibration(material: Value) -> ComputeOutcome {
+        let mut inputs = modal_inputs(0.5, 0.05, 0.05, 7850.0, 2, None);
+        inputs[0] = material;
+        solve_modal_analysis_trampoline(
+            &inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    /// The presets carry a positive density, so the density guard passes and
+    /// the material decode is what fails, with ONE coded Error naming the
+    /// trait path.
+    #[test]
+    fn free_vibration_fails_a_malformed_elastic_material_naming_the_trait_path() {
+        use crate::compute_targets::stdlib_inputs::test_support::{
+            assert_one_coded_error, material_missing_poisson_ratio,
+            material_with_length_youngs_modulus,
+        };
+        assert_one_coded_error(
+            &run_free_vibration(material_missing_poisson_ratio()),
+            reify_core::DiagnosticCode::ComputeInputMalformed,
+            "ElasticMaterial.poisson_ratio",
+        );
+        assert_one_coded_error(
+            &run_free_vibration(material_with_length_youngs_modulus()),
+            reify_core::DiagnosticCode::DimensionedArgRejected,
+            "ElasticMaterial.youngs_modulus",
+        );
+    }
+
+    fn run_free_vibration_with_dim(index: usize, dim: Value) -> ComputeOutcome {
+        let mut inputs = modal_inputs(0.5, 0.05, 0.05, 7850.0, 2, None);
+        inputs[index] = dim;
+        solve_modal_analysis_trampoline(
+            &inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    /// The beam geometry reads through `length_spec`: a dimension other than
+    /// Length is rejected, a bare number is malformed, and an unresolved one
+    /// fails quietly. None of them is read as metres.
+    #[test]
+    fn free_vibration_reads_its_beam_geometry_as_lengths() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        for (index, arg) in [(1, "length"), (2, "width"), (3, "height")] {
+            let mass = Value::Scalar {
+                si_value: 0.05,
+                dimension: DimensionVector::MASS,
+            };
+            let rejected = run_free_vibration_with_dim(index, mass);
+            assert_one_coded_error(
+                &rejected,
+                reify_core::DiagnosticCode::DimensionedArgRejected,
+                &format!("modal_analysis: {arg} argument expects Length"),
+            );
+            assert_one_coded_error(
+                &run_free_vibration_with_dim(index, Value::Real(0.05)),
+                reify_core::DiagnosticCode::ComputeInputMalformed,
+                arg,
+            );
+            match run_free_vibration_with_dim(index, Value::Undef) {
+                ComputeOutcome::Failed { diagnostics, .. } => {
+                    assert!(diagnostics.is_empty(), "{arg}: {diagnostics:?}")
+                }
+                other => panic!("an Undef {arg} must fail quietly, got {other:?}"),
+            }
+        }
+    }
+
+    /// An unresolved modulus fails quietly: Undef in, Undef out.
+    #[test]
+    fn free_vibration_fails_an_unresolved_youngs_modulus_quietly() {
+        use crate::compute_targets::stdlib_inputs::test_support::{
+            hand_built_material, steel_density,
+        };
+        let material = hand_built_material(vec![
+            ("youngs_modulus", Value::Undef),
+            ("poisson_ratio", Value::Real(0.29)),
+            ("density", steel_density()),
+        ]);
+        match run_free_vibration(material) {
+            ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            } => {
+                assert!(diagnostics.is_empty(), "{diagnostics:?}");
+                assert!(structured_detail.is_empty());
+            }
+            other => panic!("an Undef youngs_modulus must fail quietly, got {other:?}"),
+        }
     }
 
     /// Number of `Mode`s in a `Completed` `ModalResult` outcome (panics if the
@@ -6964,8 +7158,9 @@ mod tests {
     /// Fields are DIMENSIONED (`Frequency`, `Time`) to match both the stdlib
     /// declaration (task #6093) and what the migrated corpus evaluates to, so
     /// these fixtures cannot pass on a shape real input no longer produces.
-    /// `read_scalar_si` stays deliberately tolerant of bare `Real`; gating it
-    /// belongs to docs/prds/v0_6/dimension-checked-readers.md.
+    /// The Rayleigh read stays deliberately tolerant of bare `Real`
+    /// (`accept_field_or_bare`); retiring that tolerance belongs to
+    /// docs/prds/v0_6/dimension-checked-readers.md.
     fn rayleigh_damping(alpha: f64, beta: f64) -> Value {
         struct_instance(
             "RayleighDamping",
@@ -6986,6 +7181,11 @@ mod tests {
                 ),
             ],
         )
+    }
+
+    /// [`classify_damping`] of options that must decode.
+    fn classified(options: &Value) -> DampingKind {
+        classify_damping(options).expect("these damping options decode")
     }
 
     /// Assemble a `ModalOptions`-shaped instance from the given fields.
@@ -7335,25 +7535,29 @@ mod tests {
         };
 
         // Non-unit input is normalized to a unit vector.
-        let got = extract_reference_direction(&dir(3.0, 0.0, 0.0));
+        let got = extract_reference_direction(&dir(3.0, 0.0, 0.0)).expect("decodes");
         assert!((got[0] - 1.0).abs() < 1e-12 && got[1] == 0.0 && got[2] == 0.0);
-        let got = extract_reference_direction(&dir(0.0, 0.0, 2.0));
+        let got = extract_reference_direction(&dir(0.0, 0.0, 2.0)).expect("decodes");
         assert!(got[0] == 0.0 && got[1] == 0.0 && (got[2] - 1.0).abs() < 1e-12);
 
         // Zero-norm → bending default; missing field → default; non-struct → default.
         assert_eq!(
             extract_reference_direction(&dir(0.0, 0.0, 0.0)),
-            [0.0, 0.0, 1.0]
+            Ok([0.0, 0.0, 1.0])
         );
         assert_eq!(
             extract_reference_direction(&modal_options(vec![])),
-            [0.0, 0.0, 1.0]
+            Ok([0.0, 0.0, 1.0])
         );
-        assert_eq!(extract_reference_direction(&Value::Undef), [0.0, 0.0, 1.0]);
+        assert_eq!(
+            extract_reference_direction(&Value::Undef),
+            Ok([0.0, 0.0, 1.0])
+        );
     }
 
-    /// `read_scalar_si`'s BARE-`Value::Real` tolerance on the Rayleigh
-    /// coefficients, asserted through the PRODUCTION seam (task #6093
+    /// The BARE-`Value::Real` tolerance on the Rayleigh coefficients (the
+    /// transitional bare rule of `accept_field_or_bare`), asserted through the
+    /// PRODUCTION seam (task #6093
     /// amendment; re-targeted onto `classify_damping` by the #6878 amendment
     /// pass, which deleted the test-only `extract_damping` view this used to be
     /// written against — a witness that pins a `#[cfg(test)]` helper cannot
@@ -7378,10 +7582,10 @@ mod tests {
             modal_options(vec![("damping".to_string(), rayleigh_damping(0.5, 1e-6))]);
         assert_eq!(
             classify_damping(&dimensioned),
-            DampingKind::Rayleigh {
+            Ok(DampingKind::Rayleigh {
                 alpha: 0.5,
                 beta: 1e-6
-            }
+            })
         );
 
         // Legacy bare-`Real` damping fields still read identically to the
@@ -7401,7 +7605,7 @@ mod tests {
             classify_damping(&dimensioned),
             "classify_damping must fold bare Value::Real fields to the same \
              (alpha, beta) as the dimensioned Value::Scalar fields — \
-             read_scalar_si's tolerance is deliberate and is not this task's \
+             the bare tolerance is deliberate and is not this task's \
              to tighten (docs/prds/v0_6/dimension-checked-readers.md)"
         );
     }
@@ -7411,10 +7615,9 @@ mod tests {
     ///
     /// ## Why this helper is deliberately NON-defensive
     ///
-    /// Its neighbour [`extract_isotropic_material`] reads a MISSING field as
-    /// `0.0`, and that is correct there: the type-checker guarantees
-    /// `youngs_modulus` / `poisson_ratio` are present on any real
-    /// `ElasticMaterial`, so the floor is unreachable defensive scaffolding.
+    /// The `ElasticMaterial` decoder treats a MISSING `youngs_modulus` /
+    /// `poisson_ratio` as a malformed input, because the type-checker
+    /// guarantees both are present on any real `ElasticMaterial`.
     ///
     /// Here the opposite is true and it is MEASURED, not assumed.
     /// `modal_analysis(material : ElasticMaterial, …)`
@@ -7433,15 +7636,12 @@ mod tests {
     /// that distinction, and collapsing them is the single most likely way to
     /// get this wrong.
     ///
-    /// The numeric-spelling arms mirror [`read_scalar_si`]'s tolerated shapes:
-    /// `loss_factor : Real` is dimensionless, but a `Value::Scalar` spelling
-    /// must not be mis-read as absent. The rejection arms are what
-    /// `read_scalar_si` alone cannot give — its `_ => 0.0` floor is exactly the
-    /// behaviour that must NOT fire here, and its DIMENSION-BLINDNESS is the
-    /// second thing it cannot give: it takes `si_value` off any `Scalar`
-    /// whatsoever, so both sides of the dimension gate are asserted below
-    /// (DIMENSIONLESS accepted, PRESSURE rejected). Without the rejection arm a
-    /// dimensioned `loss_factor` would silently become ζ = η/2.
+    /// The accepted spellings are `dimensionless_spec`'s: `loss_factor : Real`
+    /// is dimensionless, but a dimensionless `Value::Scalar` spelling must not
+    /// be mis-read as absent. A value that spec refuses (a dimensioned
+    /// `Scalar`, a non-number) is a refused input rather than a non-conformer,
+    /// pinned through the trampoline by
+    /// `material_damping_refuses_a_loss_factor_the_spec_refuses`.
     ///
     /// RED before step-6: `extract_loss_factor` does not exist.
     #[test]
@@ -7458,13 +7658,13 @@ mod tests {
         // ── ACCEPTED: the numeric spellings a stdlib `Real` field can take ──
         assert_eq!(
             extract_loss_factor(&material_with(Value::Real(0.0006))),
-            Some(0.0006),
+            Ok(Some(0.0006)),
             "a `Real` loss_factor — the shape Steel_AISI_1045 actually \
              evaluates to — must read back exactly"
         );
         assert_eq!(
             extract_loss_factor(&material_with(Value::Int(0))),
-            Some(0.0),
+            Ok(Some(0.0)),
             "an `Int` loss_factor must read as a conforming material, not as \
              absent"
         );
@@ -7473,11 +7673,10 @@ mod tests {
                 si_value: 0.02,
                 dimension: DimensionVector::DIMENSIONLESS,
             })),
-            Some(0.02),
+            Ok(Some(0.02)),
             "a dimensionless `Scalar` spelling must read as a conforming \
              material — `loss_factor : Real` is dimensionless, but a Scalar \
-             spelling must not be mistaken for absence (mirrors \
-             read_scalar_si's tolerated shapes)"
+             spelling must not be mistaken for absence"
         );
 
         // η = 0 IS A CONFORMER. This is the boundary most likely to be wrongly
@@ -7486,7 +7685,7 @@ mod tests {
         // declared a loss factor at all, even though both give ζ_material = 0.
         assert_eq!(
             extract_loss_factor(&material_with(Value::Real(0.0))),
-            Some(0.0),
+            Ok(Some(0.0)),
             "η = 0.0 is an explicitly UNDAMPED CONFORMER and must NOT collapse \
              to None — a `Damped` material that declares zero loss is valid \
              input, not a rejection"
@@ -7501,32 +7700,17 @@ mod tests {
                     ("poisson_ratio".to_string(), Value::Real(0.29)),
                 ],
             )),
-            None,
+            Ok(None),
             "a StructureInstance with NO loss_factor field is the B8 case: an \
              ElasticMaterial that does not conform to `Damped`. This is THE \
              signal — it must be None, never Some(0.0)"
         );
-        assert_eq!(
-            extract_loss_factor(&material_with(Value::String("0.02".to_string()))),
-            None,
-            "a present but non-numeric loss_factor must be None — \
-             read_scalar_si's `_ => 0.0` floor is precisely what must not fire \
-             here"
-        );
-        assert_eq!(
-            extract_loss_factor(&material_with(Value::Scalar {
-                si_value: 0.02,
-                dimension: DimensionVector::PRESSURE,
-            })),
-            None,
-            "a DIMENSIONED loss_factor must be None — `loss_factor : Real` is \
-             dimensionless, and read_scalar_si is dimension-blind, so an \
-             ungated Scalar arm would read 0.02 Pa straight through as η and \
-             fabricate ζ = 0.01 for it. The dimension gate is the fence"
-        );
+        // A present loss_factor the dimensionless spec refuses (a String, a
+        // PRESSURE Scalar) is a refused input, not a non-conformer:
+        // `material_damping_refuses_a_loss_factor_the_spec_refuses` pins it.
         assert_eq!(
             extract_loss_factor(&Value::Undef),
-            None,
+            Ok(None),
             "a non-StructureInstance material value must be None"
         );
 
@@ -7538,7 +7722,7 @@ mod tests {
         for bad in [-1e-6, -0.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert_eq!(
                 extract_loss_factor(&material_with(Value::Real(bad))),
-                None,
+                Ok(None),
                 "a negative or non-finite η ({bad}) must be rejected — \
                  `trait Damped`'s `constraint loss_factor >= 0` is the \
                  check-time gate, but the trampoline must not propagate a \
@@ -7597,7 +7781,7 @@ mod tests {
         // is — but the trampoline must not ASSUME a well-formed value, and an
         // arm that silently invented `NoDamping` here would be claiming to have
         // seen a default that was never written.
-        match classify_damping(&material_options(vec![])) {
+        match classified(&material_options(vec![])) {
             DampingKind::Material { extra } => assert_eq!(
                 *extra,
                 DampingKind::Absent,
@@ -7610,7 +7794,7 @@ mod tests {
 
         // (ii) `extra: NoDamping()` — the stdlib default, i.e. what every real
         // author-surface `MaterialDamping()` actually carries.
-        match classify_damping(&material_options(vec![(
+        match classified(&material_options(vec![(
             "extra".to_string(),
             struct_instance("NoDamping", vec![]),
         )])) {
@@ -7627,7 +7811,7 @@ mod tests {
         // at the author surface. The coefficients must survive classification
         // intact, because the producer calls `rayleigh_damping_ratio` on them
         // verbatim.
-        match classify_damping(&material_options(vec![(
+        match classified(&material_options(vec![(
             "extra".to_string(),
             rayleigh_damping(0.5, 1e-6),
         )])) {
@@ -7647,7 +7831,7 @@ mod tests {
         // (iv) `extra: <a refinement this trampoline does not implement>`. The
         // nested descriptor is carried, never flattened away: its runtime
         // type_name is what step-12's `W_ModalDampingUnsupportedExtra` names.
-        match classify_damping(&material_options(vec![(
+        match classified(&material_options(vec![(
             "extra".to_string(),
             struct_instance("HystereticDamping", vec![]),
         )])) {
@@ -10068,6 +10252,25 @@ mod tests {
         ])
     }
 
+    /// The SI magnitude of a numeric result value, read test-locally so the
+    /// assertions do not lean on a production reader.
+    fn si_of(value: &Value) -> f64 {
+        match value {
+            Value::Scalar { si_value, .. } => *si_value,
+            Value::Real(r) => *r,
+            Value::Int(n) => *n as f64,
+            other => panic!("expected a number, got {other:?}"),
+        }
+    }
+
+    /// [`si_of`] over every entry of a `Value::List`.
+    fn si_list(value: &Value) -> Vec<f64> {
+        match value {
+            Value::List(items) => items.iter().map(si_of).collect(),
+            other => panic!("expected a list, got {other:?}"),
+        }
+    }
+
     /// A `Time` scalar (SI seconds), as the trampoline reads `t_start/t_end/dt`.
     fn time_scalar(s: f64) -> Value {
         Value::Scalar {
@@ -10249,7 +10452,7 @@ mod tests {
                     "t_samples length must equal the grid count"
                 );
                 assert!(
-                    ts.iter().all(|v| read_scalar_si(v).is_finite()),
+                    ts.iter().all(|v| si_of(v).is_finite()),
                     "every t_sample must be finite",
                 );
             }
@@ -10273,7 +10476,7 @@ mod tests {
                                 "mode_coords[{i}] inner length must equal n_times",
                             );
                             assert!(
-                                series.iter().all(|v| read_scalar_si(v).is_finite()),
+                                series.iter().all(|v| si_of(v).is_finite()),
                                 "mode_coords[{i}] must be all finite",
                             );
                         }
@@ -10713,7 +10916,7 @@ mod tests {
         let n_times = fx.n_times;
 
         // Invoke the trampoline for `location` and return the List<Length> as
-        // Vec<f64> of SI metres (`read_scalar_si` tolerates either spelling).
+        // Vec<f64> of SI metres.
         let query = |location: &str| -> Vec<f64> {
             let value_inputs = vec![
                 fx.history.clone(),
@@ -10747,10 +10950,10 @@ mod tests {
                     );
                     assert_eq!(items.len(), n_times, "series length must equal n_times");
                     assert!(
-                        items.iter().map(read_scalar_si).all(f64::is_finite),
+                        items.iter().map(si_of).all(f64::is_finite),
                         "every reconstructed sample must be finite",
                     );
-                    items.iter().map(read_scalar_si).collect()
+                    items.iter().map(si_of).collect()
                 }
                 other => panic!("displacement_at must return a Value::List; got {other:?}"),
             }
@@ -10938,11 +11141,513 @@ mod tests {
         };
         match result {
             Value::StructureInstance(d) => match d.fields.get("mode_coords") {
-                Some(Value::List(series)) => series.iter().map(read_real_list).collect(),
+                Some(Value::List(series)) => series.iter().map(si_list).collect(),
                 other => panic!("mode_coords must be a Value::List; got {other:?}"),
             },
             other => panic!("expected a DisplacementTimeHistory StructureInstance; got {other:?}"),
         }
+    }
+
+    // ── S15 α (task 8674): transient_response / displacement_at decode their numbers ──
+
+    fn length_value(si: f64) -> Value {
+        Value::Scalar {
+            si_value: si,
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    /// `value`, a StructureInstance, with field `key` set to `field`, or
+    /// removed when `field` is `None`.
+    fn with_field(value: Value, key: &str, field: Option<Value>) -> Value {
+        let Value::StructureInstance(mut data) = value else {
+            panic!("with_field edits a StructureInstance");
+        };
+        match field {
+            Some(field) => data.fields.insert(key.to_string(), field),
+            None => data.fields.remove(&key.to_string()),
+        }
+        Value::StructureInstance(data)
+    }
+
+    /// The two-mode tip transient's well-formed inputs, with mode 0 passed
+    /// through `edit_mode0`.
+    fn tip_transient_inputs(edit_mode0: impl FnOnce(Value) -> Value) -> Vec<Value> {
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        transient_inputs(
+            modal_result_with_modes(vec![edit_mode0(mode0), mode1]),
+            forcing_history(vec![step_force("tip", [0.0, 0.0, 1.0], 10.0, 0.0)]),
+            0.0,
+            0.1,
+            0.005,
+        )
+    }
+
+    fn run_transient(inputs: &[Value]) -> ComputeOutcome {
+        solve_transient_response_trampoline(
+            inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    fn run_displacement_at(inputs: &[Value]) -> ComputeOutcome {
+        displacement_at_trampoline(inputs, &[], &Value::Undef, None, &CancellationHandle::new())
+    }
+
+    fn assert_fails_quietly(outcome: &ComputeOutcome, what: &str) {
+        match outcome {
+            ComputeOutcome::Failed {
+                diagnostics,
+                structured_detail,
+            } => {
+                assert!(diagnostics.is_empty(), "{what}: {diagnostics:?}");
+                assert!(structured_detail.is_empty(), "{what}");
+            }
+            other => panic!("{what} must fail quietly, got {other:?}"),
+        }
+    }
+
+    /// `t_start`, `t_end` and `dt` read through `time_spec`: a Length is
+    /// rejected naming the arg, and an unresolved `dt` fails quietly rather
+    /// than reading as 0 s.
+    #[test]
+    fn transient_response_reads_its_time_parameters_as_times() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        for (index, arg) in [(2, "t_start"), (3, "t_end"), (4, "dt")] {
+            let mut inputs = tip_transient_inputs(|mode| mode);
+            inputs[index] = length_value(0.01);
+            assert_one_coded_error(
+                &run_transient(&inputs),
+                reify_core::DiagnosticCode::DimensionedArgRejected,
+                &format!("transient_response: {arg} argument expects Time"),
+            );
+        }
+        let mut inputs = tip_transient_inputs(|mode| mode);
+        inputs[4] = Value::Undef;
+        assert_fails_quietly(&run_transient(&inputs), "an Undef dt");
+    }
+
+    /// Each `Mode` of the echoed ModalResult reads through its declared
+    /// types: `frequency : Frequency`, `shape : List<Vector3<Real>>`,
+    /// `damping_ratio : Real`.
+    #[test]
+    fn transient_response_reads_each_mode_through_its_declared_types() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        use reify_core::DiagnosticCode::{ComputeInputMalformed, DimensionedArgRejected};
+
+        let frequency = run_transient(&tip_transient_inputs(|mode| {
+            with_field(mode, "frequency", Some(length_value(40.0)))
+        }));
+        assert_one_coded_error(
+            &frequency,
+            DimensionedArgRejected,
+            "transient_response: Mode.frequency argument expects Frequency",
+        );
+
+        let length_shape = Value::List(vec![
+            vec3_value([0.0; 3]),
+            vec3_value([0.0, 0.0, 0.5]),
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), length_value(1.0)]),
+        ]);
+        let shape = run_transient(&tip_transient_inputs(|mode| {
+            with_field(mode, "shape", Some(length_shape))
+        }));
+        assert_one_coded_error(
+            &shape,
+            DimensionedArgRejected,
+            "transient_response: Mode.shape argument expects Real",
+        );
+
+        let no_damping_ratio = run_transient(&tip_transient_inputs(|mode| {
+            with_field(mode, "damping_ratio", None)
+        }));
+        assert_one_coded_error(
+            &no_damping_ratio,
+            ComputeInputMalformed,
+            "Mode.damping_ratio",
+        );
+    }
+
+    /// `displacement_at` reads its direction as a dimensionless Vector3 (an
+    /// absent one is malformed, not the zero vector) and each stored modal
+    /// coordinate as a dimensionless number.
+    #[test]
+    fn displacement_at_reads_its_direction_and_coordinates_as_dimensionless() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        use reify_core::DiagnosticCode::{ComputeInputMalformed, DimensionedArgRejected};
+        let fx = TwoModeTipFixture::new();
+        let tip = Value::String("tip".to_string());
+
+        let length_direction =
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), length_value(1.0)]);
+        assert_one_coded_error(
+            &run_displacement_at(&[fx.history.clone(), tip.clone(), length_direction]),
+            DimensionedArgRejected,
+            "displacement_at: direction argument expects Real",
+        );
+
+        assert_one_coded_error(
+            &run_displacement_at(&[fx.history.clone(), tip.clone()]),
+            ComputeInputMalformed,
+            "direction",
+        );
+
+        let length_coords = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), length_value(2.0)]),
+            Value::List(vec![Value::Real(0.1), Value::Real(0.2)]),
+        ]);
+        let history = with_field(fx.history.clone(), "mode_coords", Some(length_coords));
+        assert_one_coded_error(
+            &run_displacement_at(&[history, tip, vec3_value(TwoModeTipFixture::DIR)]),
+            DimensionedArgRejected,
+            "displacement_at: DisplacementTimeHistory.mode_coords argument expects Real",
+        );
+    }
+
+    // ── S15 α (task 8674): forcing sources decode through their declared types ──
+
+    fn dimensioned(si_value: f64, dimension: DimensionVector) -> Value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        }
+    }
+
+    /// A `type_name` forcing source at the tip along ẑ, carrying `fields`.
+    fn tip_source(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
+        let mut all = vec![
+            ("at".to_string(), Value::String("tip".to_string())),
+            ("direction".to_string(), vec3_value([0.0, 0.0, 1.0])),
+        ];
+        all.extend(fields.into_iter().map(|(key, v)| (key.to_string(), v)));
+        struct_instance(type_name, all)
+    }
+
+    /// One well-formed source of each ForcingFunction conformer, in the order
+    /// StepForce, HarmonicForce, ImpulseForce, SampledForce.
+    fn every_forcing_kind() -> Vec<Value> {
+        let force = |n| dimensioned(n, DimensionVector::FORCE);
+        vec![
+            tip_source(
+                "StepForce",
+                vec![("magnitude", force(10.0)), ("start_time", time_scalar(0.0))],
+            ),
+            tip_source(
+                "HarmonicForce",
+                vec![
+                    ("amplitude", force(5.0)),
+                    ("frequency", dimensioned(30.0, DimensionVector::FREQUENCY)),
+                    ("phase", dimensioned(0.0, DimensionVector::ANGLE)),
+                ],
+            ),
+            tip_source(
+                "ImpulseForce",
+                vec![
+                    ("impulse", dimensioned(0.1, DimensionVector::IMPULSE)),
+                    ("time", time_scalar(0.02)),
+                ],
+            ),
+            tip_source(
+                "SampledForce",
+                vec![
+                    (
+                        "time_samples",
+                        Value::List(vec![time_scalar(0.0), time_scalar(0.05), time_scalar(0.1)]),
+                    ),
+                    (
+                        "force_samples",
+                        Value::List(vec![force(0.0), force(3.0), force(0.0)]),
+                    ),
+                ],
+            ),
+        ]
+    }
+
+    fn run_transient_with_sources(sources: Vec<Value>) -> ComputeOutcome {
+        let mut inputs = tip_transient_inputs(|mode| mode);
+        inputs[1] = forcing_history(sources);
+        run_transient(&inputs)
+    }
+
+    /// [`every_forcing_kind`] with the source at `index` passed through `edit`.
+    fn run_with_edited_source(index: usize, edit: impl FnOnce(Value) -> Value) -> ComputeOutcome {
+        let mut sources = every_forcing_kind();
+        let source = sources.remove(index);
+        sources.insert(index, edit(source));
+        run_transient_with_sources(sources)
+    }
+
+    /// Each forcing field reads through the spec its declaration names, and a
+    /// field the spec refuses fails the solve naming `<Type>.<field>`.
+    #[test]
+    fn transient_response_reads_each_forcing_field_through_its_declared_type() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        use reify_core::DiagnosticCode::{ComputeInputMalformed, DimensionedArgRejected};
+
+        let baseline = run_transient_with_sources(every_forcing_kind());
+        assert!(
+            matches!(&baseline, ComputeOutcome::Completed { diagnostics, .. } if diagnostics.is_empty()),
+            "every well-formed forcing kind must Complete cleanly, got {baseline:?}"
+        );
+
+        let length = dimensioned(1.0, DimensionVector::LENGTH);
+        let refusals = [
+            (
+                0,
+                "magnitude",
+                length.clone(),
+                "StepForce.magnitude argument expects Force",
+            ),
+            (
+                1,
+                "phase",
+                Value::Real(0.5),
+                "HarmonicForce.phase argument expects Angle",
+            ),
+            (
+                2,
+                "impulse",
+                dimensioned(0.1, DimensionVector::FORCE),
+                "ImpulseForce.impulse argument expects Impulse",
+            ),
+            (
+                3,
+                "force_samples",
+                Value::List(vec![
+                    dimensioned(0.0, DimensionVector::FORCE),
+                    length.clone(),
+                ]),
+                "SampledForce.force_samples argument expects Force",
+            ),
+            (
+                0,
+                "direction",
+                Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), length.clone()]),
+                "StepForce.direction argument expects Real",
+            ),
+        ];
+        for (index, key, refused, path) in refusals {
+            assert_one_coded_error(
+                &run_with_edited_source(index, |source| with_field(source, key, Some(refused))),
+                DimensionedArgRejected,
+                &format!("transient_response: {path}"),
+            );
+        }
+
+        assert_one_coded_error(
+            &run_with_edited_source(0, |source| with_field(source, "magnitude", None)),
+            ComputeInputMalformed,
+            "StepForce.magnitude",
+        );
+    }
+
+    /// One refusal rule: a value its spec refuses is coded alike whether it
+    /// sits in a scalar field, a list entry or a vector component.
+    #[test]
+    fn transient_response_codes_one_refusal_alike_at_a_field_an_entry_and_a_component() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        let force = |n| dimensioned(n, DimensionVector::FORCE);
+        let refusals = [
+            (
+                0,
+                "magnitude",
+                Value::Real(1.0),
+                "StepForce.magnitude argument expects Force",
+            ),
+            (
+                3,
+                "force_samples",
+                Value::List(vec![force(0.0), Value::Real(3.0), force(0.0)]),
+                "SampledForce.force_samples argument expects Force",
+            ),
+            (
+                0,
+                "direction",
+                Value::Vector(vec![
+                    Value::Real(0.0),
+                    Value::String("up".to_string()),
+                    Value::Real(1.0),
+                ]),
+                "StepForce.direction argument expects Real",
+            ),
+        ];
+        for (index, key, refused, path) in refusals {
+            assert_one_coded_error(
+                &run_with_edited_source(index, |source| with_field(source, key, Some(refused))),
+                reify_core::DiagnosticCode::DimensionedArgRejected,
+                &format!("transient_response: {path}"),
+            );
+        }
+    }
+
+    /// A conformer the trampoline has no sampler for fails the solve naming
+    /// its type, instead of contributing a silent zero force.
+    #[test]
+    fn transient_response_refuses_an_unsupported_forcing_kind() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        let my_force = tip_source("MyForce", vec![("magnitude", Value::Real(1.0))]);
+        assert_one_coded_error(
+            &run_with_edited_source(0, |_| my_force),
+            reify_core::DiagnosticCode::FeaLoadKindUnsupported,
+            "MyForce",
+        );
+    }
+
+    // ── S15 α (task 8674): damping and reference_direction decode ──
+
+    /// A free-vibration solve of the [`modal_inputs`] beam with `material` and,
+    /// when given, `damping` as `ModalOptions.damping`.
+    fn run_free_vibration_damped(material: Value, damping: Option<Value>) -> ComputeOutcome {
+        let mut inputs = modal_inputs(0.5, 0.05, 0.05, STEEL_DENSITY, 2, None);
+        inputs[0] = material;
+        if let Some(damping) = damping {
+            inputs[4] = with_field(inputs[4].clone(), "damping", Some(damping));
+        }
+        solve_modal_analysis_trampoline(
+            &inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    fn material_damping() -> Option<Value> {
+        Some(struct_instance("MaterialDamping", vec![]))
+    }
+
+    /// One refusal rule (esc-5791-3): a loss factor the dimensionless spec
+    /// refuses is a refused input naming `Damped.loss_factor`, not a material
+    /// that does not conform to `Damped`.
+    #[test]
+    fn material_damping_refuses_a_loss_factor_the_spec_refuses() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        for refused in [
+            dimensioned(0.02, DimensionVector::PRESSURE),
+            Value::String("0.02".to_string()),
+        ] {
+            let material = with_field(damped_material(0.0006), "loss_factor", Some(refused));
+            assert_one_coded_error(
+                &run_free_vibration_damped(material, material_damping()),
+                reify_core::DiagnosticCode::DimensionedArgRejected,
+                "modal_analysis: Damped.loss_factor argument expects Real",
+            );
+        }
+    }
+
+    /// An absent loss factor, and an accepted but negative or non-finite one,
+    /// still mean the material carries no usable η.
+    #[test]
+    fn material_damping_still_reports_an_unusable_loss_factor_as_not_damped() {
+        for material in [
+            material_with_density(Some(STEEL_DENSITY)),
+            damped_material(-0.5),
+            damped_material(f64::NAN),
+        ] {
+            let outcome = run_free_vibration_damped(material, material_damping());
+            let ComputeOutcome::Completed { diagnostics, .. } = &outcome else {
+                panic!("the not-damped rejection Completes degenerate, got {outcome:?}");
+            };
+            assert!(
+                diagnostics.iter().any(|d| d.severity == Severity::Error
+                    && d.message.contains("E_ModalDampingMaterialNotDamped")),
+                "{diagnostics:?}"
+            );
+        }
+    }
+
+    /// The Rayleigh coefficients read through their declared specs, under the
+    /// transitional bare rule: a wrong dimension is refused by both producers
+    /// that classify the descriptor, and a missing coefficient is malformed.
+    #[test]
+    fn rayleigh_coefficients_decode_in_both_modal_producers() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        use reify_core::DiagnosticCode::{ComputeInputMalformed, DimensionedArgRejected};
+        let length_alpha = with_field(
+            rayleigh_damping(0.5, 1e-6),
+            "alpha",
+            Some(length_value(0.5)),
+        );
+
+        assert_one_coded_error(
+            &run_free_vibration_damped(
+                material_with_density(Some(STEEL_DENSITY)),
+                Some(length_alpha.clone()),
+            ),
+            DimensionedArgRejected,
+            "modal_analysis: RayleighDamping.alpha argument expects Frequency",
+        );
+
+        let mechanism = solve_mechanism_modal_trampoline(
+            &[
+                one_body_mechanism(mass_props_solid(0.5), flexure_joint(1_000.0)),
+                modal_options(vec![("damping".to_string(), length_alpha)]),
+            ],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        assert_one_coded_error(
+            &mechanism,
+            DimensionedArgRejected,
+            "mechanism_modal_analysis: RayleighDamping.alpha argument expects Frequency",
+        );
+
+        let no_beta = with_field(rayleigh_damping(0.5, 1e-6), "beta", None);
+        assert_one_coded_error(
+            &run_free_vibration_damped(material_with_density(Some(STEEL_DENSITY)), Some(no_beta)),
+            ComputeInputMalformed,
+            "RayleighDamping.beta",
+        );
+    }
+
+    /// `ModalOptions.reference_direction` components are dimensionless.
+    #[test]
+    fn free_vibration_refuses_a_dimensioned_reference_direction() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        let mut inputs = modal_inputs(0.5, 0.05, 0.05, STEEL_DENSITY, 2, None);
+        let length_direction =
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), length_value(1.0)]);
+        inputs[4] = with_field(
+            inputs[4].clone(),
+            "reference_direction",
+            Some(length_direction),
+        );
+        assert_one_coded_error(
+            &solve_modal_analysis_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            ),
+            reify_core::DiagnosticCode::DimensionedArgRejected,
+            "modal_analysis: ModalOptions.reference_direction argument expects Real",
+        );
+    }
+
+    /// B6, loads stay quiet: an unresolved forcing field contributes no force
+    /// and no diagnostic, exactly as if the source were absent.
+    #[test]
+    fn an_unresolved_forcing_field_contributes_no_force_quietly() {
+        let mut with_undef = every_forcing_kind();
+        with_undef[0] = with_field(with_undef[0].clone(), "magnitude", Some(Value::Undef));
+        let quiet = run_transient_with_sources(with_undef);
+        let ComputeOutcome::Completed { diagnostics, .. } = &quiet else {
+            panic!("an Undef StepForce.magnitude must Complete, got {quiet:?}");
+        };
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+        let without = run_transient_with_sources(every_forcing_kind().split_off(1));
+        assert_eq!(
+            mode_coords_from_outcome(&quiet),
+            mode_coords_from_outcome(&without)
+        );
     }
 
     /// step-5λ (RED → GREEN in step-6): cache-hit test for `run_transient_response`.
@@ -12632,7 +13337,7 @@ mod tests {
         {
             assert!(
                 matches!(
-                    classify_damping(&modal_options(vec![(
+                    classified(&modal_options(vec![(
                         "damping".to_string(),
                         rayleigh_damping(0.5, 1e-6),
                     )])),
@@ -12643,7 +13348,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    classify_damping(&modal_options(vec![(
+                    classified(&modal_options(vec![(
                         "damping".to_string(),
                         struct_instance("NoDamping", vec![]),
                     )])),
@@ -12655,17 +13360,17 @@ mod tests {
             );
             assert!(
                 matches!(
-                    classify_damping(&struct_instance("ModalOptions", vec![])),
+                    classified(&struct_instance("ModalOptions", vec![])),
                     DampingKind::Absent
                 ),
                 "Case C: a missing damping field must classify as Absent"
             );
             assert!(
-                matches!(classify_damping(&Value::Undef), DampingKind::Absent),
+                matches!(classified(&Value::Undef), DampingKind::Absent),
                 "Case C: a non-StructureInstance options value must classify as \
                  Absent, not Unsupported"
             );
-            match classify_damping(&modal_options(vec![(
+            match classified(&modal_options(vec![(
                 "damping".to_string(),
                 struct_instance(
                     "HystereticDamping",

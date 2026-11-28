@@ -47,7 +47,10 @@ use reify_fdm::{
 };
 use reify_ir::{FieldSourceKind, OpaqueState, StructureInstanceData, Value};
 
-use super::{rejected_input_outcome, struct_data, structure};
+use reify_solver_elastic::IsotropicElastic;
+
+use super::stdlib_inputs::{DecodeStdlibInput, InputDecodeError};
+use super::{struct_data, structure};
 use crate::arg_acceptance::{
     FieldRejection, density_spec, dimensionless_spec, length_spec, pressure_spec, read_field,
 };
@@ -63,7 +66,9 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// panicking — matching the Undef-for-Field convention of the stdlib surface.
 /// A present numeric field the reader refuses — a number of the wrong dimension
 /// or a value that is not a number at all — is [`ComputeOutcome::Failed`] with
-/// that field's `DimensionedArgRejected` Error (`read_field`'s refusal rule).
+/// that field's `DimensionedArgRejected` Error (`read_field`'s refusal rule),
+/// and a base material missing a declared field is a `ComputeInputMalformed`
+/// one.
 pub fn as_printed_material_r_fast_trampoline(
     value_inputs: &[Value],
     realization_inputs: &[RealizationReadHandle],
@@ -79,7 +84,7 @@ pub fn as_printed_material_r_fast_trampoline(
             diagnostics: Vec::new(),
             structured_detail: vec![],
         },
-        Err(rejection) => rejected_input_outcome(rejection.to_error(AS_PRINTED_MATERIAL)),
+        Err(err) => err.into_failed(AS_PRINTED_MATERIAL),
     }
 }
 
@@ -89,11 +94,12 @@ pub(crate) const AS_PRINTED_MATERIAL: &str = "as_printed_material";
 
 /// Build the `AsPrintedZones` material field: `Ok(None)` if any required input
 /// is missing, unresolved or non-finite (caller degrades to
-/// [`degraded_field`]), `Err` if a present numeric field is refused.
+/// [`degraded_field`]), `Err` if a present numeric field is refused or the
+/// base material lacks a declared field.
 fn build_as_printed_field(
     value_inputs: &[Value],
     realization_inputs: &[RealizationReadHandle],
-) -> Result<Option<Value>, FieldRejection> {
+) -> Result<Option<Value>, InputDecodeError> {
     let (Some(process), Some(options)) = (
         value_inputs.get(1).and_then(struct_data),
         value_inputs.get(2).and_then(struct_data),
@@ -103,11 +109,12 @@ fn build_as_printed_field(
 
     // Every dimension-checked read runs before the realization lookup, so a
     // rejection never depends on whether the body has realized yet.
-    let layer_height = read_field(process, "layer_height", &length_spec())?;
-    let infill_density = read_field(process, "infill_density", &dimensionless_spec())?;
+    let layer_height = read_field(process, "layer_height", &length_spec()).map_err(in_process)?;
+    let infill_density =
+        read_field(process, "infill_density", &dimensionless_spec()).map_err(in_process)?;
     let base = read_base_elastic(process)?;
-    let line_width = read_field(options, "line_width", &length_spec())?;
-    let coupon = read_coupon(options)?;
+    let line_width = read_field(options, "line_width", &length_spec()).map_err(in_options)?;
+    let coupon = read_coupon(options).map_err(in_options)?;
 
     let (
         Some(layer_height),
@@ -314,21 +321,39 @@ fn read_pattern(process: &StructureInstanceData) -> InfillPattern {
     }
 }
 
-/// Read the base filament `ElasticMaterial` into a β [`BaseElastic`]
-/// (`Ok(None)` when it or one of its fields is missing).
+/// A refused `FDMProcess` field.
+pub(crate) fn in_process(rejection: FieldRejection) -> InputDecodeError {
+    InputDecodeError::refused("FDMProcess", rejection)
+}
+
+/// A refused `AsPrintedOptions` field.
+fn in_options(rejection: FieldRejection) -> InputDecodeError {
+    InputDecodeError::refused("AsPrintedOptions", rejection)
+}
+
+/// Read the base filament `ElasticMaterial` into a β [`BaseElastic`].
+///
+/// `youngs_modulus` / `poisson_ratio` decode as an `ElasticMaterial`, so a
+/// missing one or a refused one is an `Err`. `Ok(None)` (degrade) when the
+/// `material` is not a struct, when a decoded field is unresolved, or when
+/// `density` is absent or unresolved (the FDM base-material read υ #9293 owns).
 pub(crate) fn read_base_elastic(
     process: &StructureInstanceData,
-) -> Result<Option<BaseElastic>, FieldRejection> {
+) -> Result<Option<BaseElastic>, InputDecodeError> {
     let Some(material) = process.fields.get("material").and_then(struct_data) else {
         return Ok(None);
     };
-    let youngs_modulus = read_field(material, "youngs_modulus", &pressure_spec())?;
-    let poisson_ratio = read_field(material, "poisson_ratio", &dimensionless_spec())?;
-    let density = read_field(material, "density", &density_spec())?;
-    Ok(match (youngs_modulus, poisson_ratio, density) {
-        (Some(youngs_modulus), Some(poisson_ratio), Some(density)) => Some(BaseElastic {
-            youngs_modulus,
-            poisson_ratio,
+    let elastic = match IsotropicElastic::decode_fields(material) {
+        Ok(elastic) => Some(elastic),
+        Err(err) if err.is_unresolved() => None,
+        Err(err) => return Err(err),
+    };
+    let density = read_field(material, "density", &density_spec())
+        .map_err(|r| InputDecodeError::refused(IsotropicElastic::STRUCTURE, r))?;
+    Ok(match (elastic, density) {
+        (Some(elastic), Some(density)) => Some(BaseElastic {
+            youngs_modulus: elastic.youngs_modulus,
+            poisson_ratio: elastic.poisson_ratio,
             density,
         }),
         _ => None,
@@ -582,6 +607,111 @@ mod tests {
     use reify_ir::StructureTypeId;
 
     use super::*;
+
+    // ── S15 α T1/T2 (task 8674): the base material decodes as an ElasticMaterial
+
+    use reify_core::DiagnosticCode;
+
+    use super::super::as_printed_material_r0::as_printed_material_r0_trampoline;
+    use super::super::stdlib_inputs::test_support::{
+        assert_one_coded_error, hand_built_material, material_missing_poisson_ratio,
+        material_with_length_youngs_modulus, steel_density,
+    };
+
+    type Trampoline = fn(
+        &[Value],
+        &[RealizationReadHandle],
+        &Value,
+        Option<&OpaqueState>,
+        &CancellationHandle,
+    ) -> ComputeOutcome;
+
+    /// Both rungs, each fed `[_, FDMProcess, AsPrintedOptions]`. The material
+    /// read runs before the realization and G-code lookups, so neither needs
+    /// one.
+    const RUNGS: [(&str, Trampoline); 2] = [
+        ("R-fast", as_printed_material_r_fast_trampoline),
+        ("R0", as_printed_material_r0_trampoline),
+    ];
+
+    fn run(rung: Trampoline, process: Value) -> ComputeOutcome {
+        let options = structure("AsPrintedOptions", vec![]);
+        rung(
+            &[Value::Undef, process, options],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        )
+    }
+
+    fn process_with_material(material: Value) -> Value {
+        structure("FDMProcess", vec![("material", material)])
+    }
+
+    fn assert_degraded(rung: &str, outcome: ComputeOutcome) {
+        match outcome {
+            ComputeOutcome::Completed {
+                result: Value::Field { lambda, .. },
+                diagnostics,
+                ..
+            } => {
+                assert!(matches!(*lambda, Value::Undef), "{rung}: {lambda:?}");
+                assert!(diagnostics.is_empty(), "{rung}: {diagnostics:?}");
+            }
+            other => panic!("{rung}: expected the degraded Completed field, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hand_built_base_material_missing_a_field_fails_naming_the_trait_path() {
+        for (_, trampoline) in RUNGS {
+            let outcome = run(
+                trampoline,
+                process_with_material(material_missing_poisson_ratio()),
+            );
+            assert_one_coded_error(
+                &outcome,
+                DiagnosticCode::ComputeInputMalformed,
+                "ElasticMaterial.poisson_ratio",
+            );
+        }
+    }
+
+    #[test]
+    fn a_length_base_youngs_modulus_is_rejected_naming_the_trait_path() {
+        for (_, trampoline) in RUNGS {
+            let outcome = run(
+                trampoline,
+                process_with_material(material_with_length_youngs_modulus()),
+            );
+            assert_one_coded_error(
+                &outcome,
+                DiagnosticCode::DimensionedArgRejected,
+                "ElasticMaterial.youngs_modulus",
+            );
+        }
+    }
+
+    /// as_printed's documented Undef policy is unchanged: an unresolved
+    /// modulus, or no material struct at all, degrades to the Undef-lambda
+    /// field rather than failing.
+    #[test]
+    fn an_undef_base_modulus_or_no_material_still_degrades() {
+        let undef_modulus = hand_built_material(vec![
+            ("youngs_modulus", Value::Undef),
+            ("poisson_ratio", Value::Real(0.35)),
+            ("density", steel_density()),
+        ]);
+        for (rung, trampoline) in RUNGS {
+            assert_degraded(
+                rung,
+                run(trampoline, process_with_material(undef_modulus.clone())),
+            );
+            assert_degraded(rung, run(trampoline, structure("FDMProcess", vec![])));
+            assert_degraded(rung, run(trampoline, process_with_material(Value::Undef)));
+        }
+    }
 
     /// Task 5848 retypes `FDMProcess.build_direction` from `Vec3<Length>` to a
     /// dimensionless 3-vector, moving its default from `vec3(0mm, 0mm, 1mm)` to

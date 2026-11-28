@@ -4839,14 +4839,25 @@ pub enum DiagnosticCode {
     /// wire-up. CONSTRUCTING a `TractionLoad`/`BodyForce` value stays legal —
     /// only passing one to a solver errors.
     ///
-    /// Canonical message form:
-    /// `"{solver}: unsupported FEA load kind '{type_name}'"`
+    /// Second origin, which widens the firing rule from FEA load kinds to any
+    /// stdlib-input conformer kind a trampoline does not support:
+    /// `reify_eval::compute_targets::stdlib_inputs::InputDecodeError::into_failed`,
+    /// its `UnsupportedKind` arm (trampoline-decode α, task 8674). Its first
+    /// producer is `transient_response`'s `ResolvedForcing::from_fields`
+    /// (`crates/reify-eval/src/modal_ops.rs`), on a `ForcingFunction`
+    /// conformer it has no sampler for.
+    ///
+    /// Canonical message forms:
+    /// `"{solver}: unsupported FEA load kind '{type_name}'"` (the load-kind
+    /// surface) and `"{target}: {input}: unsupported kind '{kind}'"` (the
+    /// stdlib-input decode, e.g.
+    /// `"transient_response: ForcingFunction: unsupported kind 'MyForce'"`).
     ///
     /// PRD-prose mnemonic: `E_FeaLoadKindUnsupported` (severity convention:
     /// `E_*` → Error).
     ///
-    /// The EMITTING call site is leaf γ3's, NOT task 5791's — α mints the
-    /// vocabulary only. Note that the existing guard
+    /// The load-kind surface's EMITTING call site is leaf γ3's, NOT task
+    /// 5791's — α mints the vocabulary only. Note that the existing guard
     /// `extract_loads_unknown_type_name_is_silently_skipped`
     /// (`elastic_static.rs:8493-8524`) asserts ZERO NUMERIC CONTRIBUTION and
     /// NOT the absence of a diagnostic, so γ3 can start emitting without
@@ -4862,6 +4873,40 @@ pub enum DiagnosticCode {
     /// the feature-gated serde derives automatically (same measured argument as
     /// `DimensionedArgRejected` and `EvalCachedGuardedGroupsFallback` above).
     FeaLoadKindUnsupported,
+    /// Origin:
+    /// `reify_eval::compute_targets::stdlib_inputs::InputDecodeError::into_failed`
+    /// (trampoline-decode α, task 8674), the one point where a compute
+    /// trampoline's stdlib-input decode error becomes `ComputeOutcome::Failed`.
+    ///
+    /// Fires when a trampoline's stdlib input is not a structure
+    /// (`NotAStructure`), lacks a declared non-`Option` field (`Missing`), or
+    /// carries a value of the wrong shape for its position (`WrongShape`: not
+    /// a list or vector, the wrong arity, a non-finite datum, a frame that
+    /// does not decode, a Rust-minted payload element of the wrong variant or
+    /// an `Undef` inside one) or a scalar positional input that is not a
+    /// number. β #8679 / γ #8683 add `UnknownVariant` together with its first
+    /// producer.
+    ///
+    /// Ctor lowering fills every declared param, so a ctor-built value of the
+    /// decoded structure never reaches the `Missing` arm. It is still
+    /// reachable from a ctor-built value in one other way: a trait-typed
+    /// position that falls back to a shape-based decoder the value does not
+    /// fit. `solve_elastic_static`'s `material : ConstitutiveLaw` is one: a
+    /// user `structure def MyLaw : ConstitutiveLaw { .. }` that is neither
+    /// named anisotropic law falls back to the `ElasticMaterial` decoder and
+    /// fails as `ElasticMaterial.youngs_modulus: missing`. Otherwise `Missing`
+    /// fires only on hand-built `Value`s.
+    ///
+    /// Emitted at `Severity::Error`.
+    ///
+    /// Canonical message form: `"{target}: {input}[.{field}]: {reason}"`.
+    ///
+    /// Distinct from `DimensionedArgRejected` (the decode error's `Rejected`
+    /// arm: every value a field's, component's or list entry's `ArgSpec`
+    /// refuses, a wrong dimension or not a number at all; esc-5791-3, one
+    /// code per reason) and from `FeaLoadKindUnsupported` (its
+    /// `UnsupportedKind` arm).
+    ComputeInputMalformed,
     /// Origin: `crates/reify-compiler/src/connect.rs::resolve_chain_endpoint`
     /// (spec §6.2 `chain` default-port inference).
     ///
@@ -6006,6 +6051,33 @@ mod tests {
         let d = Diagnostic::error("unsupported FEA load kind 'TractionLoad'")
             .with_code(DiagnosticCode::FeaLoadKindUnsupported);
         assert_eq!(d.code, Some(DiagnosticCode::FeaLoadKindUnsupported));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    // --- ComputeInputMalformed tests (trampoline-decode α, task 8674) ---
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ComputeInputMalformed`
+    /// serializes as `"ComputeInputMalformed"` and deserializes back to the
+    /// same variant: the wire form downstream tooling reads.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn compute_input_malformed_serializes_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ComputeInputMalformed).unwrap();
+        assert_eq!(s, "\"ComputeInputMalformed\"");
+
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, DiagnosticCode::ComputeInputMalformed);
+    }
+
+    #[test]
+    fn compute_input_malformed_attaches_to_an_error_diagnostic() {
+        use super::Severity;
+
+        let d = Diagnostic::error(
+            "solve_elastic_static_trampoline: ElasticMaterial.poisson_ratio: missing field",
+        )
+        .with_code(DiagnosticCode::ComputeInputMalformed);
+        assert_eq!(d.code, Some(DiagnosticCode::ComputeInputMalformed));
         assert_eq!(d.severity, Severity::Error);
     }
 
