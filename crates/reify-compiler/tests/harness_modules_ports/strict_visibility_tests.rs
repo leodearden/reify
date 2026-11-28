@@ -6,14 +6,18 @@
 //! The fix-it builder is driven over the REAL stdlib: each module is compiled
 //! against exactly the std modules its imports make visible (each import and
 //! what it re-exports through `pub import`), as the strict program compile
-//! does.
+//! does. The program sections drive `program::compile_program` itself.
 
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::std_import_fixits;
+use reify_compiler::module_dag::ModuleResolver;
+use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
+use reify_ir::Satisfaction;
+use reify_test_support::mocks::MockConstraintChecker;
 
 const SUBJECT: &str = "subject";
 
@@ -216,4 +220,134 @@ fn a_gated_off_import_of_the_module_is_named_as_out_of_effect() {
         "the gated-off import is named: {}",
         fixit.message
     );
+}
+
+// ─── the strict program compile (boundaries #12, #14) ──────────────────────
+
+fn compile_main(source: &str, cfg: &CfgSet) -> CompiledProgram {
+    let dir = tempfile::tempdir().expect("tempdir");
+    compile_program(
+        &dir.path().join("main.ri"),
+        source,
+        &ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
+        cfg,
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    )
+}
+
+fn error_diagnostics(module: &CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+fn std_name_fixits(module: &CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::StdNameNotImported))
+        .collect()
+}
+
+const MAIN_GPA: &str = "module main\n\nstructure def S {\n    param e : Pressure = 200GPa\n}\n";
+
+#[test]
+fn an_entry_writing_an_unimported_std_unit_gets_the_fixit_error() {
+    let program = compile_main(MAIN_GPA, &linux());
+    let fixits = std_name_fixits(program.entry());
+    assert_eq!(fixits.len(), 1, "{:#?}", program.entry().diagnostics);
+    assert_eq!(fixits[0].severity, Severity::Error);
+    for needle in ["std.si_units", "std.prelude"] {
+        assert!(fixits[0].message.contains(needle), "{}", fixits[0].message);
+    }
+}
+
+#[test]
+fn importing_the_unit_module_or_the_prelude_compiles_the_entry_clean() {
+    for import in ["std.si_units", "std.prelude"] {
+        let source = format!(
+            "module main\n\nimport {import}\n\nstructure def S {{\n    param e : Pressure = 200GPa\n}}\n"
+        );
+        let program = compile_main(&source, &linux());
+        assert!(
+            error_diagnostics(program.entry()).is_empty(),
+            "import {import}: {:#?}",
+            program.entry().diagnostics
+        );
+    }
+}
+
+#[test]
+fn builtin_dimensions_and_units_need_no_import_in_a_program() {
+    let program = compile_main(
+        "module main\n\nstructure def S {\n    param w : Length = 10mm\n}\n",
+        &linux(),
+    );
+    assert!(
+        error_diagnostics(program.entry()).is_empty(),
+        "{:#?}",
+        program.entry().diagnostics
+    );
+    assert!(std_name_fixits(program.entry()).is_empty());
+}
+
+#[test]
+fn a_gated_unit_import_counts_only_under_the_cfg_that_satisfies_it() {
+    let source = "module main\n\n#cfg(target = \"wasm\")\nimport std.si_units\n\n\
+                  structure def S {\n    param e : Pressure = 200GPa\n}\n";
+    let under_linux = compile_main(source, &linux());
+    assert_eq!(
+        std_name_fixits(under_linux.entry()).len(),
+        1,
+        "{:#?}",
+        under_linux.entry().diagnostics
+    );
+    let wasm = CfgSet {
+        target: Some("wasm".to_string()),
+        ..CfgSet::default()
+    };
+    let under_wasm = compile_main(source, &wasm);
+    assert!(
+        error_diagnostics(under_wasm.entry()).is_empty(),
+        "{:#?}",
+        under_wasm.entry().diagnostics
+    );
+}
+
+#[test]
+fn a_healthy_prelude_program_carries_nothing_re_homed_from_a_std_module() {
+    let source = "module main\n\nimport std.prelude\n\nstructure def S {\n    \
+                  param e : Pressure = 200GPa\n    \
+                  let w : Length = unwrap_or(parse_length(\"2mm\"), 6mm)\n}\n";
+    let program = compile_main(source, &linux());
+    assert!(
+        error_diagnostics(program.entry()).is_empty(),
+        "{:#?}",
+        program.entry().diagnostics
+    );
+    let std_keys: Vec<&str> = program
+        .imports
+        .iter()
+        .map(|unit| unit.import_path.as_str())
+        .filter(|key| key.starts_with("std."))
+        .collect();
+    assert!(
+        std_keys.contains(&"std.prelude") && std_keys.contains(&"std.si_units"),
+        "the import tier lists the prelude and what it re-exports: {std_keys:?}"
+    );
+    for key in std_keys {
+        assert_eq!(
+            program.rehomed_from(key).count(),
+            0,
+            "nothing is re-homed from {key}"
+        );
+    }
+    for diagnostic in &program.entry().diagnostics {
+        assert!(
+            !diagnostic.message.contains("in imported module 'std."),
+            "{diagnostic:#?}"
+        );
+    }
 }

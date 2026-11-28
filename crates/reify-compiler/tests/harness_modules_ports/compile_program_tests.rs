@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::{ModuleResolver, ModuleSource};
 use reify_compiler::program::{
-    CompiledProgram, compile_program, compile_program_with_parsed_entry,
+    CompiledProgram, ImportReach, compile_program, compile_program_with_parsed_entry,
 };
 use reify_compiler::program_scope::bind_program;
 use reify_compiler::{
@@ -574,44 +574,75 @@ fn is_std_key(key: &str) -> bool {
     key == "std" || key.starts_with("std.")
 }
 
-// ─── task 5516 step-5: import units see the stdlib (#19) ───────────────────
+// ─── κ #5503: import units see only what they import (#19 inverted) ───────
 
-/// An imported module that uses stdlib units, traits and constructors.
+/// An imported module that uses stdlib traits and constructors:
 /// `ABS_Plastic`/`ElasticMaterial` come from std.materials.fea, the same
-/// pattern stdlib/fdm.ri uses.
+/// pattern stdlib/fdm.ri uses. `Length`/`mm` are builtins.
 const PARTS_WITH_STDLIB_NAMES: &str = "module parts\n\
 pub structure def Bracket {\n\
 \x20   param w : Length = 10mm\n\
 \x20   param material : ElasticMaterial = ABS_Plastic()\n\
 }\n";
 
-/// Import units compile against the full stdlib, exactly like the entry
-/// (PRD #19): stdlib units, traits and constructors resolve inside them.
-#[test]
-fn compile_program_import_units_see_the_stdlib() {
-    let standalone = reify_compiler::compile_with_stdlib(&reify_compiler::parse_with_stdlib(
-        PARTS_WITH_STDLIB_NAMES,
-        ModulePath::single("parts"),
-    ));
-    assert!(
-        errors(&standalone).is_empty(),
-        "precondition: the parts fixture is legal against the stdlib, got {:?}",
-        errors(&standalone)
-    );
+const MAIN_USING_PARTS: &str =
+    "module main\nimport parts\nstructure def Rig {\n    sub b = Bracket()\n}\n";
 
+/// Under strict visibility (stdlib-namespace NS-V1, κ #5503) an import unit
+/// sees builtins plus its own imports, as the entry does. A std name it writes
+/// without importing its module draws the NS-V2 fix-it, re-homed onto the
+/// entry from the unit's file. This inverts RU β #5516's #19 pin, under which
+/// every unit compiled against the whole stdlib.
+#[test]
+fn compile_program_import_unit_without_the_std_import_gets_the_fixit() {
     let dir = tempfile::tempdir().expect("tempdir");
     write(dir.path(), "parts.ri", PARTS_WITH_STDLIB_NAMES);
-    let main_src = "module main\nimport parts\nstructure def Rig {\n    sub b = Bracket()\n}\n";
-    let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
+    let program = compile_entry(dir.path(), "main", MAIN_USING_PARTS, &CfgSet::default());
 
-    assert_eq!(import_keys(&program), vec!["parts"]);
-    let parts = &program.imports[0].module;
+    let fixits: Vec<_> = program
+        .rehomed_from("parts")
+        .filter(|d| d.code == Some(DiagnosticCode::StdNameNotImported))
+        .collect();
     assert!(
-        errors(parts).is_empty(),
-        "the import unit must compile against the stdlib, got {:?}",
-        errors(parts)
+        !fixits.is_empty(),
+        "parts' unimported std names surface on the entry, got {:#?}",
+        program.entry().diagnostics
     );
-    let bracket = parts
+    for fixit in fixits {
+        assert_eq!(fixit.severity, Severity::Error);
+        assert!(
+            fixit.message.contains("std.materials.fea"),
+            "the fix-it names the defining module: {}",
+            fixit.message
+        );
+    }
+}
+
+/// With the std import declared, the unit compiles clean and `param w :
+/// Length` still resolves to a Length quantity inside it.
+#[test]
+fn compile_program_import_unit_with_the_std_import_compiles_clean() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let parts = PARTS_WITH_STDLIB_NAMES.replacen(
+        "module parts\n",
+        "module parts\nimport std.materials.fea\n",
+        1,
+    );
+    write(dir.path(), "parts.ri", &parts);
+    let program = compile_entry(dir.path(), "main", MAIN_USING_PARTS, &CfgSet::default());
+
+    let parts_unit = program
+        .imports
+        .iter()
+        .find(|unit| unit.import_path == "parts")
+        .expect("parts is in the import tier");
+    assert!(
+        errors(&parts_unit.module).is_empty(),
+        "the import unit must compile against its declared import, got {:?}",
+        errors(&parts_unit.module)
+    );
+    let bracket = parts_unit
+        .module
         .templates
         .iter()
         .find(|t| t.name == "Bracket")
@@ -635,16 +666,16 @@ fn compile_program_import_units_see_the_stdlib() {
     );
 }
 
-// ─── task 5516 step-5: std.* is never walked, at any depth (I4) ────────────
+// ─── κ #5503: std.* is walked from the embedded stdlib (I4 inverted) ──────
 
-/// No `std`/`std.*` import is DAG-walked, whether the entry or an import unit
-/// declares it (PRD I4). The resolver's stdlib_root holds a deliberately
-/// unparseable `units.ri` and no `nonexistent_typo.ri`, so any walk would fail
-/// with a diagnostic naming `units.ri` or the stdlib_root. An unknown `std.*`
-/// name may still draw the compiler's ordinary "import not resolved" Warning;
-/// what I4 rules out is resolving it through the DAG.
+/// A `std.*` import is followed through the DAG and resolved from the
+/// EMBEDDED stdlib only, never from the resolver's stdlib_root (κ #5503,
+/// superseding RU I4). The stdlib_root holds a deliberately unparseable
+/// `units.ri`, so a filesystem read would fail with a diagnostic naming it or
+/// the stdlib_root. An import unit's unknown `std.*` path is a coded Error
+/// naming the dotted path, with no filesystem path to report.
 #[test]
-fn compile_program_never_walks_std_imports_at_any_depth() {
+fn compile_program_walks_std_imports_from_the_embedded_stdlib_only() {
     let dir = tempfile::tempdir().expect("tempdir");
     let stdlib_root = dir.path().join("stdlib");
     fs::create_dir(&stdlib_root).expect("create stdlib_root");
@@ -667,31 +698,40 @@ fn compile_program_never_walks_std_imports_at_any_depth() {
     for d in &program.entry().diagnostics {
         assert!(
             !d.message.contains("units.ri") && !d.message.contains(&stdlib_root_text),
-            "no std.* import may be walked, but a diagnostic names the stdlib_root: {d:?}"
+            "std.* resolves from the embedded stdlib only, but a diagnostic names the \
+             stdlib_root: {d:?}"
         );
-        if d.severity == Severity::Error {
-            for needle in ["std.nonexistent_typo", "std.units"] {
-                assert!(
-                    !d.message.contains(needle),
-                    "no Error may come from walking {needle}: {d:?}"
-                );
-            }
-        }
     }
-    assert!(
-        !import_keys(&program).into_iter().any(is_std_key),
-        "imports must hold no std module, got {:?}",
-        import_keys(&program)
-    );
+    let units = program
+        .imports
+        .iter()
+        .find(|unit| unit.import_path == "std.units")
+        .unwrap_or_else(|| {
+            panic!(
+                "std.units is in the import tier, got {:?}",
+                import_keys(&program)
+            )
+        });
+    assert_eq!(units.origin, None, "an embedded std unit has no file");
+    assert_eq!(units.reach, ImportReach::Direct);
     assert!(
         !source_keys(&program).into_iter().any(is_std_key),
-        "sources must hold no std module, got {:?}",
+        "sources hold user modules only, got {:?}",
         source_keys(&program)
     );
-    assert_eq!(
-        import_keys(&program),
-        vec!["parts"],
-        "parts must compile despite its std.* imports"
+    let dir_text = dir.path().display().to_string();
+    let typo = errors(program.entry())
+        .into_iter()
+        .find(|message| message.contains("std.nonexistent_typo"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the unknown std path is an Error on the entry, got {:#?}",
+                program.entry().diagnostics
+            )
+        });
+    assert!(
+        !typo.contains(&dir_text) && !typo.contains(".ri"),
+        "an embedded-only resolution has no filesystem path to report: {typo}"
     );
 }
 
