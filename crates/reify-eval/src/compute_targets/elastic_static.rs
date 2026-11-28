@@ -4603,8 +4603,9 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, InputDe
 /// hence a legal `law` — so the panic was live, not merely prospective. A
 /// law that fits none of the three SHAPES now surfaces a `WrongShape` at
 /// `AnisotropicMaterial.law` naming both the unrecognised `type_name` and the
-/// underlying missing/malformed field (task #7210 review round 2 — see
-/// `annotate_law_type`). This is the ONE place this history is
+/// underlying missing or mis-shaped field (task #7210 review round 2 — see
+/// `annotate_law_type`); a field the spec refuses stays `Rejected` at its own
+/// `ElasticMaterial.<field>` path. This is the ONE place this history is
 /// recorded — the isotropic-law tests below reference it rather than
 /// restate it.
 ///
@@ -4713,9 +4714,9 @@ fn law_from_value(
         // via `decode_fields`, so there is no second `&Value` that could
         // describe a different StructureInstance.
         //
-        // A failure here means `type_name` matched neither named arm above
-        // NOR the isotropic shape, so `annotate_law_type` folds the
-        // `type_name` into the diagnostic — otherwise the error would name
+        // A missing or mis-shaped field here means `type_name` matched
+        // neither named arm above NOR the isotropic shape, so
+        // `annotate_law_type` folds the `type_name` into the diagnostic — otherwise the error would name
         // only a missing/malformed field (e.g. "youngs_modulus") with no
         // hint that the real defect is an unrecognised law type.
         //
@@ -4775,10 +4776,11 @@ fn ratio_field(
 /// missing or malformed, which alone gives no hint the `type_name` went
 /// unrecognised at all (task #7210 review round 2 suggestion 3). The fault
 /// becomes a `WrongShape` at `AnisotropicMaterial.law` whose reason is the
-/// inner error's own rendering. An unresolved field is not a fault and passes
-/// through unchanged.
+/// inner error's own rendering. An unresolved field is not a fault, and a
+/// refused field already names its path under the one refusal rule, so both
+/// pass through unchanged.
 fn annotate_law_type(err: InputDecodeError, type_name: &str) -> InputDecodeError {
-    if err.is_unresolved() {
+    if err.is_unresolved() || matches!(err.failure, DecodeFailure::Rejected(_)) {
         return err;
     }
     InputDecodeError::wrong_shape(
@@ -12203,15 +12205,14 @@ mod tests {
         }
     }
 
-    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
-    /// `youngs_modulus` field on an isotropic-shaped law (a `type_name` that
-    /// is neither of the two named anisotropic laws, read through the
-    /// isotropic fallback arm) with a `WrongShape` at `AnisotropicMaterial.law`
-    /// instead of panicking. Mirrors
-    /// `anisotropic_material_from_value_rejects_malformed_{orthotropic,
-    /// transverse_isotropic}_law` above for the third law arm. `poisson_ratio`
-    /// is well-formed so the assertion isolates the `youngs_modulus`
-    /// rejection.
+    /// `anisotropic_material_from_value` must reject a bare `Real`
+    /// `youngs_modulus` on an isotropic-shaped law (a `type_name` that is
+    /// neither of the two named anisotropic laws, read through the isotropic
+    /// fallback arm) with a `Rejected` naming `ElasticMaterial.youngs_modulus`,
+    /// the same code the same value gets inside an `OrthotropicMaterial` law
+    /// (`anisotropic_material_from_value_rejects_malformed_orthotropic_law`).
+    /// `poisson_ratio` is well-formed so the assertion isolates the
+    /// `youngs_modulus` rejection.
     #[test]
     fn anisotropic_material_from_value_rejects_malformed_isotropic_law() {
         let law_fields: PersistentMap<String, Value> = [
@@ -12225,15 +12226,14 @@ mod tests {
         let res = anisotropic_material_from_value(&aniso_with_law(law));
         assert!(
             matches!(
-                res,
+                &res,
                 Err(InputDecodeError {
-                    field: Some("law"),
-                    failure: DecodeFailure::WrongShape { .. },
+                    failure: DecodeFailure::Rejected(FieldRejection { path, rejection }),
                     ..
-                })
+                }) if path == "ElasticMaterial.youngs_modulus" && rejection.expected == "Pressure"
             ),
-            "expected a WrongShape at AnisotropicMaterial.law for a present-but-wrong-type youngs_modulus \
-             field on an isotropic-shaped law, got: {:?}",
+            "expected Err(Rejected) naming ElasticMaterial.youngs_modulus for a bare-Real \
+             youngs_modulus on an isotropic-shaped law, got: {:?}",
             res
         );
     }
@@ -12242,9 +12242,9 @@ mod tests {
     /// missing `poisson_ratio` with a diagnostic naming both the law's
     /// `type_name` and the missing field (review round 2 suggestion 3 — see
     /// `annotate_law_type`; the same annotation applies uniformly to every
-    /// isotropic-fallback failure, not only the wholly-unrecognised-type_name
-    /// case, since the two are structurally indistinguishable at this call
-    /// site). `youngs_modulus` is well-formed, proving control reaches the
+    /// isotropic-fallback `Missing` or `WrongShape`, not only the
+    /// wholly-unrecognised-type_name case, since the two are structurally
+    /// indistinguishable at this call site). `youngs_modulus` is well-formed, proving control reaches the
     /// SECOND field read of the isotropic fallback rather than bailing out
     /// at the first (mirrors `extract_material_rejects_missing_poisson_ratio`'s
     /// precedent for the leaf this arm delegates to).
