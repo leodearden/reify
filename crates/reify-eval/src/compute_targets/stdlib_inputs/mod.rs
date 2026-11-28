@@ -72,9 +72,9 @@ pub(crate) enum DecodeFailure {
     Missing,
     /// A value that has not resolved yet (`Undef`): not a mistake.
     Unresolved,
-    /// A defined value of the wrong shape: a scalar positional input that is
-    /// not a number, the wrong arity, a non-finite datum, a frame that does
-    /// not decode.
+    /// A value of the wrong shape: a scalar positional input that is not a
+    /// number, the wrong arity, a non-finite datum, a frame that does not
+    /// decode, an `Undef` inside a Rust-minted payload.
     WrongShape { expected: &'static str, got: String },
     /// Any present value the position's `ArgSpec` refuses, a wrong dimension
     /// or not a number at all; the rejection names its own path.
@@ -133,11 +133,11 @@ impl InputDecodeError {
         self.failure == DecodeFailure::Unresolved
     }
 
-    /// The `Failed` outcome of `target` for this error: a refused number is
-    /// `DimensionedArgRejected` in the shared rejection wording, an
-    /// unsupported kind `FeaLoadKindUnsupported`, any other defined fault
-    /// `ComputeInputMalformed`, and an unresolved input fails quietly, with
-    /// no diagnostic.
+    /// The `Failed` outcome of `target` for this error: a value its
+    /// position's spec refuses is `DimensionedArgRejected` in the shared
+    /// rejection wording, an unsupported kind `FeaLoadKindUnsupported`, any
+    /// other defined fault `ComputeInputMalformed`, and an unresolved input
+    /// fails quietly, with no diagnostic.
     pub(crate) fn into_failed(self, target: &str) -> ComputeOutcome {
         let diagnostic = match &self.failure {
             DecodeFailure::Unresolved => None,

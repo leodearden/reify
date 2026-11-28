@@ -4839,14 +4839,25 @@ pub enum DiagnosticCode {
     /// wire-up. CONSTRUCTING a `TractionLoad`/`BodyForce` value stays legal —
     /// only passing one to a solver errors.
     ///
-    /// Canonical message form:
-    /// `"{solver}: unsupported FEA load kind '{type_name}'"`
+    /// Second origin, which widens the firing rule from FEA load kinds to any
+    /// stdlib-input conformer kind a trampoline does not support:
+    /// `reify_eval::compute_targets::stdlib_inputs::InputDecodeError::into_failed`,
+    /// its `UnsupportedKind` arm (trampoline-decode α, task 8674). Its first
+    /// producer is `transient_response`'s `ResolvedForcing::from_fields`
+    /// (`crates/reify-eval/src/modal_ops.rs`), on a `ForcingFunction`
+    /// conformer it has no sampler for.
+    ///
+    /// Canonical message forms:
+    /// `"{solver}: unsupported FEA load kind '{type_name}'"` (the load-kind
+    /// surface) and `"{target}: {input}: unsupported kind '{kind}'"` (the
+    /// stdlib-input decode, e.g.
+    /// `"transient_response: ForcingFunction: unsupported kind 'MyForce'"`).
     ///
     /// PRD-prose mnemonic: `E_FeaLoadKindUnsupported` (severity convention:
     /// `E_*` → Error).
     ///
-    /// The EMITTING call site is leaf γ3's, NOT task 5791's — α mints the
-    /// vocabulary only. Note that the existing guard
+    /// The load-kind surface's EMITTING call site is leaf γ3's, NOT task
+    /// 5791's — α mints the vocabulary only. Note that the existing guard
     /// `extract_loads_unknown_type_name_is_silently_skipped`
     /// (`elastic_static.rs:8493-8524`) asserts ZERO NUMERIC CONTRIBUTION and
     /// NOT the absence of a diagnostic, so γ3 can start emitting without
@@ -4871,13 +4882,20 @@ pub enum DiagnosticCode {
     /// (`NotAStructure`), lacks a declared non-`Option` field (`Missing`), or
     /// carries a value of the wrong shape for its position (`WrongShape`: not
     /// a list or vector, the wrong arity, a non-finite datum, a frame that
-    /// does not decode, a Rust-minted payload element of the wrong variant)
-    /// or a scalar positional input that is not a number. β #8679 / γ #8683
-    /// add `UnknownVariant` together with its first producer.
+    /// does not decode, a Rust-minted payload element of the wrong variant or
+    /// an `Undef` inside one) or a scalar positional input that is not a
+    /// number. β #8679 / γ #8683 add `UnknownVariant` together with its first
+    /// producer.
     ///
-    /// The `Missing` arm is unreachable from ctor-built values, because ctor
-    /// lowering fills every declared param: it fires only on hand-built
-    /// `Value`s.
+    /// Ctor lowering fills every declared param, so a ctor-built value of the
+    /// decoded structure never reaches the `Missing` arm. It is still
+    /// reachable from a ctor-built value in one other way: a trait-typed
+    /// position that falls back to a shape-based decoder the value does not
+    /// fit. `solve_elastic_static`'s `material : ConstitutiveLaw` is one: a
+    /// user `structure def MyLaw : ConstitutiveLaw { .. }` that is neither
+    /// named anisotropic law falls back to the `ElasticMaterial` decoder and
+    /// fails as `ElasticMaterial.youngs_modulus: missing`. Otherwise `Missing`
+    /// fires only on hand-built `Value`s.
     ///
     /// Emitted at `Severity::Error`.
     ///
