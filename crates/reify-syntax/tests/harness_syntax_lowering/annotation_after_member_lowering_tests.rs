@@ -27,10 +27,14 @@ fn members(source: &str) -> Vec<MemberDecl> {
         "parse errors: {:?}",
         module.errors
     );
-    match module.declarations.into_iter().next() {
-        Some(Declaration::Structure(s)) => s.members,
-        other => panic!("expected a structure, got {other:?}"),
-    }
+    module
+        .declarations
+        .into_iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Structure(s) => Some(s.members),
+            _ => None,
+        })
+        .expect("the source declares a structure")
 }
 
 fn param<'a>(members: &'a [MemberDecl], name: &str) -> &'a ParamDecl {
