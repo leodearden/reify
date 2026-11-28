@@ -15,11 +15,34 @@ or deleting `StepForce` would have silently broken six pointers.
 
 ## The rule
 
-In **comparison / additive operand position** a syntactic zero is rewritten to `Scalar<D>(0.0)` at
-compile time, taking `D` from the *sibling* operand, before the dimension guard and type inference
-run. Concretely, `coerce_zero_operand` fires when one operand is a syntactic zero (or
-`const_folds_to_zero`) whose compiled type is dimensionless, AND the sibling's compiled type is
-`Type::Scalar{D}` with non-dimensionless `D`.
+In **comparison / additive operand position** a zero adopts the *sibling* operand's **type** at
+compile time, before the dimension guard and type inference run. Concretely, `coerce_zero_operand`
+fires when one operand is a syntactic zero (or `const_folds_to_zero`) whose compiled type is
+dimensionless, and rewrites it according to the sibling's compiled type:
+
+- `Type::Scalar{D}` with non-dimensionless `D` → the dimensioned literal `Scalar<D>(0.0)`;
+- `Type::TypeParam` (a generic purpose subject's member such as `subject.width`, or a generic fn
+  param), whose kind is known only at run time → `sibling * 0`, i.e. whatever zero the existing
+  `eval_mul` makes of the sibling's runtime value: `Scalar<m>(0)` for a Length, `Int(0)` for an
+  Int; a zero aggregate for a Vector, Point, Tensor, Direction or Complex; Undef for any other
+  value (a String, Bool, Enum or structure instance);
+- any other type → the zero is left unchanged.
+
+The `TypeParam` arm is task #10398's fix, option (a): a compile-time rewrite. The value layer is
+untouched because type-hygiene PRD §3 decision 4 bounds the polymorphic zero to a compile-time
+rewrite, so `eval_cmp` / `eval_eq` and `dimensions_incomparable` (the single comparability rule
+since task 10027) are unchanged. Its consequences:
+
+- the sibling subtree is evaluated twice (evaluation is pure);
+- a non-numeric `TypeParam` sibling compared with `0` still has no verdict, and its refusal names
+  the `*` (`subject.label > 0` against a String reports "`*` is undefined for these operands:
+  String, Int");
+- an Enum `TypeParam` sibling's `== 0` is now that refusal rather than `false`;
+- an aggregate `TypeParam` sibling adopts in additive position: `subject.v + 0` on a Vector is
+  `v`, and `subject.p - 0` on a Point is `p - origin`, a Vector (both were Undef). A comparison
+  against an aggregate still has no verdict; its refusal names the comparison operator. This
+  widens type-hygiene PRD §3 decision 4 ("no adoption against tensor operands") for runtime-typed
+  siblings only: a concrete aggregate sibling still never adopts.
 
 It covers:
 
@@ -27,9 +50,9 @@ It covers:
 |---|---|---|
 | Literal form | `0`, `0.0`, and negated `-0` / `-0.0`; also constant-folded zeros such as `1 - 1` | `is_syntactic_zero_literal` recurses through the `UnOp{"-"}` wrapper; `const_numeric_value` catches the folded case |
 | Dimension family | every family — base, compound-product, compound-quotient | the gate is dimension-agnostic; it copies `D` off the sibling |
-| Operator | `Lt Le Gt Ge Eq Ne Add Sub` | the `matches!` gate in `compile_binop`; the call runs BEFORE `infer_binop_type` |
+| Operator | `Lt Le Gt Ge Eq Ne Add Sub`, and every pair of a chained comparison (`0 < x < 10mm`) | the `matches!` gate in `compile_binop`, plus a call per pair in its chained-comparison desugaring; both run BEFORE `infer_binop_type` |
 | Operand order | both | two symmetric arms in `coerce_zero_operand` |
-| Sibling shape | any expression whose COMPILED TYPE is a non-dimensionless `Scalar`, `CompiledExprKind::IndexAccess` included — and BOTH the member-access form (`material.density`) and the subscript form (`moi_principal[0]`) lower to that one node kind, as `assert_density_positive_constraint_present` in `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_tests.rs` shows by destructuring `material.density` as `IndexAccess { object: ValueRef("material"), index: Literal(String("density")) }` | the rewrite keys on that type, not on the sibling's expression shape |
+| Sibling shape | any expression whose COMPILED TYPE is one [The rule](#the-rule) rewrites against, `CompiledExprKind::IndexAccess` included — and BOTH the member-access form (`material.density`) and the subscript form (`moi_principal[0]`) lower to that one node kind, as `assert_density_positive_constraint_present` in `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_tests.rs` shows by destructuring `material.density` as `IndexAccess { object: ValueRef("material"), index: Literal(String("density")) }` | the rewrite keys on that type, not on the sibling's expression shape |
 
 **Consequence.** A dimensioned RHS literal is never *required* in this position. `magnitude > 0N`
 and `magnitude > 0` compile to the same thing, and the compiled RHS is dimensioned by the time
@@ -46,11 +69,14 @@ rewrite *cannot* fire. A site that merely declines to depend on the rewrite is a
 - **Non-zero literals are never coerced.** `resistivity < 0.0001` really is a compile error
   (`Scalar[m^3·kg·s^-3·A^-2]` vs `Real`), so `materials_electrical.ri`'s `trait Conductive` bound
   genuinely needs its `ohm*m`. This is the load-bearing distinction the sweep preserves.
-- **Param defaults.** `coerce_zero_operand`'s sole call site is inside `compile_binop`, so the
-  rewrite never reaches a param default: `param phase : Angle = 0` is rejected
-  (`ParamDefaultTypeMismatch`), and the diagnostic does not rewrite the stored dimensionless
-  default. `= 0deg` is the spelling — see the `HarmonicForce.phase : Angle = 0deg` note in
+- **Param defaults.** `coerce_zero_operand` is called only from `compile_binop` (a single operator
+  or a chained-comparison pair), so the rewrite never reaches a param default:
+  `param phase : Angle = 0` is rejected (`ParamDefaultTypeMismatch`), and the diagnostic does not
+  rewrite the stored dimensionless default. `= 0deg` is the spelling — see the `HarmonicForce.phase : Angle = 0deg` note in
   `modal_analysis.ri`.
+- **`Type::ScalarParam` siblings.** A dimension-generic fn param (`x : Scalar<Q>`) is neither a
+  concrete `Scalar` nor a `TypeParam`, so `x > 0` inside such a body keeps a dimensionless zero.
+  Owned by #7837.
 
 ## Sites that deliberately do not rely on it
 
@@ -64,7 +90,7 @@ rewrite *cannot* fire. A site that merely declines to depend on the rewrite is a
 
   No shape-based carve-out is expressible in the first place: `coerce_zero_operand`
   (in `crates/reify-compiler/src/expr.rs`) gates ONLY on the sibling's compiled `result_type`
-  being a non-dimensionless `Type::Scalar` — it never inspects the sibling's expression shape.
+  — it never inspects the sibling's expression shape.
   Stating this once is the point: the earlier version of this note filed the subscript form as a
   place the rule "does NOT reach" while the table above filed the member-access form as covered,
   and the two are the same node kind.
@@ -82,21 +108,29 @@ A "no error diagnostics" probe is only evidence that the zero WAS coerced if the
 Both live in `emit_comparison_operand_diagnostics`. So a regressed coercion is **loud**, not a
 silent degradation to `Satisfaction::Indeterminate`.
 
-**The one vacuity condition — measured, task #6038 amendment pass.** A trait body compiled with
+**The trait-body vacuity condition — measured, task #6038 amendment pass.** A trait body compiled with
 **NO conformer** is not dimension-checked at all: `trait T { param material : Material; constraint
 material.density > 1m }` yields *zero* diagnostics. Add a conformer and the same body emits
 `DimensionMismatch`. So the vacuity condition is precisely *trait body with no conformer* — a
 trait-body probe written **with** a conformer is fully checkable at compile level, and is pinned
 that way.
 
+**`TypeParam` siblings are never checked at compile time.** `emit_comparison_operand_diagnostics`
+returns early on a `Type::TypeParam` operand (PRD §3 decision 6, guard gradualism), so a clean
+compile proves nothing for a generic purpose subject's member. Its pins evaluate the compiled
+constraint instead.
+
 ## Test pins
 
 | Level | File | What it pins |
 |---|---|---|
 | Compile | `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs` | operand/operator/dimension/shape breadth, including trait-body-with-conformer and both `IndexAccess` forms — `member_access_lhs_gt_zero_no_error` and `index_access_subscript_gt_zero_no_error` — each with its `*_mismatched_non_zero_still_errors` non-vacuity guard |
+| Compile (`TypeParam` siblings) | `crates/reify-compiler/tests/harness_type_checking/polymorphic_zero_tests.rs`, section "TypeParam siblings (task 10398)" | evaluates the compiled purpose constraint: `subject.width > 0`, `0 < subject.width`, `== 0` and `+ 0` decide in the member's dimension; `subject.label > 0` against a String stays Undef |
+| Compile (chained) | same file, section "Chained comparisons" | `0 < len < 10mm` compiles clean, with `1 < len < 10mm` erroring as its non-vacuity guard; `0 < subject.width < 10mm` evaluates in the member's dimension |
 | Compile (vacuity carve-out) | `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs` | `trait_body_without_conformer_is_not_dimension_checked` — the conformer-less carve-out pin, paired with its conformed non-vacuity guard and a fires-on-the-defect control |
-| Compile (negatives) | `crates/reify-compiler/tests/comparison_operand_guard_tests.rs` | the guards that make a clean compile meaningful |
+| Compile (negatives) | `crates/reify-compiler/tests/harness_type_checking/comparison_operand_guard_tests.rs` | the guards that make a clean compile meaningful |
 | Eval | `crates/reify-eval/tests/polymorphic_zero_eval.rs` | `Satisfaction::Satisfied` at runtime, incl. compound dimensions |
+| CLI | `crates/reify-cli/tests/harness_cli_surface/cli_check_operation_refused.rs`, `bare_zero_*` | a bare `0` against a purpose subject's member (single and chained) or a generic fn param reports OK (exit 0) and, for a negative width, VIOLATED: checked, not refused |
 | Eval (trait bodies) | `crates/reify-eval/tests/harness_engine/polymorphic_zero_trait_eval.rs` | the runtime satisfaction signal for the two trait-body stdlib sites — `Satisfied` vs `Violated`, which no compile pin can express |
 
 ## Stdlib sites pointing here
