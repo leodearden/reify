@@ -6,8 +6,41 @@ use std::collections::{BTreeMap, HashMap};
 use reify_compiler::{CompilationScope, TopologyTemplate};
 use reify_core::Type;
 
-/// The scope the expressions of the definition `own` compile in; `registry`
-/// is every template a name in its module binds to.
+use crate::module_context::ModuleContext;
+
+/// The templates the expressions of the definition `own`, declared in
+/// `module`, can name: the module's constructor view, with the target each of
+/// `own`'s subs and match arms binds to in place of its name's entry. A read
+/// through a sub walks this registry, so it holds the sub's own target, of any
+/// kind; a call is lowered as a constructor only for a structure entry.
+pub(crate) fn definition_registry<'m>(
+    own: &TopologyTemplate,
+    module: &ModuleContext<'m>,
+) -> HashMap<String, &'m TopologyTemplate> {
+    let arms = own
+        .match_arm_groups
+        .iter()
+        .flat_map(|group| &group.arms)
+        .filter_map(|arm| match &arm.arm_type {
+            Type::StructureRef(arm_def) => Some(arm_def.as_str()),
+            _ => None,
+        });
+    let mut registry = module.templates().clone();
+    for written in own
+        .sub_components
+        .iter()
+        .map(|sub| sub.element_structure_name())
+        .chain(arms)
+    {
+        if let Some(target) = module.sub_target(written) {
+            registry.insert(written.to_string(), target.template);
+        }
+    }
+    registry
+}
+
+/// The scope the expressions of the definition `own` compile in, over the
+/// `registry` [`definition_registry`] builds for it.
 pub(crate) fn definition_scope<'u>(
     own: &'u TopologyTemplate,
     registry: &'u HashMap<String, &'u TopologyTemplate>,

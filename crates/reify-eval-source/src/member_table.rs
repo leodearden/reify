@@ -10,7 +10,7 @@ use reify_core::{
     DefinitionName, Diagnostic, DiagnosticCode, DiagnosticLabel, PathName, SourceSpan, Type,
 };
 
-use crate::definition_scope::definition_scope;
+use crate::definition_scope::{definition_registry, definition_scope};
 use crate::inherited_members::inherited_members;
 use crate::member_kind::{self, MemberKind};
 use crate::module_context::{ModuleContext, ModuleSet};
@@ -108,7 +108,8 @@ pub(crate) fn lower_definition<'p, 'm>(
         modules,
         diagnostics,
     );
-    let scope = definition_scope(template, module.templates());
+    let registry = definition_registry(template, module);
+    let scope = definition_scope(template, &registry);
     let mut lowering = Lowering {
         definition: definition.name,
         template,

@@ -21,8 +21,8 @@ pub(crate) struct ModuleContext<'m> {
     sub_targets: HashMap<&'m str, (&'m TopologyTemplate, Origin<'m>)>,
     /// The trait each name binds to, and where it is declared.
     traits: HashMap<&'m str, (&'m CompiledTrait, Origin<'m>)>,
-    /// The templates an expression's constructor call or sub read can name:
-    /// the module's own, and every prelude structure that wins its name.
+    /// The templates an expression's constructor call can name: the
+    /// module's own, and every prelude structure that wins its name.
     templates: HashMap<String, &'m TopologyTemplate>,
     enums: Vec<EnumDef>,
     functions: Vec<CompiledFunction>,
@@ -99,8 +99,8 @@ impl<'m> ModuleContext<'m> {
         }
     }
 
-    /// The templates the module's expressions can name, for a definition's
-    /// compile scope.
+    /// The templates the module's constructor calls can name, for a
+    /// definition's compile scope.
     pub(crate) fn templates(&self) -> &HashMap<String, &'m TopologyTemplate> {
         &self.templates
     }
