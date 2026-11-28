@@ -7,12 +7,14 @@ use reify_eval_source::DefinitionList;
 
 use crate::content::{content_of, member_table_content};
 use crate::declarations::{self, AtRoot};
+use crate::definition_table::DefinitionNames;
 use crate::member_kinds::MemberKinds;
 use crate::step_map;
 
-/// The table of member kinds, the root marker, one member table per
-/// definition, and one root declaration for each of `roots` in the list. A
-/// root not in the list gets no input, so it answers absent.
+/// The table of member kinds, the root marker, the definition names, one
+/// member table per definition, and one root declaration for each of
+/// `roots` in the list. A root not in the list gets no input, so it answers
+/// absent.
 pub(crate) fn inputs(
     definitions: &DefinitionList,
     member_kinds: &MemberKinds,
@@ -27,6 +29,11 @@ pub(crate) fn inputs(
             declarations::at_root_key(),
             Input::of(AtRoot, content_of(&AtRoot)),
         ),
+        (declarations::definition_names_key(), {
+            let names = DefinitionNames::of(definitions);
+            let content = content_of(&names);
+            Input::of(names, content)
+        }),
     ];
     inputs.extend(definitions.iter().map(|definition| {
         let content = member_table_content(&definition.members);

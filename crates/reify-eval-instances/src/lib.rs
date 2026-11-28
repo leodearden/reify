@@ -4,12 +4,15 @@
 mod content;
 mod core_seam;
 mod declarations;
+mod definition_table;
 mod failure;
 mod host;
 mod instance;
 mod kind_ids;
 mod member_kinds;
+mod member_table;
 mod step_map;
+mod unsupplied;
 
 pub use failure::InstanceFailure;
 pub use host::{AnswerFailure, DemandError, Host, HostAnswer, Loaded};

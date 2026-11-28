@@ -17,9 +17,12 @@ use reify_eval_core::{
     Snapshot,
 };
 
+use crate::definition_table::DefinitionTableKind;
 use crate::failure::InstanceFailure;
 use crate::host::answer::{self, AnswerFailure, HostAnswer};
 use crate::instance::InstanceKind;
+use crate::member_table::MemberTableKind;
+use crate::unsupplied::UnsuppliedKind;
 
 pub(crate) struct OnCore {
     core: Core,
@@ -27,7 +30,11 @@ pub(crate) struct OnCore {
 
 impl OnCore {
     pub(crate) fn new() -> Self {
-        let builder = Builder::new().kind::<InstanceKind>();
+        let builder = Builder::new()
+            .kind::<DefinitionTableKind>()
+            .and_then(Builder::kind::<InstanceKind>)
+            .and_then(Builder::kind::<MemberTableKind>)
+            .and_then(Builder::kind::<UnsuppliedKind>);
         let builder = builder.expect("this crate's kind ids are distinct");
         Self {
             core: builder.build(),
