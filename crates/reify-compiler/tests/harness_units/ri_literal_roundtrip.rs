@@ -92,52 +92,24 @@ impl Case {
 
 /// The `.ri` type name to declare a param of, for a value this test generates.
 ///
-/// Every name here is in `NAMED_DIMENSIONS` (or is a primitive), so it
-/// resolves with no stdlib import.
+/// A dimensioned scalar declares its dimension's `NAMED_DIMENSIONS` name
+/// (`canonical_name`), which resolves with no stdlib import.
 fn ri_type_name(v: &Value) -> &'static str {
     match v {
         Value::Bool(_) => "Bool",
         Value::Int(_) => "Int",
         Value::Real(_) => "Real",
         Value::String(_) => "String",
-        Value::Scalar { dimension, .. } => match *dimension {
-            DimensionVector::LENGTH => "Length",
-            DimensionVector::ANGLE => "Angle",
-            DimensionVector::MASS => "Mass",
-            DimensionVector::TIME => "Time",
-            DimensionVector::TEMPERATURE => "Temperature",
-            // A dimensionless Scalar is emitted as a bare real and comes back
-            // as a `Value::Real`, so `Real` is the type its param must declare.
-            // That variant change is the serializer's one documented
-            // exception, pinned by
-            // `a_dimensionless_scalar_downgrades_to_real_with_identical_bits`
-            // — it cannot ride `assert_round_trips`, whose `assert_identical`
-            // asserts discriminant equality.
-            DimensionVector::DIMENSIONLESS => "Real",
-            // Compound dimensions (task #6400). Every name is in
-            // `NAMED_DIMENSIONS` too, so the "resolves with no stdlib import"
-            // property above still holds for the compound round trip under
-            // `Prelude::None`.
-            DimensionVector::AREA => "Area",
-            DimensionVector::VOLUME => "Volume",
-            DimensionVector::PRESSURE => "Pressure",
-            DimensionVector::FORCE => "Force",
-            DimensionVector::MASS_DENSITY => "Density",
-            DimensionVector::ENERGY => "Energy",
-            DimensionVector::FREQUENCY => "Frequency",
-            DimensionVector::SOLID_ANGLE => "SolidAngle",
-            DimensionVector::MONEY => "Money",
-            DimensionVector::CURRENT => "Current",
-            DimensionVector::AMOUNT_OF_SUBSTANCE => "AmountOfSubstance",
-            DimensionVector::LUMINOUS_INTENSITY => "LuminousIntensity",
-            DimensionVector::VOLTAGE => "Voltage",
-            DimensionVector::CHARGE => "Charge",
-            DimensionVector::ILLUMINANCE => "Illuminance",
-            DimensionVector::POWER => "Power",
-            DimensionVector::DYNAMIC_VISCOSITY => "DynamicViscosity",
-            DimensionVector::FRACTURE_TOUGHNESS => "FractureToughness",
-            other => panic!("no .ri type name wired for dimension {other}"),
-        },
+        // A dimensionless Scalar is emitted as a bare real and comes back as a
+        // `Value::Real`, so `Real` is the type its param must declare. That
+        // variant change is the serializer's one documented exception, pinned
+        // by `a_dimensionless_scalar_downgrades_to_real_with_identical_bits` —
+        // it cannot ride `assert_round_trips`, whose `assert_identical` asserts
+        // discriminant equality.
+        Value::Scalar { dimension, .. } if dimension.is_dimensionless() => "Real",
+        Value::Scalar { dimension, .. } => dimension
+            .canonical_name()
+            .unwrap_or_else(|| panic!("dimension {dimension} has no NAMED_DIMENSIONS name")),
         Value::Direction(_) => "Direction",
         other => panic!("no .ri type name wired for {other:?}"),
     }
@@ -917,8 +889,9 @@ fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
 
 // ─── (d2) compound literals (tasks #6400, #10778) ────────────────────────────
 
-/// Every compound value the serializer writes, each pinning its exact literal
-/// where the shape is the point.
+/// Hand-picked compound values, each pinning its exact literal where the shape
+/// is the point. Coverage of every compound dimension the serializer writes is
+/// `named_compound_dimensions`' job.
 ///
 /// The awkward-bits cases are the point, not padding. A naive implementation
 /// that scaled the magnitude — or reproduced `resolve_unit_expr`'s fold by hand
@@ -1025,6 +998,75 @@ fn compound_literals_round_trip_with_no_unit_registry() {
 #[test]
 fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
     assert_round_trips_under(&compound_cases(), Prelude::Stdlib);
+}
+
+/// Every `NAMED_DIMENSIONS` dimension the serializer writes as a compound:
+/// dimensioned, with no bare ladder, and not refused. Alias rows are skipped,
+/// since each repeats its canonical row's dimension.
+///
+/// Derived rather than listed, like the set it covers: the serializer's
+/// built-in slot table is filtered out of `BUILTIN_UNITS` at call time, so a
+/// dimension it starts writing joins this list, and is re-parsed, the same
+/// day. `a_refused_dimensions_spelling_does_not_compile_without_its_import`
+/// is the refused-side mirror.
+fn named_compound_dimensions() -> Vec<(DimensionVector, &'static str)> {
+    reify_core::NAMED_DIMENSIONS
+        .iter()
+        .copied()
+        .filter(|&(dimension, name)| {
+            dimension.canonical_name() == Some(name)
+                && !dimension.is_dimensionless()
+                && reify_core::ri_emittable_units(&dimension).is_empty()
+                && value_to_ri_literal(&Value::Scalar {
+                    si_value: 1.0,
+                    dimension,
+                })
+                .is_ok()
+        })
+        .collect()
+}
+
+/// SWEPT: every compound dimension the serializer writes re-parses with
+/// identical bits and dimension, under both unit-resolution regimes.
+///
+/// `compound_cases` holds the exact-string and awkward-bits witnesses for a
+/// few dimensions; this carries one plain and one awkward magnitude for all
+/// of them.
+#[test]
+fn every_named_compound_dimension_round_trips_under_both_regimes() {
+    let rows = named_compound_dimensions();
+    // MEASURED: 34 canonical rows today. A floor, not an equality: the set
+    // may grow by itself (see `named_compound_dimensions`), but a shrink means
+    // NAMED_DIMENSIONS lost rows or the serializer stopped writing some.
+    const NAMED_COMPOUND_ROWS_FLOOR: usize = 34;
+    let names: Vec<&str> = rows.iter().map(|&(_, name)| name).collect();
+    println!(
+        "compound NAMED_DIMENSIONS rows swept: {}: {names:?}",
+        rows.len()
+    );
+    assert!(
+        rows.len() >= NAMED_COMPOUND_ROWS_FLOOR,
+        "expected at least {NAMED_COMPOUND_ROWS_FLOOR} compound NAMED_DIMENSIONS \
+         rows, saw {}: {names:?}",
+        rows.len()
+    );
+
+    let cases: Vec<Case> = rows
+        .iter()
+        .flat_map(|&(dimension, name)| {
+            [2.5, -0.5566166674539299].map(|si_value| {
+                Case::new(
+                    format!("{name} {si_value:?}"),
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    },
+                )
+            })
+        })
+        .collect();
+    assert_round_trips_under(&cases, Prelude::None);
+    assert_round_trips_under(&cases, Prelude::Stdlib);
 }
 
 /// BIDIRECTIONAL CROSS-GUARD — the registry-safety assertion this task is
