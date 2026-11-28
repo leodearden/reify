@@ -1,6 +1,6 @@
 # GUI purpose surface — activation, purpose-scoped verdicts, ruled staleness UX
 
-**Status: ACTIVE** — chartered by Leo 2026-08-26 (driver-contract matrix ruling 4, spec-conformance program); authored 2026-08-26/27. Milestone v0_6.
+**Status:** SUPERSEDED 2026-11-26 by `docs/prds/instances-on-the-core.md` (leaf ν #10657: purposes declared and applied in source, and their verdicts) and the session-layer milestone #10551 (the selector, the agent tool, and `--purpose` as the uncommitted form of adding an application line). Leo's rulings of 2026-11-26: a purpose only checks, and is declared and then applied by a line of source, so there is no activation state, no session seam and no staleness epoch. Landed: none. Cancelled as superseded: #6803, #6831, #6832, #6833, #6834, #6835, #6836, #6837, #6838, #6839, #6904, #6905, #6906. The one true correction in #6906 (`manufacturing_ready` is not a standard-library purpose) was ported to #10671. **The body below is the AS-AUTHORED design record**: it describes a GUI activation design that will not be built, and is not a current statement of fact or a plan to carry out. LIVE: none. · Status before this stamp: ACTIVE — chartered by Leo 2026-08-26 (driver-contract matrix ruling 4, spec-conformance program); authored 2026-08-26/27. Milestone v0_6.
 
 **Code anchors** verified against main `da8091cbe8` (2026-08-26). Main moves fast — cite-by-symbol; re-locate lines at implementation time.
 

@@ -1,5 +1,7 @@
 # Capability manifest — GUI purpose surface
 
+**AS-AUTHORED record: the PRD was stamped SUPERSEDED on 2026-11-26** (by `docs/prds/instances-on-the-core.md` and the session-layer milestone #10551). The capabilities below are decompose-time evidence for a design that will not be built, not current claims or work to do.
+
 Mechanizes G3 + G6 per leaf for `docs/prds/v0_6/gui-purpose-surface.md`. Each binding maps a
 leaf's asserted capability to **executed** evidence with a PASS verdict; any FAIL blocks the
 batch. Authored at decompose time, 2026-08-26/27.
