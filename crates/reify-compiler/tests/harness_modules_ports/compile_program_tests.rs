@@ -1445,7 +1445,11 @@ fn entry_follows_imports_only_for_a_followed_user_import() {
     let body = "structure def Rod {\n    param r : Length = 2mm\n}\n";
     let cases = [
         ("import-free", format!("module main\n{body}"), false),
-        ("std-only", format!("module main\nimport std.units\n{body}"), true),
+        (
+            "std-only",
+            format!("module main\nimport std.units\n{body}"),
+            true,
+        ),
         (
             "cfg-gated-out user import",
             format!("module main\n#cfg(target = \"wasm\")\nimport ghost\n{body}"),

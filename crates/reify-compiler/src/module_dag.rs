@@ -928,10 +928,7 @@ fn bare_std_import_diag(importer: Option<(&String, &PathBuf)>) -> Diagnostic {
                    curated core, or import the `std.*` module that defines a name";
     let message = match importer {
         None => refusal.to_string(),
-        Some((key, path)) => format!(
-            "in imported module '{key}' ({}): {refusal}",
-            path.display()
-        ),
+        Some((key, path)) => format!("in imported module '{key}' ({}): {refusal}", path.display()),
     };
     Diagnostic::error(message)
         .with_code(DiagnosticCode::BareStdImport)

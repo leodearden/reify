@@ -53,7 +53,9 @@ pub fn std_import_fixits(
             continue;
         }
         let entry = unimported.entry(name).or_default();
-        entry.modules.extend(modules.iter().map(|module| module.to_dotted()));
+        entry
+            .modules
+            .extend(modules.iter().map(|module| module.to_dotted()));
         entry.gated_off |= modules.iter().any(|module| gated_off.covers(module, name));
         if let Some(&span) = uses.first_spans.get(name_use) {
             entry.first_span = Some(match entry.first_span {

@@ -164,7 +164,12 @@ fn a_name_two_std_modules_define_lists_both_and_the_prelude() {
         fixit.candidates,
         vec!["std.option_recovery", "std.result", "std.prelude"]
     );
-    for needle in ["unwrap_or", "std.option_recovery", "std.result", "std.prelude"] {
+    for needle in [
+        "unwrap_or",
+        "std.option_recovery",
+        "std.result",
+        "std.prelude",
+    ] {
         assert!(
             fixit.message.contains(needle),
             "message must name `{needle}`: {}",

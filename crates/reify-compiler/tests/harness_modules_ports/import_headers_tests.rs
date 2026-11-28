@@ -1343,7 +1343,10 @@ fn linux() -> CfgSet {
 
 fn parse_with_stdlib_clean(source: &str) -> ParsedModule {
     let module_path = ModulePath::from_dotted(SUBJECT_PATH).expect("valid dotted fixture path");
-    assert_parsed_clean(reify_compiler::parse_with_stdlib(source, module_path), source)
+    assert_parsed_clean(
+        reify_compiler::parse_with_stdlib(source, module_path),
+        source,
+    )
 }
 
 fn real_stdlib_universe() -> Vec<&'static CompiledModule> {
@@ -1363,7 +1366,8 @@ fn missing_modules(missing: &[RequiredImport]) -> Vec<String> {
 
 #[test]
 fn a_std_prelude_import_covers_the_names_its_pub_imports_re_export() {
-    let parsed = parse_with_stdlib_clean(&format!("import std.prelude\n\n{GPA_AND_UNWRAP_OR_BODY}"));
+    let parsed =
+        parse_with_stdlib_clean(&format!("import std.prelude\n\n{GPA_AND_UNWRAP_OR_BODY}"));
     assert_eq!(
         missing_modules(&missing_over_real_stdlib(&parsed, &linux())),
         Vec::<String>::new(),

@@ -252,8 +252,7 @@ fn the_ambient_scope_warns_where_a_declared_std_import_errors() {
 
 // ─── Through the strict program compile ────────────────────────────────────
 
-const ENTRY_USING_COLOR: &str =
-    "module main\n\nimport a\n\nstructure def Main {\n    sub col = Color()\n    let read = col.zz\n}\n";
+const ENTRY_USING_COLOR: &str = "module main\n\nimport a\n\nstructure def Main {\n    sub col = Color()\n    let read = col.zz\n}\n";
 
 const COLOR_BODY: &str = "pub structure def Color {\n    param zz : Real = 3.0\n}\n";
 
@@ -281,7 +280,12 @@ fn is_shadow(d: &&Diagnostic) -> bool {
 fn an_import_defining_a_std_name_it_does_not_import_shadows_nothing() {
     let program = compile_beside_a(&format!("module a\n\n{COLOR_BODY}"));
     assert_eq!(errors_of(program.entry()), Vec::<&str>::new());
-    let shadows: Vec<&Diagnostic> = program.entry().diagnostics.iter().filter(is_shadow).collect();
+    let shadows: Vec<&Diagnostic> = program
+        .entry()
+        .diagnostics
+        .iter()
+        .filter(is_shadow)
+        .collect();
     assert!(shadows.is_empty(), "nothing is shadowed: {shadows:#?}");
 }
 

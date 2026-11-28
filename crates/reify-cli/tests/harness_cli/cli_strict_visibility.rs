@@ -8,10 +8,8 @@ use crate::common;
 
 #[test]
 fn check_fails_on_an_unimported_std_unit_naming_its_module_and_the_prelude() {
-    let (status, stdout, stderr) = common::run_with_args(&[
-        "check",
-        &common::fixture_path("strict_gpa_no_import.ri"),
-    ]);
+    let (status, stdout, stderr) =
+        common::run_with_args(&["check", &common::fixture_path("strict_gpa_no_import.ri")]);
     assert!(
         !status.success(),
         "check must exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
