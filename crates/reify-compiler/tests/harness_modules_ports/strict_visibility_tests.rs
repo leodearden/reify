@@ -8,7 +8,7 @@
 //! what it re-exports through `pub import`), as the strict program compile
 //! does. The program sections drive `program::compile_program` itself.
 
-use reify_ast::ParsedModule;
+use reify_ast::{Declaration, ParsedModule};
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::std_import_fixits;
@@ -16,7 +16,7 @@ use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
-use reify_ir::Satisfaction;
+use reify_ir::{CompiledExprKind, Satisfaction, Value};
 use reify_test_support::mocks::MockConstraintChecker;
 
 const SUBJECT: &str = "subject";
@@ -436,5 +436,100 @@ fn a_cfg_gated_bare_std_import_is_inert() {
         error_diagnostics(program.entry()).is_empty(),
         "{:#?}",
         program.entry().diagnostics
+    );
+}
+
+// ─── boundary #2, Error form: a declared std import shadowed locally (D-2) ──
+
+const SHADOWS_SIGNAL_KIND: &str = "import std.ports.electrical\n\n\
+                                   enum SignalKind { Foo, Bar }\n\n\
+                                   structure def Main {\n    let read = SignalKind.Foo\n}\n";
+
+fn shadowings(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::StdlibNameShadowed))
+        .collect()
+}
+
+#[test]
+fn an_entry_shadowing_a_std_name_it_imports_binds_locally_with_an_error() {
+    let source = format!("module main\n\n{SHADOWS_SIGNAL_KIND}");
+    let program = compile_main(&source, &linux());
+    let entry = program.entry();
+
+    let shadows = shadowings(&entry.diagnostics);
+    let [shadow] = shadows.as_slice() else {
+        panic!("exactly one shadowing: {:#?}", entry.diagnostics);
+    };
+    assert_eq!(shadow.severity, Severity::Error, "{shadow:#?}");
+    let local_enum = parse_clean(&source, "main")
+        .declarations
+        .iter()
+        .find_map(|decl| match decl {
+            Declaration::Enum(e) if e.name == "SignalKind" => Some(e.span),
+            _ => None,
+        })
+        .expect("the local enum declaration");
+    assert_eq!(
+        shadow.labels.first().map(|label| label.span),
+        Some(local_enum),
+        "labelled at the local declaration: {shadow:#?}"
+    );
+    assert_eq!(
+        error_diagnostics(entry).len(),
+        1,
+        "the shadowing is the only Error: {:#?}",
+        entry.diagnostics
+    );
+
+    let read = entry
+        .templates
+        .iter()
+        .find(|t| t.name == "Main")
+        .and_then(|t| t.value_cells.iter().find(|cell| cell.id.member == "read"))
+        .and_then(|cell| cell.default_expr.as_ref())
+        .expect("Main.read has a compiled default");
+    assert!(
+        matches!(
+            &read.kind,
+            CompiledExprKind::Literal(Value::Enum { type_name, variant, .. })
+                if type_name == "SignalKind" && variant == "Foo"
+        ),
+        "the local enum wins: {read:?}"
+    );
+}
+
+#[test]
+fn an_import_unit_shadowing_a_std_name_it_imports_surfaces_the_error_rehomed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("parts.ri"),
+        format!("module parts\n\n{SHADOWS_SIGNAL_KIND}"),
+    )
+    .expect("write parts.ri");
+    let program = compile_program(
+        &dir.path().join("main.ri"),
+        "module main\n\nimport parts\n\nstructure def Rig {\n    param q : Real = 1\n}\n",
+        &ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
+        &linux(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    );
+
+    let rehomed: Vec<&Diagnostic> = program
+        .rehomed_from("parts")
+        .filter(|d| d.code == Some(DiagnosticCode::StdlibNameShadowed))
+        .collect();
+    let [shadow] = rehomed.as_slice() else {
+        panic!(
+            "the unit's shadowing is re-homed onto the entry once: {:#?}",
+            program.entry().diagnostics
+        );
+    };
+    assert_eq!(shadow.severity, Severity::Error, "{shadow:#?}");
+    assert!(shadow.message.contains("SignalKind"), "{}", shadow.message);
+    assert!(
+        shadowings(&program.entry_own_diagnostics().cloned().collect::<Vec<_>>()).is_empty(),
+        "the entry itself shadows nothing"
     );
 }
