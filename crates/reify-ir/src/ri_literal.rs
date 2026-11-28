@@ -95,6 +95,9 @@
 //! the target module's imports. That each refusal still guards a real failure
 //! is pinned by `ri_literal_roundtrip.rs`'s
 //! `a_refused_dimensions_spelling_does_not_compile_without_its_import`.
+//! A dimension with an exponent outside `reify_core::unit_exponent_in_range`
+//! (a `Length^200` from a product chain) is refused the same way: no unit
+//! expression can carry it, whatever the module imports.
 //!
 //! One corollary, easy to mistake for an oversight: **the unit hint is inert
 //! for a compound dimension.** A hinted `mm^2` would fold `0.001.powi(2)`,
@@ -202,8 +205,8 @@ pub enum RiLiteralError {
         offending: char,
     },
     /// A dimension with no bare built-in unit symbol and no compound spelling
-    /// built from built-in symbols only, so any literal for it would need an
-    /// import the target module may lack (module doc, qualification 3).
+    /// from built-in symbols: its spelling needs an import, or it cannot be
+    /// written exactly at all (module doc, qualification 3).
     UnrepresentableDimension {
         /// The dimension that has no emittable bare symbol.
         dimension: DimensionVector,
@@ -1110,7 +1113,7 @@ mod tests {
     /// (c) REJECTIONS ON A COMPOUND DIMENSION. Each is a case where emitting
     /// something would produce a literal that does not re-parse.
     #[test]
-    fn the_unlock_does_not_widen_to_what_still_cannot_be_written() {
+    fn a_compound_dimension_still_refuses_non_finite_and_non_scalar_values() {
         // Finiteness is checked BEFORE any formatting, so a non-finite
         // compound value is `NonFiniteNumber` — never a partially-formed
         // `NaNm^2`.
@@ -1130,6 +1133,23 @@ mod tests {
                 Err(RiLiteralError::UnsupportedValueKind { .. })
             ));
         }
+    }
+
+    /// (c2) An exponent no unit expression can carry is refused as
+    /// `UnrepresentableDimension`, though every atom of its spelling would be
+    /// a built-in: no import could make it writable.
+    #[test]
+    fn an_exponent_outside_the_unit_expression_range_is_refused() {
+        let mut exponents = [reify_core::Rational::ZERO; 10];
+        exponents[0] = reify_core::Rational::new(200, 1);
+        let length_200 = DimensionVector(exponents);
+        assert!(!reify_core::units::unit_exponent_in_range(exponents[0]));
+        assert_eq!(
+            value_to_ri_literal(&compound(1.5, length_200)),
+            Err(RiLiteralError::UnrepresentableDimension {
+                dimension: length_200
+            })
+        );
     }
 
     /// (d) THE HINT IS INERT FOR A COMPOUND DIMENSION.
