@@ -660,6 +660,108 @@ structure def Plank : Weighted + Toleranced {
 }
 
 #[test]
+fn a_hidden_trait_member_reports_nothing() {
+    const SPACED: &str = "trait Spaced { let w = nonesuch + 1 }\n";
+    let listed = accepted(&format!(
+        "{SPACED}structure def Unwritten : Spaced {{ param t : Length = 1mm }}\n"
+    ));
+    assert!(
+        error_codes(&listed).contains(&Some(DiagnosticCode::UnresolvedName)),
+        "the trait's `w`, listed, is reported: {:#?}",
+        listed.diagnostics
+    );
+
+    let output = accepted(&format!(
+        "{SPACED}structure def S : Spaced {{ let w = 1mm }}\n"
+    ));
+    assert_eq!(
+        provenance(table(&output, "S")),
+        vec![(Some("w"), MemberKind::Cell, MemberOrigin::Own)]
+    );
+    assert_eq!(
+        error_codes(&output),
+        Vec::new(),
+        "a trait member the table does not list is never lowered, so it reports nothing: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn a_name_in_a_group_branch_hides_no_trait_member() {
+    let output = accepted(
+        "
+trait Weighted { param mass : Mass = 1kg }
+structure def Switched : Weighted {
+    param on : Bool = true
+    where on { param mass : Mass = 2kg }
+}
+structure def Plate { param t : Length = 3mm }
+trait Headed { sub head : Plate }
+enum Mode { A, B }
+structure def Matched : Headed {
+    param mode : Mode = Mode.A
+    match mode {
+        A => sub head : Plate,
+        B => sub head : Plate
+    }
+}
+",
+    );
+    assert_eq!(
+        provenance(table(&output, "Switched")),
+        vec![
+            (
+                Some("mass"),
+                MemberKind::Cell,
+                inherited_from(entry_definition("Weighted"))
+            ),
+            (Some("on"), MemberKind::Cell, MemberOrigin::Own),
+            (None, MemberKind::GuardedGroup, MemberOrigin::Own),
+        ],
+        "a name declared under a guard hides no trait member"
+    );
+    assert_eq!(
+        provenance(table(&output, "Matched")),
+        vec![
+            (
+                Some("head"),
+                MemberKind::Sub,
+                inherited_from(entry_definition("Headed"))
+            ),
+            (Some("mode"), MemberKind::Cell, MemberOrigin::Own),
+            (None, MemberKind::MatchGroup, MemberOrigin::Own),
+        ],
+        "a name declared in a match's arms hides no trait member"
+    );
+}
+
+#[test]
+fn an_own_member_hides_a_trait_member_of_another_form() {
+    let output = accepted(
+        "
+trait Weighted { param mass : Mass = 1kg }
+structure def Poured : Weighted { let mass = 2kg }
+trait Doubling { fn twice(self) -> Length { 2mm } }
+structure def Doubled : Doubling { fn twice(self) -> Length { 4mm } }
+",
+    );
+    assert_eq!(
+        provenance(table(&output, "Poured")),
+        vec![(Some("mass"), MemberKind::Cell, MemberOrigin::Own)],
+        "an own `let` hides a trait's `param` of its name"
+    );
+    assert_eq!(
+        provenance(table(&output, "Doubled")),
+        vec![(
+            Some("twice"),
+            MemberKind::AssociatedFunction,
+            MemberOrigin::Own
+        )],
+        "an own `fn` hides the trait's default `fn` of its name"
+    );
+}
+
+#[test]
 fn no_standard_library_table_lists_a_name_twice() {
     let output = accepted("structure def Empty { param x : Real = 1.0 }\n");
     let mut repeated: Vec<(&DefinitionName, &str)> = Vec::new();
