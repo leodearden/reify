@@ -671,7 +671,12 @@ mod tests {
     // moment_of_inertia is now auto-derived (task 4229 Option A — no longer a
     // required param). Dimensioned density (7850kg/m^3) required so body_density
     // let resolves to a clean Density (avoids resolve_density_arg Warning).
-    const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
+    const STDLIB_PROBE_SRC: &str = r#"import std.materials.mechanical
+import std.si_units
+import std.structural.physical
+import std.units
+
+structure S : Rigid {
     param geometry: Solid = box(10mm, 20mm, 30mm)
     param material: Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }"#;
@@ -1089,7 +1094,8 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// an unresolved-name error diagnostic for `CorrosionClass`.
     #[test]
     fn stateful_diagnostics_resolve_stdlib_enum_access_without_inline_redecl() {
-        let source = "structure Sample {\n  let chosen_class = CorrosionClass.C5\n}\n";
+        let source = "import std.materials.chemical\n\n\
+                      structure Sample {\n  let chosen_class = CorrosionClass.C5\n}\n";
         let diags =
             compute_diagnostics_with_state(&mut EvalState::new(), source, &test_uri()).diagnostics;
         let errors: Vec<_> = diags

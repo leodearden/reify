@@ -226,8 +226,9 @@ fn an_import_free_document_keeps_the_module_content_hash_as_its_key() {
 
     compute_diagnostics_with_state(&mut state, source, &uri);
 
-    let single_file = reify_compiler::compile_with_stdlib_checked(
+    let single_file = reify_compiler::program::compile_single_file(
         &reify_compiler::parse_with_stdlib(source, ModulePath::single("solo")),
+        &reify_compiler::cfg::CfgSet::host_default(),
         &SimpleConstraintChecker,
     );
     assert_eq!(state.last_content_hash(), Some(single_file.content_hash));
