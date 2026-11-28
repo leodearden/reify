@@ -10,10 +10,13 @@
 //! cfg, already make visible, and which those the cfg leaves out would make
 //! visible were their `#cfg` satisfied. [`placement`] re-parses an edit that
 //! adds import lines, so [`insert_imports`] refuses one whose added lines
-//! would not stand where they are written.
+//! would not stand where they are written. [`fixit`] turns the same
+//! derivation into the NS-V2 Error a strict compile attaches for a std name
+//! written without its import ([`std_import_fixits`]).
 
 mod attribution;
 mod coverage;
+mod fixit;
 mod header_edit;
 mod name_uses;
 mod placement;
@@ -23,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticIdentity, ModulePath, Severity};
 
+pub use fixit::std_import_fixits;
 pub use name_uses::{NameRole, NameUse};
 pub use placement::PlacementDefect;
 

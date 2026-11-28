@@ -1,13 +1,14 @@
 //! The syntactic half of import-header derivation: every name a parsed module
-//! WRITES, tagged with the position it is written in, plus the names the
-//! module itself binds. No resolution happens here; imports `reify_ast` only.
+//! WRITES, tagged with the position it is written in and where it is first
+//! written, plus the names the module itself binds. No resolution happens
+//! here; imports `reify_ast` and `reify_core`'s span type only.
 //!
 //! Every match is wildcard-free and every struct pattern names all its fields,
 //! so a new AST variant or field is a compile error here rather than a
 //! silently unwalked position (the forcing function of
 //! `reify-lsp/src/references/walk.rs`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use reify_ast::{
     Annotation, AssociatedTypeDecl, ChainDecl, ConnectDecl, ConstraintDecl, ConstraintDef,
@@ -21,6 +22,7 @@ use reify_ast::{
     SubDerivationKind, SubDisposition, SubParamOverride, TraitBoundRef, TraitDecl, TypeAliasDecl,
     TypeExpr, TypeExprKind, TypeParamDecl, UnitDecl, UnitExpr, VariantPayload, WhereClause,
 };
+use reify_core::SourceSpan;
 
 /// The position a name is written in, which decides what kinds of definition
 /// it can refer to.
@@ -60,27 +62,69 @@ pub(crate) struct NameUses {
     pub(crate) value_binders: HashSet<String>,
     /// Names bound as types: type params and associated types.
     pub(crate) type_binders: HashSet<String>,
+    /// The span of each use's earliest written occurrence: the innermost
+    /// expression, type expression or declaration that writes it.
+    pub(crate) first_spans: HashMap<NameUse, SourceSpan>,
 }
 
 pub(crate) fn collect_name_uses(parsed: &ParsedModule) -> NameUses {
     let mut collector = Collector::default();
     for declaration in &parsed.declarations {
+        collector.current_span = Some(declaration_span(declaration));
         collector.declaration(declaration);
     }
     collector.out
 }
 
+fn declaration_span(declaration: &Declaration) -> SourceSpan {
+    match declaration {
+        Declaration::Structure(structure) => structure.span,
+        Declaration::Occurrence(occurrence) => occurrence.span,
+        Declaration::Import(import) => import.span,
+        Declaration::Enum(enum_decl) => enum_decl.span,
+        Declaration::Function(function) => function.span,
+        Declaration::Trait(trait_decl) => trait_decl.span,
+        Declaration::Field(field) => field.span,
+        Declaration::Purpose(purpose) => purpose.span,
+        Declaration::Constraint(constraint) => constraint.span,
+        Declaration::Unit(unit) => unit.span,
+        Declaration::TypeAlias(alias) => alias.span,
+        Declaration::Default(default) => default.span,
+        Declaration::Module(module) => module.span,
+        Declaration::Joint(joint) => joint.span,
+    }
+}
+
 #[derive(Default)]
 struct Collector {
     out: NameUses,
+    /// The innermost spanned node being walked.
+    current_span: Option<SourceSpan>,
 }
 
 impl Collector {
     fn use_name(&mut self, name: &str, role: NameRole) {
-        self.out.uses.push(NameUse {
+        let name_use = NameUse {
             name: name.to_string(),
             role,
-        });
+        };
+        if let Some(span) = self.current_span {
+            self.out
+                .first_spans
+                .entry(name_use.clone())
+                .and_modify(|first| {
+                    if span.start < first.start {
+                        *first = span;
+                    }
+                })
+                .or_insert(span);
+        }
+        self.out.uses.push(name_use);
+    }
+
+    /// Make `span` the current span, returning the one it replaces.
+    fn enter_span(&mut self, span: SourceSpan) -> Option<SourceSpan> {
+        self.current_span.replace(span)
     }
 
     fn bind_value(&mut self, name: &str) {
@@ -869,7 +913,8 @@ impl Collector {
     }
 
     fn type_expr(&mut self, type_expr: &TypeExpr) {
-        let TypeExpr { kind, span: _ } = type_expr;
+        let TypeExpr { kind, span } = type_expr;
+        let outer = self.enter_span(*span);
         match kind {
             TypeExprKind::Named { name, type_args } => {
                 self.use_name(name, NameRole::Type);
@@ -904,12 +949,14 @@ impl Collector {
                 self.type_expr(return_type);
             }
         }
+        self.current_span = outer;
     }
 
     // ─── expressions ───────────────────────────────────────────────────────
 
     fn visit_expr(&mut self, expr: &Expr) {
-        let Expr { kind, span: _ } = expr;
+        let Expr { kind, span } = expr;
+        let outer = self.enter_span(*span);
         match kind {
             ExprKind::NumberLiteral {
                 value: _,
@@ -1068,6 +1115,7 @@ impl Collector {
                 }
             }
         }
+        self.current_span = outer;
     }
 
     fn visit_exprs(&mut self, exprs: &[Expr]) {

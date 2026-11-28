@@ -642,6 +642,31 @@ pub enum DiagnosticCode {
     /// escalates it to `Error` (PRD `docs/prds/v0_6/stdlib-namespace.md` D-2).
     /// The PRD-prose mnemonic for this code is `W_STDLIB_NAME_SHADOWED`.
     StdlibNameShadowed,
+    /// Origin: `crates/reify-compiler/src/import_headers/fixit.rs`
+    /// (`std_import_fixits`), attached to every user module a strict program
+    /// compile compiles (stdlib-namespace NS-V2, PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` §3.2).
+    /// Emitted once per written name that only std modules define when none of
+    /// those modules is visible: the module neither imports one of them nor
+    /// imports a module that re-exports one through `pub import`.
+    ///
+    /// Canonical message form, for one defining module:
+    /// `"'<name>' is defined in <module>, which this module does not import; add `import <module>`[ or `import std.prelude`]"`;
+    /// for several: `"'<name>' is defined in <m1>, … and <mN>, none of which this module imports; add `import <m1>`, … or `import <mN>`"`.
+    /// Either ends with `"; a #cfg-gated import that would make it visible is not in effect under the active cfg"`
+    /// when the module declares such an import.
+    ///
+    /// One label: the name's first written occurrence (primary).
+    ///
+    /// `candidates` lists the import paths as independent pick-one
+    /// alternatives, each of which makes the name visible: the defining std
+    /// module(s) first, in path order, then `std.prelude` last, present only
+    /// when the facade's re-export closure holds one of them. This is the
+    /// payload an LSP auto-import action reads (PRD §9).
+    ///
+    /// Severity is `Error`. The PRD-prose mnemonic for this code is
+    /// `E_STD_NAME_NOT_IMPORTED`.
+    StdNameNotImported,
     /// Origin: `crates/reify-compiler/src/name_env.rs` (`collision_warning`),
     /// raised by the compiler's prelude seeds of units
     /// (`compile_builder/units_phase.rs`) and pub type aliases
